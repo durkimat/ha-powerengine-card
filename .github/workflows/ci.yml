@@ -26,4 +26,4 @@ jobs:
       - uses: hacs/action@main
         with:
           category: plugin
-          ignore: brands description topics
+          ignore: brands description topics images  # images: re-enable once the README has a screenshot
