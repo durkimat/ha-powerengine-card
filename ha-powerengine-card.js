@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.3.7";
+const CARD_VERSION = "0.3.8";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -20,12 +20,14 @@ const MAIN_PLANT_SUGGEST = {
   energy_today: [/^sensor\.solis_power_generation_today$/],
 };
 const FEATURES = [
+  ["fill_when_cheap", "Top up when cheap", "Charge to the grid-charge target in every cheap slot, not just what the forecast needs. A buffer in case the forecast is wrong."],
   ["smart_charge_optimisation", "Smart-charge optimisation", "Request EDF smart-charge slots dynamically (replaces the fixed daily triggers)."],
-  ["arbitrage", "Energy arbitrage", "Buy cheap and sell back when the spread is worth it."],
+  ["arbitrage", "Energy arbitrage", "Buy cheap and sell back when the spread is worth it (not built yet: turning it on has no effect).",
+    "Check your export tariff terms first: some only pay for exported solar, not energy bought from the grid."],
   ["axle", "Axle VPP events", "Force-discharge during Axle events and hold charge beforehand."],
   ["free_power_days", "Free-power sessions", "Make full use of EDF free-electricity sessions."],
 ];
-const FEATURE_DEFAULTS = { smart_charge_optimisation: true, arbitrage: false, axle: true, free_power_days: true };
+const FEATURE_DEFAULTS = { fill_when_cheap: true, smart_charge_optimisation: true, arbitrage: false, axle: true, free_power_days: true };
 
 /* ------------------------------------------------------------------ helpers
  * Pure functions (no DOM), exported for tests at the bottom of the file.
@@ -337,6 +339,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       .reads { color: var(--primary-color); margin-left: 6px; }
       .sign { font-size: .85em; color: var(--secondary-text-color); }
       .problem { color: var(--error-color); font-size: .9em; }
+      .warning { color: var(--warning-color, #b26a00); font-size: .9em; margin-top: 4px; }
       .status { font-size: .85em; color: var(--secondary-text-color); }
       .status.ok { color: var(--success-color, #43a047); }
       .plant { border: 1px solid var(--divider-color); border-radius: 8px; padding: 8px; margin: 8px 0; }
@@ -388,10 +391,11 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     modeSel.value = this._draft.operation.mode === "active" ? "active" : "passive";
     content.append(el("div", { class: "row" }, el("div", { class: "ctl" }, modeSel)));
     content.append(el("h3", {}, "Features"));
-    FEATURES.forEach(([key, label, desc]) => {
+    FEATURES.forEach(([key, label, desc, warning]) => {
       const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.features[key] = ev.target.checked; this._refresh(); } });
       cb.checked = !!this._draft.features[key];
-      content.append(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc)));
+      content.append(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc),
+        warning ? el("div", { class: "warning" }, `⚠ ${warning}`) : null));
     });
 
     // safety settings
