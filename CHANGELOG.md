@@ -2,6 +2,18 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.2.0 (beta)
+
+### Behaviour changes
+- None to your devices.
+
+### Added
+- **Safety and thresholds** section (minimum reserve, cheap-import threshold, grid-charge target, restart margin,
+  Axle look-ahead and margin), with ranges checked before saving.
+- **House load includes the car charger** option (Grid and house).
+- View-only mode for non-admin users.
+- The card now lives on the PowerEngine dashboard's **Config** tab; a separate dashboard is no longer needed.
+
 ## 0.1.0 (beta)
 
 ### Behaviour changes

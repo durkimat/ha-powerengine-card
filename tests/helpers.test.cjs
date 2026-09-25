@@ -101,3 +101,18 @@ test("rates show in pence, money in pounds, times are not numbers", () => {
   assert.strictEqual(h.readout(sc, { entity: "s.s" }, { state: "0.570969", attributes: { unit_of_measurement: "GBP" } }).text, "\u00a30.57 per day");
   assert.strictEqual(h.readout(t, { entity: "select.t" }, { state: "11:00", attributes: {} }).text, "11:00");
 });
+
+test("settings defaults, validation and saving", () => {
+  const settings = { safety: [{ key: "min_reserve_soc", default: 12, min: 0, max: 100 }, { key: "cheap_threshold_p", default: 10, min: 0, max: 100 }],
+                     system: [{ key: "house_load_includes_ev", default: true }] };
+  const { draft } = h.initialDraft({ safety: { cheap_threshold_p: 8 } }, [], [], settings);
+  assert.strictEqual(draft.safety.min_reserve_soc, 12);
+  assert.strictEqual(draft.safety.cheap_threshold_p, 8);
+  assert.strictEqual(draft.system.house_load_includes_ev, true);
+  assert.strictEqual(h.settingProblem(settings.safety[0], "150"), "Must be between 0 and 100");
+  assert.strictEqual(h.settingProblem(settings.safety[0], "abc"), "Enter a number");
+  draft.safety.min_reserve_soc = "15";
+  const out = h.buildConfig(draft);
+  assert.strictEqual(out.safety.min_reserve_soc, 15);
+  assert.strictEqual(out.system.house_load_includes_ev, true);
+});
