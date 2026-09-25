@@ -2,6 +2,11 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.5.8 (beta)
+
+### Behaviour changes
+- Smart-charge optimisation description updated.
+
 ## 0.5.7 (beta)
 
 ### Behaviour changes

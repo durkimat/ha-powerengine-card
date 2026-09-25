@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.5.7";
+const CARD_VERSION = "0.5.8";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -22,7 +22,7 @@ const MAIN_PLANT_SUGGEST = {
 const FEATURES = [
   ["auto_cheap_threshold", "Automatic cheap threshold", "Work out what counts as cheap from the prices ahead (the bottom fifth of the range, and only if storing it pays), capped by the Cheap import threshold setting."],
   ["fill_when_cheap", "Top up when cheap", "Charge to the grid-charge target in every cheap slot, not just what the forecast needs. A buffer in case the forecast is wrong."],
-  ["smart_charge_optimisation", "Smart-charge optimisation", "Request EDF smart-charge slots dynamically (replaces the fixed daily triggers)."],
+  ["smart_charge_optimisation", "Smart-charge optimisation", "Ask EDF for extra smart-charge slots by changing the car's ready-by time when it's worth it, with back-off and at most 6 requests a day. Replaces the fixed daily triggers. Sends nothing in Passive mode."],
   ["arbitrage", "Energy arbitrage", "Sell stored energy just before a cheap refill when it pays after losses and wear, keeping enough for the house. In Passive mode this only plans and simulates it, so you can see what it would earn.",
     "Check your export tariff terms first: some only pay for exported solar, not energy bought from the grid."],
   ["axle", "Axle VPP events", "Force-discharge during Axle events and hold charge beforehand."],
