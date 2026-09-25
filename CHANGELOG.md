@@ -2,6 +2,12 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.3.8 (beta)
+
+### Behaviour changes
+- New feature checkbox **Top up when cheap** (on by default).
+- The **Energy arbitrage** option says it isn't built yet and warns to check export tariff terms.
+
 ## 0.3.7 (beta)
 
 ### Behaviour changes
