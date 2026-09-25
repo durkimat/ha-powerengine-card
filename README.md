@@ -7,14 +7,10 @@ own entity pickers and validated before saving.
 > **Status: early development (0.0.x).** The card currently only shows its version
 > and whether the app is detected.
 
-## Install (HACS)
+## Install
 
-1. HACS → ⋮ → *Custom repositories* → add this repo with category **Dashboard**.
-2. Install **PowerEngine Card** (HACS adds the dashboard resource).
-3. Create a dashboard for admins only, hidden from the sidebar, and add:
+This card is installed as part of PowerEngine. Follow the
+**[PowerEngine installation guide](https://github.com/durkimat/ha-powerengine-controller/blob/main/docs/INSTALL.md)**
+(Step 4 installs the card; Step 5 creates the admin-only config page).
 
-```yaml
-type: custom:powerengine-config-card
-```
-
-Keep the card and app on the same version.
+Keep the card and app on the same version: the card warns if they differ.
