@@ -2,6 +2,11 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.5.7 (beta)
+
+### Behaviour changes
+- Energy arbitrage description updated: it is now planned (and simulated in Passive mode).
+
 ## 0.5.6 (beta)
 
 ### Behaviour changes
