@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.1.0";
+const CARD_VERSION = "0.2.0";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -152,17 +152,34 @@ function instantProblem(role, spec, stateObj) {
   return "";
 }
 
+/** Problem with a numeric setting, or "". */
+function settingProblem(setting, value) {
+  const n = toNumber(value);
+  if (n === null) return "Enter a number";
+  if (n < setting.min || n > setting.max) return `Must be between ${setting.min} and ${setting.max}`;
+  return "";
+}
+
 function suggestEntity(role, entityIds) {
   const pats = (role.suggest || []).map((p) => new RegExp(p));
   const nots = (role.suggest_not || []).map((p) => new RegExp(p));
   return entityIds.find((id) => pats.some((p) => p.test(id)) && !nots.some((p) => p.test(id))) || "";
 }
 
-function initialDraft(saved, roles, entityIds) {
+function settingDefaults(list) {
+  const out = {};
+  (list || []).forEach((s) => { out[s.key] = s.default; });
+  return out;
+}
+
+function initialDraft(saved, roles, entityIds, settings) {
   const draft = JSON.parse(JSON.stringify(saved || {}));
+  settings = settings || {};
   draft.inputs = draft.inputs || {};
   draft.features = Object.assign({}, FEATURE_DEFAULTS, draft.features || {});
   draft.operation = Object.assign({ mode: "passive" }, draft.operation || {});
+  draft.safety = Object.assign(settingDefaults(settings.safety), draft.safety || {});
+  draft.system = Object.assign(settingDefaults(settings.system), draft.system || {});
   const fresh = !saved || !saved.inputs || !Object.keys(saved.inputs).length;
   if (fresh) {
     roles.forEach((r) => {
@@ -204,7 +221,11 @@ function buildConfig(draft) {
   const plants = (draft.solar_plants || []).filter((p) => p.power && p.power.entity && p.energy_today && p.energy_today.entity)
     .map((p) => ({ id: p.id, name: p.name || p.id, power: { entity: p.power.entity }, energy_today: { entity: p.energy_today.entity },
       forecast: p.forecast || "none", enabled: p.enabled !== false }));
-  const out = { schema_version: 1, inputs, solar_plants: plants, features: draft.features, operation: { mode: draft.operation.mode || "passive" } };
+  const out = { schema_version: 1, inputs, solar_plants: plants, features: draft.features, operation: { mode: (draft.operation || {}).mode || "passive" } };
+  const safety = {};
+  Object.entries(draft.safety || {}).forEach(([k, v]) => { const n = toNumber(v); if (n !== null) safety[k] = n; });
+  if (Object.keys(safety).length) out.safety = safety;
+  if (draft.system && Object.keys(draft.system).length) out.system = Object.assign({}, draft.system);
   if (draft.remove_entities) out.remove_entities = true;
   return out;
 }
@@ -265,7 +286,9 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     this._catalogue = cat.attributes;
     const mapping = s[MAPPING_SENSOR];
     this._saved = ((mapping && mapping.attributes) || {}).config || {};
-    const { draft, fresh } = initialDraft(this._saved, this._catalogue.roles, Object.keys(s).sort());
+    this._settings = this._catalogue.settings || {};
+    this._readOnly = !(this._hass.user && this._hass.user.is_admin);
+    const { draft, fresh } = initialDraft(this._saved, this._catalogue.roles, Object.keys(s).sort(), this._settings);
     this._draft = draft;
     this._prefilled = fresh;
     this._build();
@@ -351,9 +374,11 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const content = el("div", { class: "content" });
     this._banner = el("div", { class: "banner info" });
     content.append(this._banner);
-    this._setBanner("info", this._prefilled
-      ? "Suggested entities have been pre-filled from your system. Check each live value below, then Save."
-      : "Change any input, check its live value, then Save.");
+    this._setBanner("info", this._readOnly
+      ? "View only: log in as an admin to change PowerEngine's configuration."
+      : this._prefilled
+        ? "Suggested entities have been pre-filled from your system. Check each live value below, then Save."
+        : "Change any input, check its live value, then Save.");
 
     // operation + features
     content.append(el("h3", {}, "Operation"));
@@ -369,6 +394,20 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       content.append(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc)));
     });
 
+    // safety settings
+    content.append(el("h3", {}, "Safety and thresholds"));
+    this._settingRows = [];
+    (this._settings.safety || []).forEach((st) => {
+      const input = el("input", { type: "number", step: "any", min: st.min, max: st.max, value: this._draft.safety[st.key],
+        onchange: (ev) => { this._draft.safety[st.key] = ev.target.value; this._refresh(); } });
+      const problem = el("div", { class: "problem" });
+      this._settingRows.push({ st, problem });
+      content.append(el("div", { class: "row" },
+        el("div", { class: "head" }, el("span", { class: "label" }, st.label), el("span", { class: "badge" }, `default ${st.default}${st.unit ? " " + st.unit : ""}`)),
+        el("div", { class: "desc" }, st.help),
+        el("div", { class: "ctl" }, input, el("span", { class: "muted" }, st.unit || "")), problem));
+    });
+
     // inputs by group
     const roles = this._catalogue.roles;
     this._catalogue.groups.forEach((g) => {
@@ -376,6 +415,13 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       if (!inGroup.length) return;
       content.append(el("h3", {}, g.label));
       if (g.key === "controls") content.append(el("div", { class: "desc" }, "Mapped now so Passive mode can show exactly what it would set. PowerEngine never writes to these in Passive mode."));
+      if (g.key === "grid") {
+        (this._settings.system || []).forEach((st) => {
+          const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.system[st.key] = ev.target.checked; this._refresh(); } });
+          cb.checked = !!this._draft.system[st.key];
+          content.append(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, st.label)), el("div", { class: "desc" }, st.help)));
+        });
+      }
       inGroup.forEach((role) => content.append(this._roleRow(role)));
       if (g.key === "grid") content.append(this._plantsSection());
     });
@@ -386,6 +432,10 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     content.append(el("div", { class: "actions" }, el("span", { class: "muted" }, `Card v${CARD_VERSION}`), this._resetBtn, this._saveBtn));
 
     root.append(this._style(), el("ha-card", { header: "PowerEngine configuration" }, content));
+    if (this._readOnly) {
+      content.querySelectorAll("input, select, button").forEach((n) => { n.disabled = true; });
+      this._pickers.forEach((pk) => { pk.disabled = true; });
+    }
     this._refresh();
   }
 
@@ -517,12 +567,17 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       const f = (x) => (x ? `${x.state} ${(x.attributes || {}).unit_of_measurement || ""}`.trim() : "not set");
       p._live.textContent = `Now: ${f(pw)} · today ${f(en)}`;
     });
-    const dirty = JSON.stringify(buildConfig(this._draft)) !== JSON.stringify(buildConfig(initialDraft(saved, [], []).draft));
+    (this._settingRows || []).forEach(({ st, problem }) => {
+      const p = settingProblem(st, this._draft.safety[st.key]);
+      problem.textContent = p;
+      if (p) blocking++;
+    });
+    const dirty = JSON.stringify(buildConfig(this._draft)) !== JSON.stringify(buildConfig(initialDraft(saved, [], [], this._settings).draft));
     if (this._saveBtn) {
-      this._saveBtn.disabled = blocking > 0 || this._saving || !dirty;
+      this._saveBtn.disabled = this._readOnly || blocking > 0 || this._saving || !dirty;
       this._saveBtn.textContent = this._saving ? "Saving…" : "Save";
     }
-    if (this._resetBtn) this._resetBtn.disabled = !dirty || this._saving;
+    if (this._resetBtn) this._resetBtn.disabled = this._readOnly || !dirty || this._saving;
   }
 
   _setBanner(kind, text) {
@@ -558,5 +613,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { parseSignNote, readout, instantProblem, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, CARD_VERSION };
+  module.exports = { parseSignNote, readout, instantProblem, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, CARD_VERSION };
 }
