@@ -2,6 +2,11 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.5.5 (beta)
+
+### Behaviour changes
+- New feature checkbox **Automatic cheap threshold** (on by default).
+
 ## 0.5.4 (beta)
 
 ### Behaviour changes
