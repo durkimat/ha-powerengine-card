@@ -4,8 +4,8 @@ The configuration page for [PowerEngine](https://github.com/durkimat/ha-powereng
 input mappings, feature switches and safety margins, edited with Home Assistant's
 own entity pickers and validated before saving.
 
-> **Status: early development (0.0.x).** The card currently only shows its version
-> and whether the app is detected.
+> **Status: early development (0.0.x).** Configures inputs, solar plants, features
+> and mode. PowerEngine itself is Passive-only in 0.0.x.
 
 ## Install
 
