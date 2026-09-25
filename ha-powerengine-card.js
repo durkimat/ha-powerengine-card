@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.5.3";
+const CARD_VERSION = "0.5.4";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -374,6 +374,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       button.primary { background: var(--primary-color); color: var(--text-primary-color, #fff); border: none; }
       button:disabled { opacity: .5; cursor: default; }
       .muted { color: var(--secondary-text-color); font-size: .85em; }
+      .suggest { font-size: .85em; color: var(--secondary-text-color); margin-top: 4px; }
       .tools { display: flex; gap: 12px; justify-content: flex-end; margin-bottom: 4px; }
       button.link { background: none; border: none; padding: 2px 0; color: var(--primary-color); cursor: pointer; font-size: .9em; }
       details.section { border: 1px solid var(--divider-color); border-radius: 8px; margin: 8px 0; }
@@ -491,8 +492,14 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     this._catalogue.groups.forEach((g) => {
       const inGroup = roles.filter((r) => r.group === g.key);
       if (!inGroup.length) return;
-      const note = g.key === "controls" ? "Mapped now so Passive mode can show exactly what it would set. PowerEngine never writes to these in Passive mode." : null;
+      const note = g.key === "controls" ? "Written only in Active mode. Mapped now so PowerEngine can count the writes your current setup makes (Health tab, EEPROM wear) and show what it would set." : null;
       const gbody = section(`inputs_${g.key}`, `Inputs: ${g.label}`, note);
+      const suggestable = inGroup.filter((r) => this._suggestion(r));
+      if (suggestable.length > 1 && !this._readOnly) {
+        gbody.append(el("div", { class: "row" }, el("button", { onclick: () => this._useSuggestions(suggestable) },
+          `Use all ${suggestable.length} suggested entities`),
+          el("span", { class: "muted" }, " (then check each and Save)")));
+      }
       if (g.key === "grid") {
         (this._settings.system || []).forEach((st) => {
           const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.system[st.key] = ev.target.checked; this._refresh(); } });
@@ -556,6 +563,18 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     return el("span", { class: "badge" }, `Needed for ${label}`);
   }
 
+  /** The pre-filled suggestion for an unmapped role (entity id), or "". */
+  _suggestion(role) {
+    const cur = this._draft.inputs[role.key];
+    if (cur && (cur.entity || cur.value !== undefined) || role.kind === "static") return "";
+    return suggestEntity(role, Object.keys(this._hass.states));
+  }
+
+  _useSuggestions(roles) {
+    roles.forEach((r) => { const id = this._suggestion(r); if (id) this._draft.inputs[r.key] = { entity: id }; });
+    this._build();                                        // redraw with the new values (open sections are kept)
+  }
+
   _roleRow(role) {
     const spec = () => this._draft.inputs[role.key];
     const set = (v) => { if (v) this._draft.inputs[role.key] = v; else delete this._draft.inputs[role.key]; this._refresh(); };
@@ -596,6 +615,11 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       ctl.append(el("label", {}, invertCb, " Invert"));
     }
     row.append(ctl);
+    const hint = this._suggestion(role);
+    if (hint && !this._readOnly) {
+      row.append(el("div", { class: "suggest" }, "Suggested: ",
+        el("button", { class: "link", onclick: () => this._useSuggestions([role]) }, hint)));
+    }
     let signNote = null;
     if (role.signed) {
       const w = parseSignNote(role.sign_note);

@@ -2,6 +2,13 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.5.4 (beta)
+
+### Behaviour changes
+- Unmapped inputs with a suggested entity now show **Suggested: <entity>** (click to use it), and a section with
+  several shows **Use all N suggested entities**. Previously suggestions were only pre-filled on a brand-new
+  config, so inputs added in later versions (like the Solis timed-slot controls) started empty.
+
 ## 0.5.3 (beta)
 
 ### Behaviour changes
