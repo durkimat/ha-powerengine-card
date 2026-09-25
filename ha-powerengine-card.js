@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.3.6";
+const CARD_VERSION = "0.3.7";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -395,7 +395,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     });
 
     // safety settings
-    content.append(el("h3", {}, "Safety and thresholds"));
+    content.append(el("h3", {}, "Safety, limits and thresholds"));
     this._settingRows = [];
     (this._settings.safety || []).forEach((st) => {
       const input = el("input", { type: "number", step: "any", min: st.min, max: st.max, value: this._draft.safety[st.key],
