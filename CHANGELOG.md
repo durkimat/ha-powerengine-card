@@ -2,6 +2,11 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.5.3 (beta)
+
+### Behaviour changes
+- Reads the settings list from the app's new `sensor.pe_map_settings` (app 0.5.3), falling back to the old location.
+
 ## 0.5.2 (beta)
 
 ### Behaviour changes
