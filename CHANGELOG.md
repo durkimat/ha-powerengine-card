@@ -2,6 +2,15 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.4.2 (beta)
+
+### Behaviour changes
+- The config page is split into collapsible sections: Operation and features; settings by topic (Battery and
+  charging, Supply limits, Axle events, Arbitrage); one section per input group; Solar plants.
+- Each section's header shows how many items need checking and how many are unsaved; sections with problems open
+  by themselves. *Expand all* / *Collapse all* at the top; which sections are open is remembered in this browser.
+- With an older app (no sections sent), all settings appear in one section.
+
 ## 0.4.1 (beta)
 
 ### Behaviour changes
