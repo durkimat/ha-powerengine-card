@@ -2,6 +2,13 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.5.13 (beta)
+
+### Behaviour changes
+- **New `custom:powerengine-test-card`** (Config tab): starts a supervised inverter test in the app (admins only;
+  the app refuses unless the handover guards are safe). Shows the status and each step.
+- Config card: note on the new *Handover guards* section.
+
 ## 0.5.12 (beta)
 
 ### Behaviour changes
