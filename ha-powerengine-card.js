@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.5.2";
+const CARD_VERSION = "0.5.3";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -312,7 +312,9 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     this._catalogue = cat.attributes;
     const mapping = s[MAPPING_SENSOR];
     this._saved = ((mapping && mapping.attributes) || {}).config || {};
-    this._settings = this._catalogue.settings || {};
+    // settings moved to their own sensor in app 0.5.3 (older apps sent them inside the catalogue)
+    const settingsSensor = s["sensor.pe_map_settings"];
+    this._settings = this._catalogue.settings || (settingsSensor && settingsSensor.attributes) || {};
     this._readOnly = !(this._hass.user && this._hass.user.is_admin);
     const { draft, fresh } = initialDraft(this._saved, this._catalogue.roles, Object.keys(s).sort(), this._settings);
     this._draft = draft;
