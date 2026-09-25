@@ -2,6 +2,11 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.0.3 (beta)
+
+### Behaviour changes
+- None. The card now shows whether the app is running, its version and operation mode, and warns if app and card versions differ.
+
 ## 0.0.2 (beta)
 
 ### Behaviour changes
