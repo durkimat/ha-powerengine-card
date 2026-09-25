@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.4.1";
+const CARD_VERSION = "0.4.2";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -348,6 +348,18 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       button.primary { background: var(--primary-color); color: var(--text-primary-color, #fff); border: none; }
       button:disabled { opacity: .5; cursor: default; }
       .muted { color: var(--secondary-text-color); font-size: .85em; }
+      .tools { display: flex; gap: 12px; justify-content: flex-end; margin-bottom: 4px; }
+      button.link { background: none; border: none; padding: 2px 0; color: var(--primary-color); cursor: pointer; font-size: .9em; }
+      details.section { border: 1px solid var(--divider-color); border-radius: 8px; margin: 8px 0; }
+      details.section > summary { cursor: pointer; padding: 10px 12px; display: flex; gap: 8px; align-items: baseline; list-style: none; }
+      details.section > summary::-webkit-details-marker { display: none; }
+      details.section > summary::before { content: "▸"; color: var(--secondary-text-color); transition: transform .15s; display: inline-block; }
+      details.section[open] > summary::before { transform: rotate(90deg); }
+      details.section > summary .title { font-weight: 500; font-size: 1.05em; }
+      details.section .count { margin-left: auto; font-size: .85em; color: var(--secondary-text-color); }
+      details.section .count.bad { color: var(--error-color); }
+      details.section > .body { padding: 0 12px 8px; }
+      h4 { margin: 8px 0 4px; }
     `);
   }
 
@@ -383,33 +395,51 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
         ? "Suggested entities have been pre-filled from your system. Check each live value below, then Save."
         : "Change any input, check its live value, then Save.");
 
+    // collapsible sections (open state kept across rebuilds and page loads)
+    this._sections = {};
+    const tools = el("div", { class: "tools" },
+      el("button", { class: "link", onclick: () => this._toggleAll(true) }, "Expand all"),
+      el("button", { class: "link", onclick: () => this._toggleAll(false) }, "Collapse all"));
+    content.append(tools);
+    const section = (key, title, note) => {
+      const count = el("span", { class: "count" });
+      const body = el("div", { class: "body" });
+      const d = el("details", { class: "section" }, el("summary", {}, el("span", { class: "title" }, title), count), body);
+      d.open = this._openSections().has(key);
+      d.addEventListener("toggle", () => this._rememberOpen(key, d.open));
+      if (note) body.append(el("div", { class: "desc" }, note));
+      this._sections[key] = { details: d, count, problems: 0, unsaved: 0 };
+      this._currentSection = key;
+      content.append(d);
+      return body;
+    };
+
     // operation + features
-    content.append(el("h3", {}, "Operation"));
+    let body = section("operation", "Operation and features");
+    body.append(el("h4", {}, "Operation"));
     const modeSel = el("select", { onchange: (ev) => { this._draft.operation.mode = ev.target.value; this._refresh(); } },
       el("option", { value: "passive" }, "Passive: monitor and simulate, never control"),
       el("option", { value: "active", disabled: true }, "Active: in control (not available in this build)"));
     modeSel.value = this._draft.operation.mode === "active" ? "active" : "passive";
-    content.append(el("div", { class: "row" }, el("div", { class: "ctl" }, modeSel)));
-    content.append(el("h3", {}, "Features"));
+    body.append(el("div", { class: "row" }, el("div", { class: "ctl" }, modeSel)));
+    body.append(el("h4", {}, "Features"));
     FEATURES.forEach(([key, label, desc, warning]) => {
       const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.features[key] = ev.target.checked; this._refresh(); } });
       cb.checked = !!this._draft.features[key];
-      content.append(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc),
+      body.append(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc),
         warning ? el("div", { class: "warning" }, `⚠ ${warning}`) : null));
     });
 
-    // safety settings
-    content.append(el("h3", {}, "Safety, limits and thresholds"));
+    // numeric settings, by section (older apps send no sections: one "Settings" section)
     this._settingRows = [];
-    (this._settings.safety || []).forEach((st) => {
-      const input = el("input", { type: "number", step: "any", min: st.min, max: st.max, value: this._draft.safety[st.key],
-        onchange: (ev) => { this._draft.safety[st.key] = ev.target.value; this._refresh(); } });
-      const problem = el("div", { class: "problem" });
-      this._settingRows.push({ st, problem });
-      content.append(el("div", { class: "row" },
-        el("div", { class: "head" }, el("span", { class: "label" }, st.label), el("span", { class: "badge" }, `default ${st.default}${st.unit ? " " + st.unit : ""}`)),
-        el("div", { class: "desc" }, st.help),
-        el("div", { class: "ctl" }, input, el("span", { class: "muted" }, st.unit || "")), problem));
+    const allSettings = this._settings.safety || [];
+    const groups = (this._settings.sections && this._settings.sections.length)
+      ? this._settings.sections.map((s) => ({ key: `settings_${s.key}`, label: s.label, items: allSettings.filter((x) => s.keys.includes(x.key)) }))
+      : [{ key: "settings", label: "Safety, limits and thresholds", items: allSettings }];
+    groups.forEach((g) => {
+      if (!g.items.length) return;
+      const sbody = section(g.key, g.label);
+      g.items.forEach((st) => sbody.append(this._settingRow(st)));
     });
 
     // inputs by group
@@ -417,18 +447,19 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     this._catalogue.groups.forEach((g) => {
       const inGroup = roles.filter((r) => r.group === g.key);
       if (!inGroup.length) return;
-      content.append(el("h3", {}, g.label));
-      if (g.key === "controls") content.append(el("div", { class: "desc" }, "Mapped now so Passive mode can show exactly what it would set. PowerEngine never writes to these in Passive mode."));
+      const note = g.key === "controls" ? "Mapped now so Passive mode can show exactly what it would set. PowerEngine never writes to these in Passive mode." : null;
+      const gbody = section(`inputs_${g.key}`, `Inputs: ${g.label}`, note);
       if (g.key === "grid") {
         (this._settings.system || []).forEach((st) => {
           const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.system[st.key] = ev.target.checked; this._refresh(); } });
           cb.checked = !!this._draft.system[st.key];
-          content.append(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, st.label)), el("div", { class: "desc" }, st.help)));
+          gbody.append(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, st.label)), el("div", { class: "desc" }, st.help)));
         });
       }
-      inGroup.forEach((role) => content.append(this._roleRow(role)));
-      if (g.key === "grid") content.append(this._plantsSection());
+      inGroup.forEach((role) => gbody.append(this._roleRow(role)));
+      if (g.key === "grid") section("plants", "Solar plants").append(this._plantsSection());
     });
+    this._currentSection = null;
 
     // actions
     this._saveBtn = el("button", { class: "primary", onclick: () => this._save() }, "Save");
@@ -437,10 +468,40 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
 
     root.append(this._style(), el("ha-card", { header: "PowerEngine configuration" }, content));
     if (this._readOnly) {
-      content.querySelectorAll("input, select, button").forEach((n) => { n.disabled = true; });
+      content.querySelectorAll("input, select, button:not(.link)").forEach((n) => { n.disabled = true; });
       this._pickers.forEach((pk) => { pk.disabled = true; });
     }
     this._refresh();
+    // open any section that needs attention
+    Object.values(this._sections).forEach((s) => { if (s.problems) s.details.open = true; });
+  }
+
+  _settingRow(st) {
+    const input = el("input", { type: "number", step: "any", min: st.min, max: st.max, value: this._draft.safety[st.key],
+      onchange: (ev) => { this._draft.safety[st.key] = ev.target.value; this._refresh(); } });
+    const problem = el("div", { class: "problem" });
+    this._settingRows.push({ st, problem, section: this._currentSection });
+    return el("div", { class: "row" },
+      el("div", { class: "head" }, el("span", { class: "label" }, st.label), el("span", { class: "badge" }, `default ${st.default}${st.unit ? " " + st.unit : ""}`)),
+      el("div", { class: "desc" }, st.help),
+      el("div", { class: "ctl" }, input, el("span", { class: "muted" }, st.unit || "")), problem);
+  }
+
+  _openSections() {
+    if (!this._open) {
+      try { this._open = new Set(JSON.parse(window.localStorage.getItem("powerengine-config-open") || "[]")); } catch (e) { this._open = new Set(); }
+    }
+    return this._open;
+  }
+
+  _rememberOpen(key, open) {
+    const s = this._openSections();
+    if (open) s.add(key); else s.delete(key);
+    try { window.localStorage.setItem("powerengine-config-open", JSON.stringify([...s])); } catch (e) { /* private mode */ }
+  }
+
+  _toggleAll(open) {
+    Object.entries(this._sections || {}).forEach(([key, s]) => { s.details.open = open; this._rememberOpen(key, open); });
   }
 
   _badge(role) {
@@ -498,7 +559,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const problem = el("div", { class: "problem" });
     const status = el("div", { class: "status" });
     row.append(live, problem, status);
-    this._rows.push({ role, spec, live, problem, status });
+    this._rows.push({ role, spec, live, problem, status, section: this._currentSection });
     return row;
   }
 
@@ -506,8 +567,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const wrap = el("div", {});
     const draw = () => {
       wrap.innerHTML = "";
-      wrap.append(el("h3", {}, "Solar plants"),
-        el("div", { class: "desc" }, "Every solar array PowerEngine should count. The main plant is the one on the hybrid inverter; add others as you install them."));
+      wrap.append(el("div", { class: "desc" }, "Every solar array PowerEngine should count. The main plant is the one on the hybrid inverter; add others as you install them."));
       this._draft.solar_plants.forEach((p, i) => {
         const box = el("div", { class: "plant" });
         const name = el("input", { type: "text", value: p.name || "", placeholder: "Name", onchange: (ev) => { p.name = ev.target.value; this._refresh(); } });
@@ -547,7 +607,10 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const saved = ((mapping && mapping.attributes) || {}).config || {};
     const savedInputs = saved.inputs || {};
     let blocking = 0;
-    this._rows.forEach(({ role, spec, live, problem, status }) => {
+    const secs = this._sections || {};
+    Object.values(secs).forEach((s) => { s.problems = 0; s.unsaved = 0; });
+    const tally = (key, field) => { if (key && secs[key]) secs[key][field]++; };
+    this._rows.forEach(({ role, spec, live, problem, status, section }) => {
       const s = spec();
       const st = s && s.entity ? states[s.entity] : null;
       const r = readout(role, s, st);
@@ -563,6 +626,8 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       if (!same) status.textContent = "Unsaved change";
       else if (c) { status.textContent = `PowerEngine check: ${c.message}`; if (c.status === "ok") status.className = "status ok"; }
       else status.textContent = "";
+      if (p || (c && same && c.status !== "ok" && c.status !== "unmapped")) tally(section, "problems");
+      if (!same) tally(section, "unsaved");
     });
     (this._draft.solar_plants || []).forEach((p) => {
       if (!p._live) return;
@@ -571,10 +636,20 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       const f = (x) => (x ? `${x.state} ${(x.attributes || {}).unit_of_measurement || ""}`.trim() : "not set");
       p._live.textContent = `Now: ${f(pw)} · today ${f(en)}`;
     });
-    (this._settingRows || []).forEach(({ st, problem }) => {
+    const savedSafety = saved.safety || {};
+    (this._settingRows || []).forEach(({ st, problem, section }) => {
       const p = settingProblem(st, this._draft.safety[st.key]);
       problem.textContent = p;
-      if (p) blocking++;
+      if (p) { blocking++; tally(section, "problems"); }
+      const was = savedSafety[st.key] !== undefined ? savedSafety[st.key] : st.default;
+      if (Number(this._draft.safety[st.key]) !== Number(was)) tally(section, "unsaved");
+    });
+    Object.values(secs).forEach((s) => {
+      const parts = [];
+      if (s.problems) parts.push(`${s.problems} to check`);
+      if (s.unsaved) parts.push(`${s.unsaved} unsaved`);
+      s.count.textContent = parts.join(" · ");
+      s.count.className = s.problems ? "count bad" : (s.unsaved ? "count" : "count");
     });
     const dirty = JSON.stringify(buildConfig(this._draft)) !== JSON.stringify(buildConfig(initialDraft(saved, [], [], this._settings).draft));
     if (this._saveBtn) {
