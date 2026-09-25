@@ -126,3 +126,15 @@ test("battery pair replaces the single battery power sensor", () => {
   assert.equal(effectiveRole(inRole, true).required, "yes");
   assert.equal(effectiveRole(inRole, false).required, "no");
 });
+
+test("notifications are saved only once a service is chosen", () => {
+  const { initialDraft, buildConfig } = require("../ha-powerengine-card.js");
+  const { draft } = initialDraft({ inputs: { a: { entity: "sensor.a" } } }, [], [], {});
+  assert.equal(draft.notifications.service, "");
+  assert.equal(draft.notifications.events.health, true);
+  assert.equal(draft.notifications.events.daily, false);
+  assert.equal(buildConfig(draft).notifications, undefined);
+  draft.notifications.service = "notify.mobile_app_pixel";
+  draft.notifications.events.daily = true;
+  assert.deepEqual(buildConfig(draft).notifications, { service: "notify.mobile_app_pixel", events: { health: true, inputs: true, axle: true, free_power: true, daily: true } });
+});

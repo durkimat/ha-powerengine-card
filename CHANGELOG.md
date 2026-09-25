@@ -2,6 +2,11 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.5.1 (beta)
+
+### Behaviour changes
+- New **Notifications** section on the config page: choose the phone's notify service (from those HA offers) and which notifications to send.
+
 ## 0.5.0 (beta)
 
 ### Behaviour changes

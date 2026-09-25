@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.5.0";
+const CARD_VERSION = "0.5.1";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -26,6 +26,13 @@ const FEATURES = [
     "Check your export tariff terms first: some only pay for exported solar, not energy bought from the grid."],
   ["axle", "Axle VPP events", "Force-discharge during Axle events and hold charge beforehand."],
   ["free_power_days", "Free-power sessions", "Make full use of EDF free-electricity sessions."],
+];
+const NOTIFY_EVENTS = [
+  ["health", "Health problems", "When the Health tab finds a problem (checked after start-up and each night).", true],
+  ["inputs", "Inputs not working", "When a required input has been unavailable or stale for 15 minutes.", true],
+  ["axle", "Axle events", "When an Axle event is scheduled, with its time.", true],
+  ["free_power", "Free-power sessions", "When a free-electricity session is announced.", true],
+  ["daily", "Daily summary", "Each morning at 08:00: yesterday's cost and savings.", false],
 ];
 const FEATURE_DEFAULTS = { fill_when_cheap: true, smart_charge_optimisation: true, arbitrage: false, axle: true, free_power_days: true };
 
@@ -192,6 +199,10 @@ function initialDraft(saved, roles, entityIds, settings) {
   draft.operation = Object.assign({ mode: "passive" }, draft.operation || {});
   draft.safety = Object.assign(settingDefaults(settings.safety), draft.safety || {});
   draft.system = Object.assign(settingDefaults(settings.system), draft.system || {});
+  const n = draft.notifications || {};
+  const events = {};
+  NOTIFY_EVENTS.forEach(([k, , , d]) => { events[k] = (n.events || {})[k] !== undefined ? !!n.events[k] : d; });
+  draft.notifications = { service: n.service || "", events };
   const fresh = !saved || !saved.inputs || !Object.keys(saved.inputs).length;
   if (fresh) {
     roles.forEach((r) => {
@@ -238,6 +249,9 @@ function buildConfig(draft) {
   Object.entries(draft.safety || {}).forEach(([k, v]) => { const n = toNumber(v); if (n !== null) safety[k] = n; });
   if (Object.keys(safety).length) out.safety = safety;
   if (draft.system && Object.keys(draft.system).length) out.system = Object.assign({}, draft.system);
+  if (draft.notifications && draft.notifications.service) {
+    out.notifications = { service: draft.notifications.service, events: Object.assign({}, draft.notifications.events) };
+  }
   if (draft.remove_entities) out.remove_entities = true;
   return out;
 }
@@ -438,6 +452,24 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       cb.checked = !!this._draft.features[key];
       body.append(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc),
         warning ? el("div", { class: "warning" }, `⚠ ${warning}`) : null));
+    });
+
+    // phone notifications
+    const nb = section("notifications", "Notifications",
+      "Sent to your phone through the Home Assistant companion app. Nothing is sent until you choose a notify service.");
+    const services = Object.keys((this._hass.services || {}).notify || {}).sort();
+    const svcSel = el("select", { onchange: (ev) => { this._draft.notifications.service = ev.target.value ? `notify.${ev.target.value}` : ""; this._refresh(); } },
+      el("option", { value: "" }, "Off (no notifications)"),
+      services.map((s) => el("option", { value: s }, s)));
+    const curSvc = (this._draft.notifications.service || "").replace(/^notify\./, "");
+    if (curSvc && !services.includes(curSvc)) svcSel.append(el("option", { value: curSvc }, `${curSvc} (not found)`));
+    svcSel.value = curSvc;
+    nb.append(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Send to")),
+      el("div", { class: "desc" }, "Your phone's notify service, usually notify.mobile_app_<phone name>."), el("div", { class: "ctl" }, svcSel)));
+    NOTIFY_EVENTS.forEach(([key, label, desc]) => {
+      const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.notifications.events[key] = ev.target.checked; this._refresh(); } });
+      cb.checked = !!this._draft.notifications.events[key];
+      nb.append(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc)));
     });
 
     // numeric settings, by section (older apps send no sections: one "Settings" section)
