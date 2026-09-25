@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.5.4";
+const CARD_VERSION = "0.5.5";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -20,6 +20,7 @@ const MAIN_PLANT_SUGGEST = {
   energy_today: [/^sensor\.solis_power_generation_today$/],
 };
 const FEATURES = [
+  ["auto_cheap_threshold", "Automatic cheap threshold", "Work out what counts as cheap from the prices ahead (the bottom fifth of the range, and only if storing it pays), capped by the Cheap import threshold setting."],
   ["fill_when_cheap", "Top up when cheap", "Charge to the grid-charge target in every cheap slot, not just what the forecast needs. A buffer in case the forecast is wrong."],
   ["smart_charge_optimisation", "Smart-charge optimisation", "Request EDF smart-charge slots dynamically (replaces the fixed daily triggers)."],
   ["arbitrage", "Energy arbitrage", "Buy cheap and sell back when the spread is worth it (not built yet: turning it on has no effect).",
@@ -34,7 +35,7 @@ const NOTIFY_EVENTS = [
   ["free_power", "Free-power sessions", "When a free-electricity session is announced.", true],
   ["daily", "Daily summary", "Each morning at 08:00: yesterday's cost and savings.", false],
 ];
-const FEATURE_DEFAULTS = { fill_when_cheap: true, smart_charge_optimisation: true, arbitrage: false, axle: true, free_power_days: true };
+const FEATURE_DEFAULTS = { auto_cheap_threshold: true, fill_when_cheap: true, smart_charge_optimisation: true, arbitrage: false, axle: true, free_power_days: true };
 
 /* ------------------------------------------------------------------ helpers
  * Pure functions (no DOM), exported for tests at the bottom of the file.
