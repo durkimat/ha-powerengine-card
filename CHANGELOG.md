@@ -2,6 +2,11 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.3.7 (beta)
+
+### Behaviour changes
+- None. The settings section is now headed "Safety, limits and thresholds" (it now holds the main fuse and car charger settings).
+
 ## 0.3.6 (beta)
 
 ### Behaviour changes
