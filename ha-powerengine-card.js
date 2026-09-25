@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.5.12";
+const CARD_VERSION = "0.5.13";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -493,7 +493,9 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     this._catalogue.groups.forEach((g) => {
       const inGroup = roles.filter((r) => r.group === g.key);
       if (!inGroup.length) return;
-      const note = g.key === "controls" ? "Written only in Active mode. Mapped now so PowerEngine can count the writes your current setup makes (Health tab, EEPROM wear) and show what it would set." : null;
+      const note = g.key === "controls" ? "Written only in Active mode. Mapped now so PowerEngine can count the writes your current setup makes (Health tab, EEPROM wear) and show what it would set."
+        : g.key === "handover" ? "Read only. Active mode and supervised tests are refused unless every guard mapped here is in its safe state, so nothing else is writing to the inverter at the same time. Map at least one."
+        : null;
       const gbody = section(`inputs_${g.key}`, `Inputs: ${g.label}`, note);
       const suggestable = inGroup.filter((r) => this._suggestion(r));
       if (suggestable.length > 1 && !this._readOnly) {
@@ -846,6 +848,132 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-to
   window.customCards.push({ type: "powerengine-toggle-card", name: "PowerEngine toggle", description: "A discreet title + switch row." });
 }
 
+// --- Supervised test writes -------------------------------------------------------------------------------
+// Admin only (HA only lets admins fire events). Writes one action's settings to the inverter for a few
+// minutes, reads them back, then returns the inverter to Self-Use. The app refuses unless the handover guards
+// are safe and PowerEngine isn't in control.
+const TEST_EVENT = "pe_test_write";
+const TEST_ENTITY = "sensor.pe_diag_test_write";
+const TEST_ACTIONS = [
+  ["hold", "Hold (0 A charge window)"],
+  ["charge", "Grid charge"],
+  ["discharge", "Force discharge"],
+  ["self_use", "Self-Use (windows closed)"],
+];
+
+function testSummary(st) {
+  if (!st || ["unknown", "unavailable"].includes(st.state)) return { status: "idle", problems: [], lines: [] };
+  const a = st.attributes || {};
+  const lines = (a.steps || []).map((s) => {
+    const t = (s.time || "").slice(11, 19);
+    const bits = [];
+    if (s.ok === true) bits.push("OK");
+    if (s.ok === false) bits.push("MISMATCH: " + (s.mismatched || []).join(", "));
+    if (s.writes) bits.push(`${s.writes.length} write${s.writes.length === 1 ? "" : "s"}`);
+    if (s.soc !== undefined && s.soc !== null) bits.push(`SoC ${Math.round(s.soc)}%`);
+    if (s.battery_w !== undefined && s.battery_w !== null) bits.push(`battery ${Math.round(s.battery_w)} W`);
+    return `${t} ${s.what}${bits.length ? ": " + bits.join(", ") : ""}`;
+  });
+  return { status: st.state, action: a.action, minutes: a.minutes, problems: a.problems || [], lines };
+}
+
+class PowerEngineTestCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
+  setConfig(config) {
+    this._config = config || {};
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+
+  getCardSize() { return 4; }
+
+  async _fire(data) {
+    try {
+      await this._hass.callWS({ type: "fire_event", event_type: TEST_EVENT, event_data: data });
+      this._msg = "";
+    } catch (err) {
+      this._msg = "Could not start: " + ((err && err.message) || err) + " (admin users only)";
+    }
+    this._render();
+  }
+
+  _render() {
+    if (!this.shadowRoot) return;
+    if (!this._built) {
+      this.shadowRoot.innerHTML = `
+        <style>
+          ha-card { padding: 16px; }
+          h2 { margin: 0 0 8px; font-size: 1.2em; font-weight: 500; }
+          p { margin: 4px 0 10px; color: var(--secondary-text-color); }
+          .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+          select, input { font: inherit; padding: 4px 6px; }
+          input[type=number] { width: 6em; }
+          button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--divider-color);
+                   background: var(--primary-color); color: var(--text-primary-color, #fff); cursor: pointer; }
+          button.stop { background: var(--error-color, #db4437); }
+          button:disabled { opacity: .5; cursor: default; }
+          .status { font-weight: 500; }
+          .passed { color: var(--success-color, #43a047); }
+          .failed, .refused { color: var(--error-color, #db4437); }
+          pre { background: var(--secondary-background-color); padding: 8px; border-radius: 6px; overflow-x: auto;
+                font-size: .85em; margin: 8px 0 0; white-space: pre-wrap; }
+          .msg { color: var(--error-color, #db4437); }
+        </style>
+        <ha-card>
+          <h2>Supervised inverter test</h2>
+          <p>Writes one action to the inverter for a few minutes while you watch, reads the settings back, then
+             returns the inverter to Self-Use. Needs the handover guards to be safe (Predbat read-only, legacy
+             automations off) and PowerEngine not in control. Watch the inverter and battery power while it runs.</p>
+          <div class="row">
+            <select class="action">${TEST_ACTIONS.map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}</select>
+            <label>Minutes <input class="minutes" type="number" min="1" max="10" value="5"></label>
+            <label>Power (W) <input class="power" type="number" min="100" max="6000" step="100" placeholder="max"></label>
+          </div>
+          <div class="row">
+            <label><input class="confirm" type="checkbox"> I'm watching and other control is handed over</label>
+          </div>
+          <div class="row">
+            <button class="start">Start test</button>
+            <button class="stop">Stop and revert</button>
+            <span class="msg"></span>
+          </div>
+          <div class="row"><span>Status:</span><span class="status"></span></div>
+          <pre class="log"></pre>
+        </ha-card>`;
+      const q = (sel) => this.shadowRoot.querySelector(sel);
+      q(".start").addEventListener("click", () => {
+        const data = { action: q(".action").value, minutes: Number(q(".minutes").value), confirm: q(".confirm").checked };
+        const power = q(".power").value;
+        if (power) data.power_w = Number(power);
+        this._fire(data);
+        q(".confirm").checked = false;
+      });
+      q(".stop").addEventListener("click", () => this._fire({ action: "stop" }));
+      q(".confirm").addEventListener("change", () => this._render());
+      this._built = true;
+    }
+    const q = (sel) => this.shadowRoot.querySelector(sel);
+    const sum = testSummary(this._hass && this._hass.states[TEST_ENTITY]);
+    const running = sum.status === "running" || sum.status === "reverting";
+    q(".status").textContent = sum.status + (sum.action && sum.status !== "idle" ? ` (${sum.action}${sum.minutes ? ", " + sum.minutes + " min" : ""})` : "");
+    q(".status").className = "status " + sum.status;
+    q(".log").textContent = [...sum.problems.map((p) => "Problem: " + p), ...sum.lines].join("\n") || "No test run yet.";
+    q(".start").disabled = running || !q(".confirm").checked;
+    q(".stop").disabled = !running;
+    q(".msg").textContent = this._msg || "";
+  }
+}
+
+if (typeof customElements !== "undefined" && !customElements.get("powerengine-test-card")) {
+  customElements.define("powerengine-test-card", PowerEngineTestCard);
+  window.customCards = window.customCards || [];
+  window.customCards.push({ type: "powerengine-test-card", name: "PowerEngine supervised test", description: "Run a short, supervised inverter write test." });
+}
+
 if (typeof customElements !== "undefined" && !customElements.get("powerengine-config-card")) {
   customElements.define("powerengine-config-card", PowerEngineConfigCard);
   window.customCards = window.customCards || [];
@@ -858,5 +986,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, CARD_VERSION };
+  module.exports = { parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, CARD_VERSION };
 }

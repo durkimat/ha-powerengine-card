@@ -138,3 +138,17 @@ test("notifications are saved only once a service is chosen", () => {
   draft.notifications.events.daily = true;
   assert.deepEqual(buildConfig(draft).notifications, { service: "notify.mobile_app_pixel", events: { health: true, inputs: true, axle: true, free_power: true, daily: true } });
 });
+
+test("testSummary: idle when the sensor has never been set", () => {
+  assert.equal(h.testSummary(undefined).status, "idle");
+  assert.deepEqual(h.testSummary(undefined).problems, []);
+  assert.equal(h.testSummary({ state: "unknown", attributes: {} }).status, "idle");
+});
+
+test("testSummary: steps become readable lines", () => {
+  const s = h.testSummary({ state: "failed", attributes: { action: "charge", minutes: 3, problems: ["start: timed_charge_current did not read back"],
+    steps: [{ time: "2026-09-25T10:00:00+00:00", what: "wrote", writes: [{}, {}, {}] },
+            { time: "2026-09-25T10:00:10+00:00", what: "read back (start)", ok: false, mismatched: ["timed_charge_current"], soc: 54.6, battery_w: -2100 }] } });
+  assert.equal(s.status, "failed");
+  assert.deepEqual(s.lines, ["10:00:00 wrote: 3 writes", "10:00:10 read back (start): MISMATCH: timed_charge_current, SoC 55%, battery -2100 W"]);
+});
