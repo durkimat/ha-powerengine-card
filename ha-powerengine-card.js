@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.4.11";
+const CARD_VERSION = "0.4.12";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -704,6 +704,87 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       this._refresh();
     }
   }
+}
+
+/* ------------------------------------------------------------ toggle card
+ * A small, discreet header row for PowerEngine dashboards: an optional title on the left and a compact switch
+ * on the right. No card box. Used for the Costs tab's number alignment.
+ *   type: custom:powerengine-toggle-card
+ *   title: Costs
+ *   entity: switch.pe_ui_right_align
+ *   name: Alignment
+ *   icon_on: mdi:format-align-right     (optional)
+ *   icon_off: mdi:format-align-left     (optional)
+ */
+class PowerEngineToggleCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
+  setConfig(config) {
+    if (!config || !config.entity) throw new Error("entity is required");
+    this._config = config;
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+
+  getCardSize() { return 1; }
+
+  getGridOptions() { return { columns: "full", rows: 1, min_rows: 1 }; }
+
+  _render() {
+    if (!this.shadowRoot || !this._config) return;
+    const c = this._config;
+    const st = this._hass && this._hass.states[c.entity];
+    const on = !!st && st.state === "on";
+    const icon = on ? (c.icon_on || "mdi:format-align-right") : (c.icon_off || "mdi:format-align-left");
+    if (!this._built) {
+      this.shadowRoot.innerHTML = `
+        <style>
+          :host { display: block; }
+          .bar { display: flex; align-items: center; justify-content: space-between; min-height: 40px; }
+          .title { font-size: var(--ha-font-size-xl, 1.3em); color: var(--primary-text-color); }
+          .ctl { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px 2px 8px; border-radius: 16px;
+                 color: var(--secondary-text-color); font-size: .9em; cursor: pointer; user-select: none; }
+          .ctl:hover { background: var(--secondary-background-color); }
+          ha-icon { --mdc-icon-size: 18px; }
+          .sw { position: relative; width: 30px; height: 16px; border-radius: 8px; background: var(--disabled-color, #bdbdbd);
+                transition: background .15s; flex: none; }
+          .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%;
+                       background: #fff; transition: left .15s; }
+          .sw.on { background: var(--primary-color); }
+          .sw.on::after { left: 16px; }
+        </style>
+        <div class="bar"><span class="title"></span>
+          <span class="ctl" role="switch" tabindex="0"><ha-icon></ha-icon><span class="name"></span><span class="sw"></span></span>
+        </div>`;
+      const ctl = this.shadowRoot.querySelector(".ctl");
+      const toggle = () => {
+        if (!this._hass) return;
+        const cur = this._hass.states[this._config.entity];
+        const svc = cur && cur.state === "on" ? "turn_off" : "turn_on";
+        this._hass.callService(this._config.entity.split(".")[0], svc, { entity_id: this._config.entity });
+      };
+      ctl.addEventListener("click", toggle);
+      ctl.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); } });
+      this._built = true;
+    }
+    this.shadowRoot.querySelector(".title").textContent = c.title || "";
+    this.shadowRoot.querySelector(".name").textContent = c.name || "";
+    this.shadowRoot.querySelector("ha-icon").setAttribute("icon", icon);
+    const sw = this.shadowRoot.querySelector(".sw");
+    sw.className = on ? "sw on" : "sw";
+    const ctl = this.shadowRoot.querySelector(".ctl");
+    ctl.setAttribute("aria-checked", on ? "true" : "false");
+    ctl.title = st ? `${c.name || c.entity}: ${on ? "on" : "off"}` : `${c.entity} not found`;
+  }
+}
+
+if (typeof customElements !== "undefined" && !customElements.get("powerengine-toggle-card")) {
+  customElements.define("powerengine-toggle-card", PowerEngineToggleCard);
+  window.customCards = window.customCards || [];
+  window.customCards.push({ type: "powerengine-toggle-card", name: "PowerEngine toggle", description: "A discreet title + switch row." });
 }
 
 if (typeof customElements !== "undefined" && !customElements.get("powerengine-config-card")) {

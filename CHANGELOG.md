@@ -2,6 +2,12 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.4.12 (beta)
+
+### Behaviour changes
+- New `custom:powerengine-toggle-card`: a discreet row with an optional title on the left and a small switch
+  (icon, name, slider) on the right; no card box. Used by the app's Costs tab for number alignment.
+
 ## 0.4.11 (beta)
 
 ### Behaviour changes
