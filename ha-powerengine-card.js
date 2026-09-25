@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.5.13";
+const CARD_VERSION = "0.5.14";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -445,11 +445,17 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     // operation + features
     let body = section("operation", "Operation and features");
     body.append(el("h4", {}, "Operation"));
-    const modeSel = el("select", { onchange: (ev) => { this._draft.operation.mode = ev.target.value; this._refresh(); } },
+    const activeWarn = el("div", { class: "warning" }, "⚠ In Active mode PowerEngine writes the inverter's timed charge/discharge settings (and, with smart-charge optimisation on, asks EDF for slots). It stays Passive until every handover guard is safe. Pause it any time from the Monitoring tab.");
+    const modeSel = el("select", { onchange: (ev) => {
+      this._draft.operation.mode = ev.target.value;
+      activeWarn.style.display = ev.target.value === "active" ? "" : "none";
+      this._refresh();
+    } },
       el("option", { value: "passive" }, "Passive: monitor and simulate, never control"),
-      el("option", { value: "active", disabled: true }, "Active: in control (not available in this build)"));
+      el("option", { value: "active" }, "Active: PowerEngine controls the inverter"));
     modeSel.value = this._draft.operation.mode === "active" ? "active" : "passive";
-    body.append(el("div", { class: "row" }, el("div", { class: "ctl" }, modeSel)));
+    activeWarn.style.display = modeSel.value === "active" ? "" : "none";
+    body.append(el("div", { class: "row" }, el("div", { class: "ctl" }, modeSel), activeWarn));
     body.append(el("h4", {}, "Features"));
     FEATURES.forEach(([key, label, desc, warning]) => {
       const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.features[key] = ev.target.checked; this._refresh(); } });

@@ -2,6 +2,11 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.5.14 (beta)
+
+### Behaviour changes
+- **Active can be chosen** under Operation on the config card, with a warning of what it does.
+
 ## 0.5.13 (beta)
 
 ### Behaviour changes
