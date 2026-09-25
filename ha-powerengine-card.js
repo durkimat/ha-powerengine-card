@@ -4,7 +4,7 @@
  * v0.0.x is a scaffold: it shows the card version and whether the PowerEngine
  * app is publishing its config sensor. Editing arrives in later releases.
  */
-const CARD_VERSION = "0.0.1";
+const CARD_VERSION = "0.0.2";
 const CONFIG_SENSOR = "sensor.pe_map_config";
 
 class PowerEngineConfigCard extends HTMLElement {
