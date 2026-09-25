@@ -116,3 +116,13 @@ test("settings defaults, validation and saving", () => {
   assert.strictEqual(out.safety.min_reserve_soc, 15);
   assert.strictEqual(out.system.house_load_includes_ev, true);
 });
+
+test("battery pair replaces the single battery power sensor", () => {
+  const { effectiveRole } = require("../ha-powerengine-card.js");
+  const single = { key: "battery_power", required: "yes" };
+  const inRole = { key: "battery_charge_power", required: "no" };
+  assert.equal(effectiveRole(single, false).required, "yes");
+  assert.equal(effectiveRole(single, true).required, "unused");
+  assert.equal(effectiveRole(inRole, true).required, "yes");
+  assert.equal(effectiveRole(inRole, false).required, "no");
+});

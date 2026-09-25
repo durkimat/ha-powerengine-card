@@ -2,6 +2,12 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.4.7 (beta)
+
+### Behaviour changes
+- With Battery charging power and Battery discharging power both mapped, Battery power shows **Not used** (no
+  sign note, no Invert, no live readout or problems) and the pair show **Required**.
+
 ## 0.4.6 (beta)
 
 ### Behaviour changes

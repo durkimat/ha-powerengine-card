@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.4.6";
+const CARD_VERSION = "0.4.7";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -131,6 +131,16 @@ const UNITS = {
 };
 
 /** Instant client-side problem for an input, or "" if it looks fine. */
+const BATTERY_PAIR = ["battery_charge_power", "battery_discharge_power"];
+
+/** A role as it applies now: with the battery pair mapped, the single sensor is unused and the pair is required. */
+function effectiveRole(role, pairMapped) {
+  if (!pairMapped) return role;
+  if (role.key === "battery_power") return Object.assign({}, role, { required: "unused" });
+  if (BATTERY_PAIR.includes(role.key)) return Object.assign({}, role, { required: "yes" });
+  return role;
+}
+
 function instantProblem(role, spec, stateObj) {
   if (!spec) return role.required === "yes" ? "Required" : "";
   if (spec.value !== undefined) {
@@ -516,7 +526,8 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const spec = () => this._draft.inputs[role.key];
     const set = (v) => { if (v) this._draft.inputs[role.key] = v; else delete this._draft.inputs[role.key]; this._refresh(); };
     const row = el("div", { class: "row" });
-    row.append(el("div", { class: "head" }, el("span", { class: "label" }, role.label), this._badge(role)));
+    const badgeBox = el("span", {}, this._badge(role));
+    row.append(el("div", { class: "head" }, el("span", { class: "label" }, role.label), badgeBox));
     row.append(el("div", { class: "desc" }, role.description));
     const ctl = el("div", { class: "ctl" });
     const cur = spec() || {};
@@ -551,15 +562,17 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       ctl.append(el("label", {}, invertCb, " Invert"));
     }
     row.append(ctl);
+    let signNote = null;
     if (role.signed) {
       const w = parseSignNote(role.sign_note);
-      row.append(el("div", { class: "sign" }, `PowerEngine expects: + = ${w.pos}, − = ${w.neg}. Tick Invert if your entity reports it the other way round.`));
+      signNote = el("div", { class: "sign" }, `PowerEngine expects: + = ${w.pos}, − = ${w.neg}. Tick Invert if your entity reports it the other way round.`);
+      row.append(signNote);
     }
     const live = el("div", { class: "live" });
     const problem = el("div", { class: "problem" });
     const status = el("div", { class: "status" });
     row.append(live, problem, status);
-    this._rows.push({ role, spec, live, problem, status, section: this._currentSection });
+    this._rows.push({ role, spec, live, problem, status, section: this._currentSection, badgeBox, signNote, invertCb });
     return row;
   }
 
@@ -610,8 +623,21 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const secs = this._sections || {};
     Object.values(secs).forEach((s) => { s.problems = 0; s.unsaved = 0; });
     const tally = (key, field) => { if (key && secs[key]) secs[key][field]++; };
-    this._rows.forEach(({ role, spec, live, problem, status, section }) => {
+    // separate charging/discharging sensors replace an unsigned battery power sensor (and become required)
+    const pair = BATTERY_PAIR.every((k) => (this._draft.inputs[k] || {}).entity);
+    this._rows.forEach(({ role: baseRole, spec, live, problem, status, section, badgeBox, signNote, invertCb }) => {
       const s = spec();
+      const role = effectiveRole(baseRole, pair);
+      const unused = role.required === "unused";
+      badgeBox.replaceChildren(unused ? el("span", { class: "badge" }, "Not used") : this._badge(role));
+      if (signNote) signNote.style.display = unused ? "none" : "";
+      if (invertCb) invertCb.parentElement.style.display = unused ? "none" : "";
+      if (unused) {
+        live.textContent = "Not used: Battery charging power and Battery discharging power are mapped, so PowerEngine uses those.";
+        problem.textContent = "";
+        status.textContent = "";
+        return;
+      }
       const st = s && s.entity ? states[s.entity] : null;
       const r = readout(role, s, st);
       live.textContent = "";
@@ -692,5 +718,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { parseSignNote, readout, instantProblem, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, CARD_VERSION };
+  module.exports = { parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, CARD_VERSION };
 }
