@@ -226,3 +226,10 @@ test("handoverRows: a missing Predbat switch is not live", () => {
   assert.match(r.rows[0].note, /doesn't have this entity/);
   assert.equal(r.status, "not_live");
 });
+
+test("measuredText for learned rates", () => {
+  assert.equal(h.measuredText({ states: {} }, "battery_max_charge_power"), "(not measured yet)");
+  const hass = { states: { "sensor.pe_diag_learned": { state: "1 learned", attributes: { raw: { max_charge_kw: 4.2, max_discharge_kw: null } } } } };
+  assert.equal(h.measuredText(hass, "battery_max_charge_power"), "(4.20 kW measured)");
+  assert.equal(h.measuredText(hass, "battery_max_discharge_power"), "(not measured yet)");
+});
