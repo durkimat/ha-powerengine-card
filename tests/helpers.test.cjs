@@ -152,3 +152,16 @@ test("testSummary: steps become readable lines", () => {
   assert.equal(s.status, "failed");
   assert.deepEqual(s.lines, ["10:00:00 wrote: 3 writes", "10:00:10 read back (start): MISMATCH: timed_charge_current, SoC 55%, battery -2100 W"]);
 });
+
+test("buildConfig keeps use_measured on a fixed value", () => {
+  const cfg = h.buildConfig({ inputs: { battery_capacity: { value: "18", use_measured: false } }, solar_plants: [], features: {}, operation: {} });
+  assert.deepEqual(cfg.inputs.battery_capacity, { value: 18, use_measured: false });
+  const cfg2 = h.buildConfig({ inputs: { battery_capacity: { value: 18 } }, solar_plants: [], features: {}, operation: {} });
+  assert.deepEqual(cfg2.inputs.battery_capacity, { value: 18 });
+});
+
+test("measuredText", () => {
+  assert.equal(h.measuredText({ states: {} }, "battery_capacity"), "(not measured yet)");
+  const hass = { states: { "sensor.pe_diag_battery_capacity": { state: "18.084", attributes: { measured: true, unit_of_measurement: "kWh" } } } };
+  assert.equal(h.measuredText(hass, "battery_capacity"), "(18.08 kWh measured)");
+});

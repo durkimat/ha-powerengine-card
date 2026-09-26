@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.5.15";
+const CARD_VERSION = "0.5.16";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -234,12 +234,23 @@ function slugify(name, taken) {
   return id;
 }
 
+/** "(18.08 kWh measured)" / "(not measured yet)" for a measurable input, from PowerEngine's diagnostic sensor. */
+function measuredText(hass, key) {
+  const eid = { battery_capacity: "sensor.pe_diag_battery_capacity" }[key];
+  const st = hass && eid && hass.states[eid];
+  if (!st || !st.attributes || !st.attributes.measured) return "(not measured yet)";
+  return `(${Number(st.state).toFixed(2)} ${st.attributes.unit_of_measurement || "kWh"} measured)`;
+}
+
 /** The config object to save: drop empty inputs, keep everything else. */
 function buildConfig(draft) {
   const inputs = {};
   Object.entries(draft.inputs || {}).forEach(([k, spec]) => {
     if (!spec) return;
-    if (spec.value !== undefined && spec.value !== "") inputs[k] = { value: toNumber(spec.value) ?? spec.value };
+    if (spec.value !== undefined && spec.value !== "") {
+      inputs[k] = { value: toNumber(spec.value) ?? spec.value };
+      if (typeof spec.use_measured === "boolean") inputs[k].use_measured = spec.use_measured;
+    }
     else if (spec.entity) inputs[k] = spec.invert ? { entity: spec.entity, invert: true } : { entity: spec.entity };
   });
   const plants = (draft.solar_plants || []).filter((p) => p.power && p.power.entity && p.energy_today && p.energy_today.entity)
@@ -595,7 +606,10 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const cur = spec() || {};
     const isStatic = role.kind === "static" || (role.static_ok && cur.value !== undefined);
 
-    const staticInput = el("input", { type: "number", step: "any", value: cur.value !== undefined ? cur.value : "", onchange: (ev) => set(ev.target.value === "" ? null : { value: ev.target.value }) });
+    const staticInput = el("input", { type: "number", step: "any", value: cur.value !== undefined ? cur.value : "", onchange: (ev) => {
+      const prev = spec() || {};
+      set(ev.target.value === "" ? null : Object.assign({ value: ev.target.value }, typeof prev.use_measured === "boolean" ? { use_measured: prev.use_measured } : {}));
+    } });
     const unit = el("span", { class: "muted" }, role.static_unit || "");
     const entityBox = el("span", { style: "display:contents" }, this._entityInput(cur.entity, role.domains || ["sensor"], (v) => {
       const prev = spec() || {};
@@ -615,6 +629,17 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       showMode(modeSel.value);
     } else {
       ctl.append(entityBox);
+    }
+
+    if (role.measurable) {
+      // PowerEngine measures this (e.g. usable capacity); ticked = use the measured figure once there is one
+      const cb = el("input", { type: "checkbox", onchange: (ev) => {
+        const s = spec();
+        if (s && s.value !== undefined) { s.use_measured = ev.target.checked; this._refresh(); }
+      } });
+      cb.checked = cur.use_measured !== false;
+      ctl.append(el("label", { title: "Once PowerEngine has measured it (Health tab), use the measured figure instead of this one" }, cb, " Use measured ",
+        el("span", { class: "muted" }, measuredText(this._hass, role.key))));
     }
 
     let invertCb = null;
@@ -992,5 +1017,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, CARD_VERSION };
+  module.exports = { parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, measuredText, CARD_VERSION };
 }

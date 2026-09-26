@@ -2,6 +2,11 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.5.16 (beta)
+
+### Behaviour changes
+- **Use measured** tick box next to *Usable battery capacity*, with the measured figure when there is one.
+
 ## 0.5.15 (beta)
 
 ### Behaviour changes
