@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.8.4";
+const CARD_VERSION = "0.8.5";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -1184,8 +1184,14 @@ function handoverRows(states, cfg) {
   const known = (v) => !["missing", "unknown", "unavailable"].includes(v);
 
   const ro = val(c.read_only);
-  add("Predbat read-only", toPE ? "on" : "off", ro, known(ro) ? ro === (toPE ? "on" : "off") : null,
+  if (!known(ro) && toPE) {
+    // Predbat isn't connected to HA, so it can't be controlling the inverter: PowerEngine counts this as safe
+    add("Predbat read-only", "on", ro, true, "Predbat isn't connected to Home Assistant right now, so it can't be " +
+      "controlling the inverter; PowerEngine carries on. Restart the Predbat add-on to bring it back.");
+  } else {
+    add("Predbat read-only", toPE ? "on" : "off", ro, known(ro) ? ro === (toPE ? "on" : "off") : null,
       known(ro) ? "" : "Home Assistant doesn't have this entity right now (Predbat not running, or still starting).");
+  }
 
   const on = c.legacy.filter((id) => val(id) === "on");
   const found = c.legacy.filter((id) => st(id));

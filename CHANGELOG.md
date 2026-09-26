@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.8.5
+
+- Battery controller panel: with PowerEngine selected, a missing Predbat read-only switch (Predbat not connected) is shown as safe, with a note, instead of *not fully live*.
+
 ## 0.8.4
 
 - No card changes; version kept in step with the app.

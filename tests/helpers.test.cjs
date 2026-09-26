@@ -266,3 +266,13 @@ test("matchesSearch", () => {
   assert.ok(!h.matchesSearch("Main supply fuse", "clock"));
   assert.ok(h.matchesSearch("anything", "  "));
 });
+
+test("handoverRows: Predbat missing is safe under PowerEngine", () => {
+  const r = h.handoverRows({
+    "input_select.battery_controller": hs("PowerEngine"),
+    "switch.pe_ctl_pause": hs("off"), "sensor.pe_state_operation_mode": hs("active"),
+    "automation.charge_house_battery_on": hs("off") });
+  assert.equal(r.rows[0].ok, true);
+  assert.match(r.rows[0].note, /isn't connected/);
+  assert.equal(r.status, "live");
+});
