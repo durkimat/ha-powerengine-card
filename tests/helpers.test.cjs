@@ -127,16 +127,19 @@ test("battery pair replaces the single battery power sensor", () => {
   assert.equal(effectiveRole(inRole, false).required, "no");
 });
 
-test("notifications are saved only once a service is chosen", () => {
+test("notifications default to HA's notification area; off and phone are saved", () => {
   const { initialDraft, buildConfig } = require("../ha-powerengine-card.js");
   const { draft } = initialDraft({ inputs: { a: { entity: "sensor.a" } } }, [], [], {});
-  assert.equal(draft.notifications.service, "");
+  assert.equal(draft.notifications.service, "persistent_notification");
   assert.equal(draft.notifications.events.health, true);
   assert.equal(draft.notifications.events.daily, false);
-  assert.equal(buildConfig(draft).notifications, undefined);
+  assert.equal(buildConfig(draft).notifications.service, "persistent_notification");
   draft.notifications.service = "notify.mobile_app_pixel";
   draft.notifications.events.daily = true;
   assert.deepEqual(buildConfig(draft).notifications, { service: "notify.mobile_app_pixel", events: { health: true, inputs: true, axle: true, free_power: true, daily: true, simulator: true } });
+  const off = initialDraft({ inputs: {}, notifications: { service: "" } }, [], [], {}).draft;
+  assert.equal(off.notifications.service, "off");
+  assert.equal(buildConfig(off).notifications.service, "off");
 });
 
 test("testSummary: idle when the sensor has never been set", () => {

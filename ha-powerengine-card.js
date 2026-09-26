@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.8.8";
+const CARD_VERSION = "0.8.9";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -306,7 +306,8 @@ function initialDraft(saved, roles, entityIds, settings) {
   const n = draft.notifications || {};
   const events = {};
   NOTIFY_EVENTS.forEach(([k, , , d]) => { events[k] = (n.events || {})[k] !== undefined ? !!n.events[k] : d; });
-  draft.notifications = { service: n.service || "", events };
+  // no choice saved yet: HA's notification area (the app's default); "off" = none
+  draft.notifications = { service: n.service === undefined ? "persistent_notification" : (n.service || "off"), events };
   const fresh = !saved || !saved.inputs || !Object.keys(saved.inputs).length;
   if (fresh) {
     roles.forEach((r) => {
@@ -702,19 +703,20 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       }
     });
 
-    // phone notifications
+    // notifications: HA's notification area (default), a phone, or off
     const nb = section("notifications", "Notifications",
-      "Sent to your phone through the Home Assistant companion app. Nothing is sent until you choose a notify service.");
+      "Shown in Home Assistant's notification area (the bell) by default, or sent to your phone through the companion app.");
     const services = Object.keys((this._hass.services || {}).notify || {}).sort();
-    const svcSel = el("select", { onchange: (ev) => { this._draft.notifications.service = ev.target.value ? `notify.${ev.target.value}` : ""; this._refresh(); } },
-      el("option", { value: "" }, "Off (no notifications)"),
-      services.map((s) => el("option", { value: s }, s)));
-    const curSvc = (this._draft.notifications.service || "").replace(/^notify\./, "");
-    if (curSvc && !services.includes(curSvc)) svcSel.append(el("option", { value: curSvc }, `${curSvc} (not found)`));
+    const svcSel = el("select", { onchange: (ev) => { this._draft.notifications.service = ev.target.value; this._refresh(); } },
+      el("option", { value: "persistent_notification" }, "Home Assistant notification area"),
+      services.map((s) => el("option", { value: `notify.${s}` }, `Phone: notify.${s}`)),
+      el("option", { value: "off" }, "Off (no notifications)"));
+    const curSvc = this._draft.notifications.service || "off";
+    if (curSvc.startsWith("notify.") && !services.includes(curSvc.slice(7))) svcSel.append(el("option", { value: curSvc }, `${curSvc} (not found)`));
     svcSel.value = curSvc;
     nb.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Send to")),
-      el("div", { class: "desc" }, "Your phone's notify service, usually notify.mobile_app_<phone name>."), el("div", { class: "ctl" }, svcSel)),
-      "setting", "notifications send to notify service phone"));
+      el("div", { class: "desc" }, "Notification area: nothing to set up; each one clears itself when the problem is over. Phone: your notify service, usually notify.mobile_app_<phone name>."), el("div", { class: "ctl" }, svcSel)),
+      "setting", "notifications send to notify service phone notification area bell"));
     NOTIFY_EVENTS.forEach(([key, label, desc]) => {
       const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.notifications.events[key] = ev.target.checked; this._refresh(); } });
       cb.checked = !!this._draft.notifications.events[key];
