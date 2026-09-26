@@ -136,7 +136,7 @@ test("notifications are saved only once a service is chosen", () => {
   assert.equal(buildConfig(draft).notifications, undefined);
   draft.notifications.service = "notify.mobile_app_pixel";
   draft.notifications.events.daily = true;
-  assert.deepEqual(buildConfig(draft).notifications, { service: "notify.mobile_app_pixel", events: { health: true, inputs: true, axle: true, free_power: true, daily: true } });
+  assert.deepEqual(buildConfig(draft).notifications, { service: "notify.mobile_app_pixel", events: { health: true, inputs: true, axle: true, free_power: true, daily: true, simulator: true } });
 });
 
 test("testSummary: idle when the sensor has never been set", () => {

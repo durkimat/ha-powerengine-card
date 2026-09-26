@@ -2,6 +2,11 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.6.0 (beta)
+
+### Behaviour changes
+- Config card: new *Tariff simulator* feature and *Tariff opportunities* notification.
+
 ## 0.5.18 (beta)
 
 ### Behaviour changes
