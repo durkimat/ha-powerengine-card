@@ -2,6 +2,12 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.8.1
+
+- Features: four *Learn: …* switches replace *Use learned limits*.
+- Settings: choice settings (a drop-down) shown in their section; *Battery location* under *Cold battery*.
+- Fills in a role's `required` as "yes" when the app leaves it out.
+
 ## 0.8.0
 
 - Features: *Use learned limits*, *Cold battery caution*, *Learn cold behaviour*. Settings: new *Cold battery* section.

@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.8.0";
+const CARD_VERSION = "0.8.1";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -28,7 +28,10 @@ const FEATURES = [
   ["axle", "Axle VPP events", "Force-discharge during Axle events and hold charge beforehand."],
   ["free_power_days", "Free-power sessions", "Make full use of EDF free-electricity sessions."],
   ["optimised_plan", "Optimised planning", "The optimiser chooses each half-hour's action for the lowest cost (arbitrage band and safety rules included), with plain-English reasons. Off: the simpler rule-based planner."],
-  ["use_learned", "Use learned limits", "Plan with what PowerEngine has seen the system do: the charge slow-down near full, the charge level where the battery stops discharging (only ever raising the reserve), the car's real charge rate and any export ceiling. The Health tab shows each figure and how many half-hours it's based on. (Charge and discharge rates have their own 'use measured' boxes.)"],
+  ["learn_taper", "Learn: charge slow-down near full", "Plan with how much charging slows from 90% and 95%, as seen, so the overnight charge starts early enough to finish. Health tab, Learned from use, shows each learned figure and how many half-hours it's based on."],
+  ["learn_reserve", "Learn: where discharging stops", "Plan with the charge level where the battery has been seen to stop supplying the house. Only ever raises the Minimum reserve, never lowers it."],
+  ["learn_export", "Learn: export ceiling", "If selling is seen to top out below the battery's own rate (a grid limit), plan with that ceiling."],
+  ["learn_car", "Learn: car charge rate", "Plan the car's share of smart-charge slots with its real charging kW instead of Car charger power."],
   ["cold_caution", "Cold battery caution", "Plan a slower charge when the battery is likely to be cold, estimated from the outside temperature (Open-Meteo forecast for your home's location) with a lag, so a cold spell is expected to chill it gradually and it stays cautious until the weather has been milder for a while. Settings under Cold battery."],
   ["cold_learning", "Learn cold behaviour", "Adjust the cold threshold and rate from what's seen: charging slowed at 5°C raises the threshold; charging normally at 3°C lowers it to 3°C."],
   ["tariff_simulator", "Tariff simulator", "Each night at 01:30, compare your recorded days on current Octopus and EDF tariffs (fetched from their public tariff lists) and notify you if one would save noticeably. Reads only; changes nothing."],
@@ -340,7 +343,9 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     }
     this._building = true;
     this._usePicker = await ensureEntityPicker();
-    this._catalogue = cat.attributes;
+    // roles leave out "required" when it is "yes" (keeps the published catalogue under HA's 16 KB limit)
+    this._catalogue = Object.assign({}, cat.attributes,
+      { roles: (cat.attributes.roles || []).map((r) => Object.assign({ required: "yes" }, r)) });
     const mapping = s[MAPPING_SENSOR];
     this._saved = ((mapping && mapping.attributes) || {}).config || {};
     // settings moved to their own sensor in app 0.5.3 (older apps sent them inside the catalogue)
@@ -521,6 +526,8 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     groups.forEach((g) => {
       if (!g.items.length) return;
       const sbody = section(g.key, g.label);
+      (this._settings.system || []).filter((st) => st.options && `settings_${st.section}` === g.key)
+        .forEach((st) => sbody.append(this._choiceRow(st)));
       g.items.forEach((st) => sbody.append(this._settingRow(st)));
     });
 
@@ -540,7 +547,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
           el("span", { class: "muted" }, " (then check each and Save)")));
       }
       if (g.key === "grid") {
-        (this._settings.system || []).forEach((st) => {
+        (this._settings.system || []).filter((st) => !st.options).forEach((st) => {
           const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.system[st.key] = ev.target.checked; this._refresh(); } });
           cb.checked = !!this._draft.system[st.key];
           gbody.append(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, st.label)), el("div", { class: "desc" }, st.help)));
@@ -564,6 +571,15 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     this._refresh();
     // open any section that needs attention
     Object.values(this._sections).forEach((s) => { if (s.problems) s.details.open = true; });
+  }
+
+  _choiceRow(st) {
+    const sel = el("select", { onchange: (ev) => { this._draft.system[st.key] = ev.target.value; this._refresh(); } });
+    st.options.forEach(([value, label]) => sel.append(el("option", { value }, label)));
+    sel.value = this._draft.system[st.key] !== undefined ? this._draft.system[st.key] : st.default;
+    return el("div", { class: "row" },
+      el("div", { class: "head" }, el("span", { class: "label" }, st.label)),
+      el("div", { class: "desc" }, st.help), el("div", { class: "ctl" }, sel));
   }
 
   _settingRow(st) {
