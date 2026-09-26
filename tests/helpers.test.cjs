@@ -178,32 +178,41 @@ test("simulator history plan and month range", () => {
   assert.equal(r.end, "2026-01-02T00:00:00.000Z");
 });
 
-test("handoverRows: PowerEngine selected and settled, Passive noted", () => {
-  const s = (v, a) => ({ state: v, attributes: a || {} });
-  const states = {
-    "input_select.battery_controller": s("PowerEngine"),
-    "switch.predbat_set_read_only": s("on"),
-    "switch.pe_ctl_pause": s("off"),
-    "sensor.pe_state_operation_mode": s("passive", { reason: "Passive" }),
-    "automation.charge_house_battery_on": s("off"),
-  };
-  const r = h.handoverRows(states);
-  assert.equal(r.selected, "PowerEngine");
-  assert.deepEqual(r.rows.map((x) => x.ok), [true, true, true, false]);
-  assert.match(r.rows[3].note, /Operation mode to Active/);
+const hs = (v, a) => ({ state: v, attributes: a || {} });
+
+test("handoverRows: PowerEngine live", () => {
+  const r = h.handoverRows({
+    "input_select.battery_controller": hs("PowerEngine"), "switch.predbat_set_read_only": hs("on"),
+    "switch.pe_ctl_pause": hs("off"), "sensor.pe_state_operation_mode": hs("active"),
+    "automation.charge_house_battery_on": hs("off") });
+  assert.deepEqual(r.rows.map((x) => x.ok), [true, true, true, true]);
+  assert.equal(r.status, "live");
+});
+
+test("handoverRows: PowerEngine selected but Passive is not live", () => {
+  const r = h.handoverRows({
+    "input_select.battery_controller": hs("PowerEngine"), "switch.predbat_set_read_only": hs("on"),
+    "switch.pe_ctl_pause": hs("off"), "sensor.pe_state_operation_mode": hs("passive", { reason: "Passive: watching" }),
+    "automation.charge_house_battery_on": hs("off") });
+  assert.equal(r.rows[3].ok, false);
+  assert.equal(r.status, "not_live");
+});
+
+test("handoverRows: paused for testing is not a fault", () => {
+  const r = h.handoverRows({
+    "input_select.battery_controller": hs("PowerEngine"), "switch.predbat_set_read_only": hs("on"),
+    "switch.pe_ctl_pause": hs("on"), "sensor.pe_state_operation_mode": hs("paused"),
+    "automation.charge_house_battery_on": hs("off") });
+  assert.deepEqual(r.rows.map((x) => x.ok), [true, true, null, null]);
+  assert.equal(r.status, "paused");
 });
 
 test("handoverRows: Predbat selected with leftovers", () => {
-  const s = (v) => ({ state: v, attributes: {} });
-  const states = {
-    "input_select.battery_controller": s("Predbat"),
-    "switch.predbat_set_read_only": s("on"),
-    "switch.pe_ctl_pause": s("on"),
-    "sensor.pe_state_operation_mode": s("paused"),
-    "automation.house_battery_start_charging": s("on"),
-  };
-  const r = h.handoverRows(states);
-  assert.deepEqual(r.rows.map((x) => x.ok), [false, false, true, true]);
+  const r = h.handoverRows({
+    "input_select.battery_controller": hs("Predbat"), "switch.predbat_set_read_only": hs("on"),
+    "switch.pe_ctl_pause": hs("off"), "sensor.pe_state_operation_mode": hs("active"),
+    "automation.house_battery_start_charging": hs("on") });
+  assert.deepEqual(r.rows.map((x) => x.ok), [false, false, true, false]);
   assert.equal(r.rows[1].have, "1 on");
-  assert.equal(r.allOk, false);
+  assert.equal(r.status, "not_live");
 });

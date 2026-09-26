@@ -2,6 +2,12 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.7.4
+
+- Handover card: status line (live / paused for testing / not fully live), *Pause for testing* and *Resume (go live)*
+  while PowerEngine is selected; PowerEngine mode should be *passive* under Predbat and *active* under PowerEngine;
+  a pause while PowerEngine is selected is shown as testing, not as a fault.
+
 ## 0.7.3
 
 - New `custom:powerengine-handover-card`: switch battery control between Predbat and PowerEngine through
