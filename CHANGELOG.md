@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.8.10
+
+- No card changes; version kept in step with the app.
+
 ## 0.8.9
 
 - Notifications: *Send to* offers Home Assistant's notification area (the default), your phones, or Off.
