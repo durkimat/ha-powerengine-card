@@ -2,6 +2,11 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.7.0 (beta)
+
+### Behaviour changes
+- Config card: new *Optimised planning* feature (on by default).
+
 ## 0.6.5 (beta)
 
 ### Behaviour changes
