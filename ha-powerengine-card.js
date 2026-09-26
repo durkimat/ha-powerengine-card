@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.8.1";
+const CARD_VERSION = "0.8.2";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -44,7 +44,8 @@ const NOTIFY_EVENTS = [
   ["daily", "Daily summary", "Each morning at 08:00: yesterday's cost and savings.", false],
   ["simulator", "Tariff opportunities", "When the overnight Simulator finds a tariff that would have cost noticeably less (at least £5 and 5% a month), or new tariffs appear.", true],
 ];
-const FEATURE_DEFAULTS = { auto_cheap_threshold: true, fill_when_cheap: true, smart_charge_optimisation: true, arbitrage: false, axle: true, free_power_days: true, tariff_simulator: true, optimised_plan: true };
+const FEATURE_DEFAULTS = { auto_cheap_threshold: true, fill_when_cheap: true, smart_charge_optimisation: true, arbitrage: false, axle: true, free_power_days: true, tariff_simulator: true, optimised_plan: true,
+  learn_taper: true, learn_reserve: true, learn_export: true, learn_car: true, cold_caution: true, cold_learning: true };
 
 /* ------------------------------------------------------------------ helpers
  * Pure functions (no DOM), exported for tests at the bottom of the file.
@@ -156,6 +157,99 @@ function effectiveRole(role, pairMapped) {
   if (role.key === "battery_power") return Object.assign({}, role, { required: "unused" });
   if (BATTERY_PAIR.includes(role.key)) return Object.assign({}, role, { required: "yes" });
   return role;
+}
+
+// --- Config page layout: one section per topic, holding its switches, inputs, settings and learning ---------
+// Anything the app adds that isn't listed here still appears, in "Other".
+const TOPICS = [
+  { key: "battery", title: "Battery",
+    roles: ["battery_soc", "battery_power", "battery_charge_power", "battery_discharge_power", "battery_capacity",
+      "battery_max_charge_power", "battery_max_discharge_power", "battery_charge_today", "battery_discharge_today",
+      "battery_round_trip", "battery_soh", "inverter_min_soc"],
+    settings: ["min_reserve_soc", "grid_charge_target_soc", "charge_hysteresis_soc"],
+    learning: ["learn_taper", "learn_reserve"] },
+  { key: "grid", title: "Grid and house",
+    roles: ["grid_power", "grid_import_today", "grid_export_today", "house_load_power", "house_load_today"],
+    settings: ["main_fuse_a"], system: ["house_load_includes_ev"] },
+  { key: "solar", title: "Solar", roles: ["solar_forecast_today", "solar_forecast_tomorrow", "solar_forecast_day3"],
+    plants: true },
+  { key: "tariff", title: "Tariff and planning",
+    roles: ["import_rate_now", "import_rates_today", "import_rates_tomorrow", "export_rate", "standing_charge", "offpeak_now"],
+    features: ["optimised_plan", "auto_cheap_threshold", "fill_when_cheap"],
+    settings: ["cheap_threshold_p", "window_switch_cost_p"] },
+  { key: "car", title: "Car and EDF smart charge",
+    roles: ["ev_plug_status", "ev_charger_status", "ev_charge_power", "ev_energy_today", "ev_charge_mode",
+      "ev_session_energy", "smart_dispatches", "smart_state", "smart_target_soc", "smart_target_time"],
+    features: ["smart_charge_optimisation"], settings: ["ev_charger_kw"], learning: ["learn_car"] },
+  { key: "selling", title: "Selling (arbitrage and export)", features: ["arbitrage"],
+    settings: ["export_limit_kw", "battery_wear_p", "arbitrage_min_margin_p", "arbitrage_min_soc", "arbitrage_max_soc",
+      "arbitrage_band_penalty_p"],
+    roles: ["inverter_export_limit"], learning: ["learn_export"] },
+  { key: "axle", title: "Axle events", main: "axle", features: ["axle"],
+    roles: ["axle_event_active", "axle_event_start", "axle_event_end", "axle_direction"],
+    settings: ["pre_axle_lookahead_h", "axle_margin_soc"] },
+  { key: "free", title: "Free-power sessions", main: "free_power_days", features: ["free_power_days"],
+    roles: ["free_power_active", "free_power_next_start", "free_power_next_end"] },
+  { key: "cold", title: "Cold battery", main: "cold_caution", features: ["cold_caution"], learning: ["cold_learning"],
+    system: ["battery_location"],
+    settings: ["cold_caution_temp_c", "cold_charge_pct", "cold_release_c", "battery_temp_lag_h"],
+    roles: ["outside_temperature", "battery_temperature"] },
+  { key: "control", title: "Inverter control (needed to go live)",
+    note: "Written only when PowerEngine is live. Map them now so it can show what it would set (Health tab) and count your current setup's writes. Windows 2 and 3 are found from window 1's entities.",
+    roles: ["timed_charge_start_hour", "timed_charge_start_minute", "timed_charge_end_hour", "timed_charge_end_minute",
+      "timed_charge_current", "timed_discharge_start_hour", "timed_discharge_start_minute", "timed_discharge_end_hour",
+      "timed_discharge_end_minute", "timed_discharge_current", "timed_update_button", "storage_mode",
+      "inverter_clock", "inverter_clock_sync", "guard_read_only", "guard_off_1", "guard_off_2"],
+    settings: ["max_writes_per_day"] },
+  { key: "simulator", title: "Tariff simulator", main: "tariff_simulator", features: ["tariff_simulator"] },
+];
+// needed before PowerEngine can go live (the rest of the control group is optional)
+const GO_LIVE = ["timed_charge_start_hour", "timed_charge_start_minute", "timed_charge_end_hour", "timed_charge_end_minute",
+  "timed_charge_current", "timed_discharge_start_hour", "timed_discharge_start_minute", "timed_discharge_end_hour",
+  "timed_discharge_end_minute", "timed_discharge_current", "timed_update_button", "storage_mode", "guard_read_only"];
+const NEEDED_FOR = { axle: "axle", free_power: "free_power_days" };
+const ROLE_FEATURE = { smart_target_soc: "smart_charge_optimisation", smart_target_time: "smart_charge_optimisation" };
+
+/** Where every role, setting and feature goes: TOPICS with anything unlisted gathered into "Other". */
+function topicPlan(roleKeys, settingKeys, featureKeys, systemKeys) {
+  const used = { roles: new Set(), settings: new Set(), features: new Set(), system: new Set() };
+  const topics = TOPICS.map((t) => {
+    const pick = (list, have, kind) => (list || []).filter((k) => have.includes(k) && !used[kind].has(k) && used[kind].add(k));
+    return Object.assign({}, t, {
+      roles: pick(t.roles, roleKeys, "roles"), settings: pick(t.settings, settingKeys, "settings"),
+      features: pick(t.features, featureKeys, "features"), learning: pick(t.learning, featureKeys, "features"),
+      system: pick(t.system, systemKeys, "system") });
+  });
+  const other = { key: "other", title: "Other",
+    roles: roleKeys.filter((k) => !used.roles.has(k)), settings: settingKeys.filter((k) => !used.settings.has(k)),
+    features: featureKeys.filter((k) => !used.features.has(k)), learning: [],
+    system: systemKeys.filter((k) => !used.system.has(k)) };
+  if (other.roles.length || other.settings.length || other.features.length || other.system.length) topics.push(other);
+  return topics;
+}
+
+/** How much a role matters right now: "req" (required), "cond" (required only for something not in use),
+ *  "opt" (optional) or "unused"; with the badge text. */
+function roleNeed(role, draft, pairMapped) {
+  const r = effectiveRole(role, pairMapped);
+  const features = (draft && draft.features) || {};
+  const live = ((draft && draft.operation) || {}).mode === "active";
+  if (r.required === "unused") return { level: "unused", badge: "Not used" };
+  if (r.required === "yes") return { level: "req", badge: "Required" };
+  const f = NEEDED_FOR[r.required] || ROLE_FEATURE[r.key];
+  if (f) {
+    const label = (FEATURES.find((x) => x[0] === f) || [0, f])[1];
+    return features[f] ? { level: "req", badge: `Required for ${label}` } : { level: "cond", badge: `Needed for ${label}` };
+  }
+  if (GO_LIVE.includes(r.key)) return live ? { level: "req", badge: "Required to go live" } : { level: "cond", badge: "Needed to go live" };
+  return { level: "opt", badge: "Optional" };
+}
+
+/** Does a row's text match the search (every word, any order, ignoring case)? */
+function matchesSearch(text, query) {
+  const words = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
+  const t = String(text || "").toLowerCase();
+  return words.every((w) => t.includes(w));
 }
 
 function instantProblem(role, spec, stateObj) {
@@ -423,6 +517,35 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       details.section .count.bad { color: var(--error-color); }
       details.section > .body { padding: 0 12px 8px; }
       h4 { margin: 8px 0 4px; }
+      h4.sub { margin: 14px 0 2px; font-size: .8em; text-transform: uppercase; letter-spacing: .05em; color: var(--secondary-text-color); }
+      .toolbar { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 8px; }
+      input.search { width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 18px; }
+      .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+      .chip { padding: 3px 10px; border-radius: 14px; font-size: .85em; }
+      .chip.on { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: transparent; }
+      .toolrow { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .toolrow .tools { margin: 0; }
+      button.summary { background: none; border: none; padding: 2px 0; font-weight: 500; text-align: left; }
+      button.summary.good { color: var(--success-color, #43a047); cursor: default; }
+      button.summary.bad { color: var(--error-color, #db4437); }
+      .nomatch { padding: 8px 0; }
+      .row { border-left: 4px solid transparent; padding-left: 10px; }
+      .row.plain { border-left: none; padding-left: 0; }
+      .row.req-ok { border-left-color: var(--success-color, #43a047); }
+      .row.req-bad { border-left-color: var(--error-color, #db4437); background: rgba(219, 68, 55, .06); }
+      .row.cond { border-left-color: var(--warning-color, #ffa000); }
+      .row.opt, .row.unused { border-left-color: var(--divider-color); }
+      .row.unused { opacity: .6; }
+      .row.feature { border-left-color: var(--primary-color); }
+      .badge.req { background: var(--error-color, #db4437); color: #fff; }
+      .row.req-ok .badge.req { background: var(--success-color, #43a047); }
+      .badge.cond { background: rgba(255, 160, 0, .18); color: var(--warning-color, #b26a00); }
+      .badge.opt { background: none; border: 1px solid var(--divider-color); }
+      .badge.sw { background: none; border: 1px solid var(--primary-color); color: var(--primary-color); }
+      details.section .count.good { color: var(--success-color, #43a047); }
+      details.section.off > summary .title { color: var(--secondary-text-color); }
+      .offnote { color: var(--secondary-text-color); font-style: italic; font-size: .9em; margin: 6px 0; }
+      details.section.off .row:not(.feature) { opacity: .55; }
     `);
   }
 
@@ -458,29 +581,70 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
         ? "Suggested entities have been pre-filled from your system. Check each live value below, then Save."
         : "Change any input, check its live value, then Save.");
 
-    // collapsible sections (open state kept across rebuilds and page loads)
-    this._sections = {};
+    // search, filters and the overall status
+    this._items = [];                                      // every row, for search and filters
+    this._query = this._query || "";
+    this._filter = this._filter || "all";
+    const search = el("input", { type: "search", class: "search", placeholder: "Search settings and inputs (name, description or entity)",
+      value: this._query, oninput: (ev) => { this._query = ev.target.value; this._applyFilter(); } });
+    const chips = el("div", { class: "chips" });
+    [["all", "All"], ["attention", "Needs attention"], ["req", "Required"], ["opt", "Optional"]].forEach(([k, label]) => {
+      chips.append(el("button", { class: `chip${this._filter === k ? " on" : ""}`, "data-k": k, onclick: () => {
+        this._filter = k;
+        chips.querySelectorAll(".chip").forEach((c) => c.classList.toggle("on", c.dataset.k === k));
+        this._applyFilter();
+      } }, label));
+    });
+    this._summary = el("button", { class: "summary", onclick: () => this._jumpToProblem() });
+    this._noMatch = el("div", { class: "muted nomatch" }, "Nothing matches.");
     const tools = el("div", { class: "tools" },
       el("button", { class: "link", onclick: () => this._toggleAll(true) }, "Expand all"),
       el("button", { class: "link", onclick: () => this._toggleAll(false) }, "Collapse all"));
-    content.append(tools);
+    content.append(el("div", { class: "toolbar" }, search, chips, el("div", { class: "toolrow" }, this._summary, tools)), this._noMatch);
+
+    // collapsible sections (open state kept across rebuilds and page loads)
+    this._sections = {};
     const section = (key, title, note) => {
       const count = el("span", { class: "count" });
       const body = el("div", { class: "body" });
       const d = el("details", { class: "section" }, el("summary", {}, el("span", { class: "title" }, title), count), body);
       d.open = this._openSections().has(key);
-      d.addEventListener("toggle", () => this._rememberOpen(key, d.open));
+      d.addEventListener("toggle", () => { if (!this._filtering) this._rememberOpen(key, d.open); });
       if (note) body.append(el("div", { class: "desc" }, note));
-      this._sections[key] = { details: d, count, problems: 0, unsaved: 0 };
+      this._sections[key] = { details: d, count, problems: 0, unsaved: 0, req: 0, reqOk: 0, opt: 0, body };
       this._currentSection = key;
       content.append(d);
       return body;
     };
+    const track = (node, kind, text) => {
+      node.dataset.kind = kind;
+      this._items.push({ node, kind, text: text.toLowerCase(), section: this._currentSection });
+      return node;
+    };
+    const featureRow = (key) => {
+      const f = FEATURES.find((x) => x[0] === key);
+      if (!f) return null;
+      const [, label, desc, warning] = f;
+      const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.features[key] = ev.target.checked; this._refresh(); } });
+      cb.checked = !!this._draft.features[key];
+      return track(el("div", { class: "row feature" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, label),
+        el("span", { class: "badge sw" }, "Switch")), el("div", { class: "desc" }, desc),
+        warning ? el("div", { class: "warning" }, `⚠ ${warning}`) : null), "feature", `${label} ${desc} ${key}`);
+    };
+    const systemRow = (key) => {
+      const st = (this._settings.system || []).find((x) => x.key === key);
+      if (!st) return null;
+      if (st.options) return track(this._choiceRow(st), "setting", `${st.label} ${st.help} ${key}`);
+      const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.system[st.key] = ev.target.checked; this._refresh(); } });
+      cb.checked = !!this._draft.system[st.key];
+      return track(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, st.label)),
+        el("div", { class: "desc" }, st.help)), "setting", `${st.label} ${st.help} ${key}`);
+    };
+    const sub = (body, title) => { const h = el("h4", { class: "sub" }, title); body.append(h); return h; };
 
-    // operation + features
-    let body = section("operation", "Operation and features");
-    body.append(el("h4", {}, "Operation"));
-    const activeWarn = el("div", { class: "warning" }, "⚠ In Active mode PowerEngine writes the inverter's timed charge/discharge settings (and, with smart-charge optimisation on, asks EDF for slots). It stays Passive until every handover guard is safe. Pause it any time from the Monitoring tab.");
+    // operation
+    let body = section("operation", "Operation");
+    const activeWarn = el("div", { class: "warning" }, "⚠ Live: PowerEngine writes the inverter's timed charge and discharge settings (and, with smart-charge optimisation on, asks EDF for slots). It only goes live when every handover guard is safe. Normally set by the Battery controller panel above; pause any time from the Monitoring tab.");
     const modeSel = el("select", { onchange: (ev) => {
       this._draft.operation.mode = ev.target.value;
       activeWarn.style.display = ev.target.value === "active" ? "" : "none";
@@ -490,13 +654,52 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       el("option", { value: "active" }, "Active: PowerEngine controls the inverter"));
     modeSel.value = this._draft.operation.mode === "active" ? "active" : "passive";
     activeWarn.style.display = modeSel.value === "active" ? "" : "none";
-    body.append(el("div", { class: "row" }, el("div", { class: "ctl" }, modeSel), activeWarn));
-    body.append(el("h4", {}, "Features"));
-    FEATURES.forEach(([key, label, desc, warning]) => {
-      const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.features[key] = ev.target.checked; this._refresh(); } });
-      cb.checked = !!this._draft.features[key];
-      body.append(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc),
-        warning ? el("div", { class: "warning" }, `⚠ ${warning}`) : null));
+    body.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Operation mode")),
+      el("div", { class: "ctl" }, modeSel), activeWarn), "setting", "operation mode passive active live"));
+
+    // one section per topic
+    const roles = this._catalogue.roles;
+    const byKey = Object.fromEntries(roles.map((r) => [r.key, r]));
+    const allSettings = this._settings.safety || [];
+    const settingByKey = Object.fromEntries(allSettings.map((x) => [x.key, x]));
+    this._settingRows = [];
+    const plan = topicPlan(roles.map((r) => r.key), allSettings.map((x) => x.key), FEATURES.map((f) => f[0]),
+      (this._settings.system || []).map((x) => x.key));
+    plan.forEach((t) => {
+      const body = section(`topic_${t.key}`, t.title, t.note);
+      this._sections[`topic_${t.key}`].main = t.main;
+      t.features.forEach((k) => { const r = featureRow(k); if (r) body.append(r); });
+      if (t.main) body.append(this._sections[`topic_${t.key}`].offNote = el("div", { class: "offnote" },
+        "Switched off: the inputs and settings below aren't used."));
+      const inTopic = t.roles.map((k) => byKey[k]).filter(Boolean);
+      const pair = BATTERY_PAIR.every((k) => (this._draft.inputs[k] || {}).entity);
+      const need = (r) => roleNeed(r, this._draft, pair).level;
+      const firstly = inTopic.filter((r) => need(r) !== "opt");
+      const optional = inTopic.filter((r) => need(r) === "opt");
+      const suggestable = inTopic.filter((r) => this._suggestion(r));
+      if (suggestable.length > 1 && !this._readOnly) {
+        body.append(el("div", { class: "row plain" }, el("button", { onclick: () => this._useSuggestions(suggestable) },
+          `Use all ${suggestable.length} suggested entities`), el("span", { class: "muted" }, " (then check each and Save)")));
+      }
+      if (firstly.length) {
+        sub(body, t.key === "control" ? "Needed to go live" : "Inputs");
+        firstly.forEach((r) => body.append(this._roleRow(r)));
+      }
+      if (optional.length) {
+        sub(body, "Optional inputs");
+        optional.forEach((r) => body.append(this._roleRow(r)));
+      }
+      if (t.plants) { sub(body, "Solar plants"); body.append(track(this._plantsSection(), "setting", "solar plants array power energy forecast")); }
+      const sets = t.settings.map((k) => settingByKey[k]).filter(Boolean);
+      if (sets.length || t.system.length) {
+        sub(body, "Settings");
+        t.system.forEach((k) => { const r = systemRow(k); if (r) body.append(r); });
+        sets.forEach((st) => body.append(track(this._settingRow(st), "setting", `${st.label} ${st.help} ${st.key}`)));
+      }
+      if (t.learning.length) {
+        sub(body, "Learning");
+        t.learning.forEach((k) => { const r = featureRow(k); if (r) body.append(r); });
+      }
     });
 
     // phone notifications
@@ -509,52 +712,14 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const curSvc = (this._draft.notifications.service || "").replace(/^notify\./, "");
     if (curSvc && !services.includes(curSvc)) svcSel.append(el("option", { value: curSvc }, `${curSvc} (not found)`));
     svcSel.value = curSvc;
-    nb.append(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Send to")),
-      el("div", { class: "desc" }, "Your phone's notify service, usually notify.mobile_app_<phone name>."), el("div", { class: "ctl" }, svcSel)));
+    nb.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Send to")),
+      el("div", { class: "desc" }, "Your phone's notify service, usually notify.mobile_app_<phone name>."), el("div", { class: "ctl" }, svcSel)),
+      "setting", "notifications send to notify service phone"));
     NOTIFY_EVENTS.forEach(([key, label, desc]) => {
       const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.notifications.events[key] = ev.target.checked; this._refresh(); } });
       cb.checked = !!this._draft.notifications.events[key];
-      nb.append(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc)));
-    });
-
-    // numeric settings, by section (older apps send no sections: one "Settings" section)
-    this._settingRows = [];
-    const allSettings = this._settings.safety || [];
-    const groups = (this._settings.sections && this._settings.sections.length)
-      ? this._settings.sections.map((s) => ({ key: `settings_${s.key}`, label: s.label, items: allSettings.filter((x) => s.keys.includes(x.key)) }))
-      : [{ key: "settings", label: "Safety, limits and thresholds", items: allSettings }];
-    groups.forEach((g) => {
-      if (!g.items.length) return;
-      const sbody = section(g.key, g.label);
-      (this._settings.system || []).filter((st) => st.options && `settings_${st.section}` === g.key)
-        .forEach((st) => sbody.append(this._choiceRow(st)));
-      g.items.forEach((st) => sbody.append(this._settingRow(st)));
-    });
-
-    // inputs by group
-    const roles = this._catalogue.roles;
-    this._catalogue.groups.forEach((g) => {
-      const inGroup = roles.filter((r) => r.group === g.key);
-      if (!inGroup.length) return;
-      const note = g.key === "controls" ? "Written only in Active mode. Mapped now so PowerEngine can count the writes your current setup makes (Health tab, EEPROM wear) and show what it would set."
-        : g.key === "handover" ? "Read only. Active mode and supervised tests are refused unless every guard mapped here is in its safe state, so nothing else is writing to the inverter at the same time. Map at least one."
-        : null;
-      const gbody = section(`inputs_${g.key}`, `Inputs: ${g.label}`, note);
-      const suggestable = inGroup.filter((r) => this._suggestion(r));
-      if (suggestable.length > 1 && !this._readOnly) {
-        gbody.append(el("div", { class: "row" }, el("button", { onclick: () => this._useSuggestions(suggestable) },
-          `Use all ${suggestable.length} suggested entities`),
-          el("span", { class: "muted" }, " (then check each and Save)")));
-      }
-      if (g.key === "grid") {
-        (this._settings.system || []).filter((st) => !st.options).forEach((st) => {
-          const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.system[st.key] = ev.target.checked; this._refresh(); } });
-          cb.checked = !!this._draft.system[st.key];
-          gbody.append(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, st.label)), el("div", { class: "desc" }, st.help)));
-        });
-      }
-      inGroup.forEach((role) => gbody.append(this._roleRow(role)));
-      if (g.key === "grid") section("plants", "Solar plants").append(this._plantsSection());
+      nb.append(track(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc)),
+        "setting", `notification ${label} ${desc}`));
     });
     this._currentSection = null;
 
@@ -565,12 +730,46 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
 
     root.append(this._style(), el("ha-card", { header: "PowerEngine configuration" }, content));
     if (this._readOnly) {
-      content.querySelectorAll("input, select, button:not(.link)").forEach((n) => { n.disabled = true; });
+      content.querySelectorAll("input:not(.search), select, button:not(.link):not(.chip):not(.summary)").forEach((n) => { n.disabled = true; });
       this._pickers.forEach((pk) => { pk.disabled = true; });
     }
     this._refresh();
     // open any section that needs attention
     Object.values(this._sections).forEach((s) => { if (s.problems) s.details.open = true; });
+    this._applyFilter();
+  }
+
+  /** Search and filter chips: show matching rows only, opening their sections; restore when cleared. */
+  _applyFilter() {
+    const q = (this._query || "").trim();
+    const f = this._filter || "all";
+    const active = !!q || f !== "all";
+    const shown = {};
+    (this._items || []).forEach((it) => {
+      const n = it.node;
+      const kindOk = f === "all" || (f === "attention" && n.classList.contains("req-bad"))
+        || (f === "req" && (it.kind === "req" || it.kind === "cond")) || (f === "opt" && it.kind === "opt");
+      const ok = kindOk && (!q || matchesSearch(`${it.text} ${n.dataset.entity || ""}`, q));
+      n.style.display = ok ? "" : "none";
+      if (ok) shown[it.section] = (shown[it.section] || 0) + 1;
+    });
+    this._filtering = true;
+    Object.entries(this._sections || {}).forEach(([key, s]) => {
+      s.details.style.display = !active || shown[key] ? "" : "none";
+      s.body.querySelectorAll("h4.sub").forEach((h) => { h.style.display = active ? "none" : ""; });
+      if (active) s.details.open = !!shown[key];
+      else s.details.open = this._openSections().has(key) || !!s.problems;
+    });
+    this._filtering = false;
+    if (this._noMatch) this._noMatch.style.display = active && !Object.keys(shown).length ? "" : "none";
+  }
+
+  _jumpToProblem() {
+    const first = (this._items || []).find((it) => it.node.classList.contains("req-bad"));
+    if (!first) return;
+    const s = this._sections[first.section];
+    if (s) s.details.open = true;
+    first.node.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
   _choiceRow(st) {
@@ -634,7 +833,10 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const spec = () => this._draft.inputs[role.key];
     const set = (v) => { if (v) this._draft.inputs[role.key] = v; else delete this._draft.inputs[role.key]; this._refresh(); };
     const row = el("div", { class: "row" });
-    const badgeBox = el("span", {}, this._badge(role));
+    const badgeBox = el("span", {});
+    const item = { node: row, kind: "opt", text: `${role.label} ${role.description} ${role.key}`.toLowerCase(),
+      section: this._currentSection };
+    (this._items = this._items || []).push(item);
     row.append(el("div", { class: "head" }, el("span", { class: "label" }, role.label), badgeBox));
     row.append(el("div", { class: "desc" }, role.description));
     const ctl = el("div", { class: "ctl" });
@@ -704,7 +906,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const problem = el("div", { class: "problem" });
     const status = el("div", { class: "status" });
     row.append(live, problem, status);
-    this._rows.push({ role, spec, live, problem, status, section: this._currentSection, badgeBox, signNote, invertCb });
+    this._rows.push({ role, spec, live, problem, status, section: this._currentSection, badgeBox, signNote, invertCb, row, item });
     return row;
   }
 
@@ -753,21 +955,26 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const savedInputs = saved.inputs || {};
     let blocking = 0;
     const secs = this._sections || {};
-    Object.values(secs).forEach((s) => { s.problems = 0; s.unsaved = 0; });
+    Object.values(secs).forEach((s) => { s.problems = 0; s.unsaved = 0; s.req = 0; s.reqOk = 0; s.opt = 0; s.cond = 0; s.condOk = 0; });
+    let reqBad = 0;
     const tally = (key, field) => { if (key && secs[key]) secs[key][field]++; };
     // separate charging/discharging sensors replace an unsigned battery power sensor (and become required)
     const pair = BATTERY_PAIR.every((k) => (this._draft.inputs[k] || {}).entity);
-    this._rows.forEach(({ role: baseRole, spec, live, problem, status, section, badgeBox, signNote, invertCb }) => {
+    this._rows.forEach(({ role: baseRole, spec, live, problem, status, section, badgeBox, signNote, invertCb, row, item }) => {
       const s = spec();
-      const role = effectiveRole(baseRole, pair);
-      const unused = role.required === "unused";
-      badgeBox.replaceChildren(unused ? el("span", { class: "badge" }, "Not used") : this._badge(role));
+      const need = roleNeed(baseRole, this._draft, pair);
+      const role = Object.assign({}, effectiveRole(baseRole, pair), need.level === "req" ? { required: "yes" } : {});
+      const unused = need.level === "unused";
+      badgeBox.replaceChildren(el("span", { class: `badge ${need.level}` }, need.badge));
+      if (item) item.kind = need.level === "unused" ? "opt" : need.level;
+      if (row) row.dataset.entity = (s && s.entity) || "";
       if (signNote) signNote.style.display = unused ? "none" : "";
       if (invertCb) invertCb.parentElement.style.display = unused ? "none" : "";
       if (unused) {
         live.textContent = "Not used: Battery charging power and Battery discharging power are mapped, so PowerEngine uses those.";
         problem.textContent = "";
         status.textContent = "";
+        if (row) row.className = "row unused";
         return;
       }
       const st = s && s.entity ? states[s.entity] : null;
@@ -784,8 +991,16 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       if (!same) status.textContent = "Unsaved change";
       else if (c) { status.textContent = `PowerEngine check: ${c.message}`; if (c.status === "ok") status.className = "status ok"; }
       else status.textContent = "";
-      if (p || (c && same && c.status !== "ok" && c.status !== "unmapped")) tally(section, "problems");
+      const bad = !!p || (c && same && c.status !== "ok" && c.status !== "unmapped");
+      if (bad) tally(section, "problems");
       if (!same) tally(section, "unsaved");
+      const mapped = !!(s && (s.entity || s.value !== undefined));
+      if (need.level === "req") { tally(section, "req"); if (mapped && !bad) tally(section, "reqOk"); else reqBad++; }
+      else if (need.level === "cond") { tally(section, "cond"); if (mapped && !bad) tally(section, "condOk"); }
+      else tally(section, "opt");
+      if (row) row.dataset.kind = item ? item.kind : "";
+      if (row) row.className = `row ${need.level === "req" ? (mapped && !bad ? "req-ok" : "req-bad")
+        : need.level === "cond" ? (bad ? "req-bad" : "cond") : (bad ? "req-bad" : "opt")}`;
     });
     (this._draft.solar_plants || []).forEach((p) => {
       if (!p._live) return;
@@ -805,10 +1020,22 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     Object.values(secs).forEach((s) => {
       const parts = [];
       if (s.problems) parts.push(`${s.problems} to check`);
+      if (s.req) parts.push(s.reqOk === s.req ? `${s.req} required ✓` : `${s.reqOk} of ${s.req} required set`);
+      if (s.cond) parts.push(s.condOk === s.cond ? `${s.cond} for going live ✓` : `${s.cond - s.condOk} of ${s.cond} for going live not set`);
+      if (s.opt) parts.push(`${s.opt} optional`);
       if (s.unsaved) parts.push(`${s.unsaved} unsaved`);
+      const off = s.main && !this._draft.features[s.main];
+      if (off) parts.unshift("off");
       s.count.textContent = parts.join(" · ");
-      s.count.className = s.problems ? "count bad" : (s.unsaved ? "count" : "count");
+      s.count.className = s.problems || s.reqOk < s.req ? "count bad" : (s.req && !off ? "count good" : "count");
+      s.details.classList.toggle("off", !!off);
+      if (s.offNote) s.offNote.style.display = off ? "" : "none";
     });
+    if (this._summary) {
+      this._summary.textContent = reqBad ? `⚠ ${reqBad} required input${reqBad === 1 ? " needs" : "s need"} attention: show` : "✓ All required inputs are set";
+      this._summary.className = reqBad ? "summary bad" : "summary good";
+    }
+    if (this._filter === "attention" || this._query) this._applyFilter();
     const dirty = JSON.stringify(buildConfig(this._draft)) !== JSON.stringify(buildConfig(initialDraft(saved, [], [], this._settings).draft));
     if (this._saveBtn) {
       this._saveBtn.disabled = this._readOnly || blocking > 0 || this._saving || !dirty;
@@ -1456,5 +1683,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, measuredText, simHistoryPlan, monthRange, handoverRows, CARD_VERSION };
+  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION };
 }
