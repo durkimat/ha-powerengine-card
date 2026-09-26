@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.7.7
+
+- No card changes; version kept in step with the app.
+
 ## 0.7.6
 
 - No card changes; version kept in step with the app (phone-friendly charts in the dashboard).
