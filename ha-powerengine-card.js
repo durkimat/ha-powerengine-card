@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.7.4";
+const CARD_VERSION = "0.7.5";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -929,7 +929,8 @@ function handoverRows(states, cfg) {
   const known = (v) => !["missing", "unknown", "unavailable"].includes(v);
 
   const ro = val(c.read_only);
-  add("Predbat read-only", toPE ? "on" : "off", ro, known(ro) ? ro === (toPE ? "on" : "off") : null);
+  add("Predbat read-only", toPE ? "on" : "off", ro, known(ro) ? ro === (toPE ? "on" : "off") : null,
+      known(ro) ? "" : "Home Assistant doesn't have this entity right now (Predbat not running, or still starting).");
 
   const on = c.legacy.filter((id) => val(id) === "on");
   const found = c.legacy.filter((id) => st(id));
@@ -951,7 +952,8 @@ function handoverRows(states, cfg) {
     add("PowerEngine mode", "passive", m, known(m) ? !["active", "paused"].includes(m) : null,
         m === "active" ? reason : "");
   }
-  const bad = rows.some((r) => r.ok === false);
+  // a row we can't read (entity missing or unavailable) means we can't vouch for the handover: not live
+  const bad = rows.some((r) => r.ok === false || (r.ok === null && !(paused && r.label.startsWith("PowerEngine"))));
   const status = bad ? "not_live" : paused ? "paused" : "live";
   return { selected: sel, rows, allOk: !bad, paused, status };
 }

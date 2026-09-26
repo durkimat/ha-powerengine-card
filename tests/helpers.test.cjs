@@ -216,3 +216,13 @@ test("handoverRows: Predbat selected with leftovers", () => {
   assert.equal(r.rows[1].have, "1 on");
   assert.equal(r.status, "not_live");
 });
+
+test("handoverRows: a missing Predbat switch is not live", () => {
+  const r = h.handoverRows({
+    "input_select.battery_controller": hs("Predbat"),
+    "switch.pe_ctl_pause": hs("off"), "sensor.pe_state_operation_mode": hs("passive"),
+    "automation.charge_house_battery_on": hs("off") });
+  assert.equal(r.rows[0].ok, null);
+  assert.match(r.rows[0].note, /doesn't have this entity/);
+  assert.equal(r.status, "not_live");
+});
