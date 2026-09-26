@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.7.3";
+const CARD_VERSION = "0.7.4";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -910,13 +910,14 @@ const HANDOVER_DEFAULTS = {
 };
 const CONTROLLERS = ["Predbat", "PowerEngine"];
 const HANDOVER_STEPS = {
-  PowerEngine: "Predbat goes read-only, the legacy automations stay off, then PowerEngine is resumed and takes " +
-    "over at its next decision (only if its Operation mode is Active).",
-  Predbat: "PowerEngine is paused and closes its inverter windows (Self-Use), then Predbat leaves read-only and " +
-    "takes over at its next update. About 30 seconds.",
+  PowerEngine: "Predbat goes read-only, the legacy automations stay off, and PowerEngine is set to Active and " +
+    "un-paused. About 20 seconds. PowerEngine is then live; you'll get a notification saying so, or why not.",
+  Predbat: "PowerEngine is set to Passive and closes its inverter windows (Self-Use), then Predbat leaves read-only " +
+    "and takes over at its next update. About 30 seconds. Predbat is then live.",
 };
 
-// Rows of {label, want, have, ok, note} for the controller currently selected. ok is null when unknown.
+// Rows of {label, want, have, ok, note} for the controller currently selected (ok null = not a fault / unknown),
+// plus a one-line status: live, paused (for testing) or not live.
 function handoverRows(states, cfg) {
   const c = Object.assign({}, HANDOVER_DEFAULTS, cfg || {});
   const st = (id) => (states && states[id]) || null;
@@ -937,18 +938,22 @@ function handoverRows(states, cfg) {
       on.length ? on.map((id) => id.replace("automation.", "")).join(", ") : "");
 
   const pz = val(c.pause);
-  add("PowerEngine paused", toPE ? "off" : "on", pz, known(pz) ? pz === (toPE ? "off" : "on") : null);
+  const paused = toPE && pz === "on";
+  add("PowerEngine paused", "off", pz, paused ? null : (known(pz) ? pz === "off" : null),
+      paused ? "Paused for testing: nothing is driving the battery (Self-Use). Resume to go live again." : "");
 
   const m = val(c.mode);
   const reason = (st(c.mode) && st(c.mode).attributes && st(c.mode).attributes.reason) || "";
   if (toPE) {
-    add("PowerEngine mode", "active", m, known(m) ? m === "active" : null,
-        m === "passive" ? "Passive: PowerEngine is watching but not writing. Set Operation mode to Active (settings " +
-          "above) to give it control; until then the inverter stays on Self-Use." : (m === "active" ? "" : reason));
+    add("PowerEngine mode", "active", m, paused && m === "paused" ? null : (known(m) ? m === "active" : null),
+        m === "active" || m === "paused" ? "" : reason);
   } else {
-    add("PowerEngine mode", "not active", m, known(m) ? m !== "active" : null, m === "active" ? reason : "");
+    add("PowerEngine mode", "passive", m, known(m) ? !["active", "paused"].includes(m) : null,
+        m === "active" ? reason : "");
   }
-  return { selected: sel, rows, allOk: rows.every((r) => r.ok !== false) };
+  const bad = rows.some((r) => r.ok === false);
+  const status = bad ? "not_live" : paused ? "paused" : "live";
+  return { selected: sel, rows, allOk: !bad, paused, status };
 }
 
 class PowerEngineHandoverCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
@@ -978,6 +983,16 @@ class PowerEngineHandoverCard extends (typeof HTMLElement !== "undefined" ? HTML
       this._msg = "";
     } catch (err) {
       this._msg = "Could not switch: " + ((err && err.message) || err);
+    }
+    this._render();
+  }
+
+  async _pause(on) {
+    try {
+      await this._hass.callService("switch", on ? "turn_on" : "turn_off", { entity_id: this._c.pause });
+      this._msg = "";
+    } catch (err) {
+      this._msg = "Could not change pause: " + ((err && err.message) || err);
     }
     this._render();
   }
@@ -1015,7 +1030,9 @@ class PowerEngineHandoverCard extends (typeof HTMLElement !== "undefined" ? HTML
           .ok { color: var(--success-color, #43a047); } .bad { color: var(--error-color, #db4437); }
           .note { color: var(--secondary-text-color); font-size: .9em; }
           .msg { color: var(--error-color, #db4437); margin-top: 8px; }
-          .busy { color: var(--warning-color, #ffa000); margin-left: 10px; }
+          .status { margin: 10px 0 0; font-weight: 500; }
+          .status.live { color: var(--success-color, #43a047); } .status.not_live { color: var(--error-color, #db4437); }
+          .status.paused, .status.busy, .warn { color: var(--warning-color, #ffa000); }
         </style>
         <ha-card><div class="body"></div></ha-card>`;
       this.shadowRoot.addEventListener("click", (ev) => {
@@ -1025,6 +1042,7 @@ class PowerEngineHandoverCard extends (typeof HTMLElement !== "undefined" ? HTML
         else if (b.dataset.go) this._switch(b.dataset.go);
         else if (b.dataset.cancel !== undefined) { this._confirm = null; this._render(); }
         else if (b.dataset.reapply) this._reapply(b.dataset.reapply);
+        else if (b.dataset.pause) this._pause(b.dataset.pause === "on");
       });
       this._built = true;
     }
@@ -1041,22 +1059,33 @@ class PowerEngineHandoverCard extends (typeof HTMLElement !== "undefined" ? HTML
     const busy = this._busy();
     const seg = CONTROLLERS.map((c) => `<button class="${c === h.selected ? "on" : ""}" ${busy || c === h.selected ? "disabled" : ""}
         data-pick="${c}">${c}</button>`).join("");
-    let html = title + `<p>Which system drives the battery. Switching runs a handover so only one of them writes to
-      the inverter at a time.</p><div><span class="seg">${seg}</span>${busy ? '<span class="busy">Switching…</span>' : ""}</div>`;
+    const line = busy ? "Switching…" : h.status === "live" ? `${h.selected} is live.`
+      : h.status === "paused" ? "PowerEngine is paused for testing: nothing is driving the battery (Self-Use)."
+      : `${h.selected} is selected but not fully live: see ✗ below.`;
+    let html = title + `<p>Which system drives the battery. Switching hands over and leaves the chosen one fully
+      live.</p><div><span class="seg">${seg}</span></div>
+      <div class="status ${busy ? "busy" : h.status}">${esc(line)}</div>`;
     if (this._confirm && this._confirm !== h.selected && !busy) {
       html += `<div class="confirm"><b>Hand control to ${esc(this._confirm)}?</b><p>${esc(HANDOVER_STEPS[this._confirm])}</p>
         <button class="btn" data-go="${esc(this._confirm)}">Switch to ${esc(this._confirm)}</button>
         <button class="btn plain" data-cancel>Cancel</button></div>`;
     }
     html += `<table><tr><th></th><th>Should be</th><th>Is</th></tr>` + h.rows.map((r) => {
-      const mark = r.ok === true ? '<span class="ok">✓</span>' : r.ok === false ? '<span class="bad">✗</span>' : "?";
+      const mark = r.ok === true ? '<span class="ok">✓</span>' : r.ok === false ? '<span class="bad">✗</span>'
+        : (h.paused ? '<span class="warn">‖</span>' : "?");
       return `<tr><td>${mark} ${esc(r.label)}${r.note ? `<div class="note">${esc(r.note)}</div>` : ""}</td>` +
         `<td>${esc(r.want)}</td><td>${esc(r.have)}</td></tr>`;
     }).join("") + `</table>`;
-    const settled = h.rows.filter((r) => r.label !== "PowerEngine mode").every((r) => r.ok !== false);
-    if (!settled && !busy && this._c.scripts[h.selected]) {
+    if (h.status === "not_live" && !busy && this._c.scripts[h.selected]) {
       html += `<p>Something doesn't match ${esc(h.selected)} (changed by hand, or a handover didn't finish).</p>
         <button class="btn" data-reapply="${esc(h.selected)}">Re-apply ${esc(h.selected)} handover</button>`;
+    }
+    if (h.selected === "PowerEngine" && !busy) {
+      html += h.paused
+        ? `<p><button class="btn" data-pause="off">Resume PowerEngine (go live)</button></p>`
+        : `<p><button class="btn plain" data-pause="on">Pause for testing</button>
+           <span class="note">Stops PowerEngine and returns the inverter to Self-Use; Predbat stays read-only.
+           Needed for the supervised tests.</span></p>`;
     }
     if (this._msg) html += `<div class="msg">${esc(this._msg)}</div>`;
     body.innerHTML = html;
