@@ -2,6 +2,11 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.6.2 (beta)
+
+### Behaviour changes
+- Simulator set-up card: equipment settings (bigger battery, more solar, a second car).
+
 ## 0.6.1 (beta)
 
 ### Behaviour changes

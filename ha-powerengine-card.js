@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.6.1";
+const CARD_VERSION = "0.6.2";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -1036,6 +1036,16 @@ const HP_FIELDS = [
   ["install_cost", "Installed cost after grants", "£", "For payback in years (shown once there's a year of history)."],
 ];
 
+const EQ_GROUPS = [
+  ["battery_enabled", "Bigger battery (replacing yours)", [
+    ["battery_kwh", "Usable capacity", "kWh"], ["battery_kw", "Charge/discharge power", "kW"], ["battery_cost", "Cost", "£"]]],
+  ["solar_enabled", "More solar (same roof direction)", [
+    ["solar_current_kwp", "Your solar now", "kWp"], ["solar_extra_kwp", "Extra panels", "kWp"], ["solar_cost", "Cost", "£"]]],
+  ["ev2_enabled", "A second car", [
+    ["ev2_miles_year", "Miles a year", ""], ["ev2_kwh_per_mile", "kWh per mile", ""], ["ev2_charger_kw", "Charger", "kW"]]],
+];
+const EQ_DEFAULTS = { ev2_kwh_per_mile: 0.3, ev2_charger_kw: 7.4 };
+
 function simHistoryPlan(state) {
   const a = (state && state.attributes) || {};
   const req = a.history_request || {};
@@ -1122,7 +1132,14 @@ class PowerEngineSimCard extends (typeof HTMLElement !== "undefined" ? HTMLEleme
           <label for="f_${k}">${label}${unit ? ` (${unit})` : ""}</label><input type="number" step="any" id="f_${k}" data-k="${k}">
           <div class="help">${help}</div>`).join("")}
         </div>
-        <button class="save">Save heat pump settings</button><span class="msg"></span>
+        <h3>Equipment</h3>
+        <p>Each ticked item (and all of them together) is run on your tariff and the best other tariff, and compared with the same tariff without it. Payback appears once there's a year of history.</p>
+        ${EQ_GROUPS.map(([flag, title, fields]) => `
+          <label><input type="checkbox" data-e="${flag}"> ${title}</label>
+          <div class="grid">${fields.map(([k, label, unit]) => `
+            <label for="e_${k}">${label}${unit ? ` (${unit})` : ""}</label><input type="number" step="any" id="e_${k}" data-e="${k}">`).join("")}
+          </div>`).join("")}
+        <button class="save">Save simulator settings</button><span class="msg"></span>
       </ha-card>`;
     this.shadowRoot.querySelector(".save").addEventListener("click", () => this._save());
     this._fill();
@@ -1133,6 +1150,12 @@ class PowerEngineSimCard extends (typeof HTMLElement !== "undefined" ? HTMLEleme
     const s = (a.settings || {}).heat_pump || {};
     const defaults = { boiler_efficiency: 85, hot_water_kwh_day: 6, tank_litres: 200, cop_cold: 2.5, cop_mild: 4.5, max_kw: 8, preheat_h: 2, gas_price_p: 6, gas_standing_p: 30 };
     this.shadowRoot.querySelector(".hp_on").checked = !!s.enabled;
+    const e = (a.settings || {}).equipment || {};
+    this.shadowRoot.querySelectorAll("[data-e]").forEach((inp) => {
+      const k = inp.dataset.e;
+      if (inp.type === "checkbox") inp.checked = !!e[k];
+      else { const v = e[k] ? e[k] : EQ_DEFAULTS[k]; inp.value = v === undefined ? "" : v; }
+    });
     this.shadowRoot.querySelectorAll("input[data-k]").forEach((inp) => {
       const k = inp.dataset.k;
       const v = s[k] !== undefined && s[k] !== 0 ? s[k] : defaults[k];
@@ -1144,12 +1167,16 @@ class PowerEngineSimCard extends (typeof HTMLElement !== "undefined" ? HTMLEleme
   async _save() {
     const hp = { enabled: this.shadowRoot.querySelector(".hp_on").checked };
     this.shadowRoot.querySelectorAll("input[data-k]").forEach((inp) => { hp[inp.dataset.k] = inp.value === "" ? 0 : Number(inp.value); });
+    const equipment = {};
+    this.shadowRoot.querySelectorAll("[data-e]").forEach((inp) => {
+      equipment[inp.dataset.e] = inp.type === "checkbox" ? inp.checked : (inp.value === "" ? 0 : Number(inp.value));
+    });
     const msg = this.shadowRoot.querySelector(".msg");
     try {
       const unsub = await this._hass.connection.subscribeEvents((ev) => {
         msg.textContent = ev.data.message; msg.className = "msg " + (ev.data.ok ? "ok" : "bad"); unsub();
       }, "pe_sim_result");
-      await this._hass.callWS({ type: "fire_event", event_type: "pe_sim_settings", event_data: { heat_pump: hp } });
+      await this._hass.callWS({ type: "fire_event", event_type: "pe_sim_settings", event_data: { heat_pump: hp, equipment } });
       msg.textContent = "Saving…"; msg.className = "msg";
     } catch (err) {
       msg.textContent = "Couldn't save: " + ((err && err.message) || err) + " (admin users only)"; msg.className = "msg bad";
