@@ -2,6 +2,11 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.6.5 (beta)
+
+### Behaviour changes
+- None. Version kept in step with the app.
+
 ## 0.6.4 (beta)
 
 ### Behaviour changes
