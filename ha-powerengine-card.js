@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.7.7";
+const CARD_VERSION = "0.8.0";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -28,6 +28,9 @@ const FEATURES = [
   ["axle", "Axle VPP events", "Force-discharge during Axle events and hold charge beforehand."],
   ["free_power_days", "Free-power sessions", "Make full use of EDF free-electricity sessions."],
   ["optimised_plan", "Optimised planning", "The optimiser chooses each half-hour's action for the lowest cost (arbitrage band and safety rules included), with plain-English reasons. Off: the simpler rule-based planner."],
+  ["use_learned", "Use learned limits", "Plan with what PowerEngine has seen the system do: the charge slow-down near full, the charge level where the battery stops discharging (only ever raising the reserve), the car's real charge rate and any export ceiling. The Health tab shows each figure and how many half-hours it's based on. (Charge and discharge rates have their own 'use measured' boxes.)"],
+  ["cold_caution", "Cold battery caution", "Plan a slower charge when the battery is likely to be cold, estimated from the outside temperature (Open-Meteo forecast for your home's location) with a lag, so a cold spell is expected to chill it gradually and it stays cautious until the weather has been milder for a while. Settings under Cold battery."],
+  ["cold_learning", "Learn cold behaviour", "Adjust the cold threshold and rate from what's seen: charging slowed at 5°C raises the threshold; charging normally at 3°C lowers it to 3°C."],
   ["tariff_simulator", "Tariff simulator", "Each night at 01:30, compare your recorded days on current Octopus and EDF tariffs (fetched from their public tariff lists) and notify you if one would save noticeably. Reads only; changes nothing."],
 ];
 const NOTIFY_EVENTS = [
@@ -244,6 +247,15 @@ function measuredText(hass, key) {
     battery_round_trip: ["sensor.pe_diag_battery_efficiency", (st) => st.attributes.measured_round_trip != null
       ? `${Number(st.attributes.measured_round_trip).toFixed(1)}%` : null],
   }[key];
+  const learnedKw = (field) => {
+    const st = hass && hass.states["sensor.pe_diag_learned"];
+    const v = st && st.attributes && st.attributes.raw ? st.attributes.raw[field] : null;
+    return v != null ? `${Number(v).toFixed(2)} kW` : null;
+  };
+  if (key === "battery_max_charge_power" || key === "battery_max_discharge_power") {
+    const text = learnedKw(key === "battery_max_charge_power" ? "max_charge_kw" : "max_discharge_kw");
+    return text ? `(${text} measured)` : "(not measured yet)";
+  }
   const st = hass && src && hass.states[src[0]];
   const text = st && st.attributes && st.attributes.measured ? src[1](st) : null;
   return text ? `(${text} measured)` : "(not measured yet)";

@@ -2,6 +2,11 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.8.0
+
+- Features: *Use learned limits*, *Cold battery caution*, *Learn cold behaviour*. Settings: new *Cold battery* section.
+- *Use measured* boxes on *Max charge power* and *Max discharge power*, showing the learned rate.
+
 ## 0.7.7
 
 - No card changes; version kept in step with the app.
