@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.8.3
+
+- No card changes; version kept in step with the app (automatic AppDaemon restart after updates).
+
 ## 0.8.2
 
 - **Config page reorganised by topic.** One section per topic (Battery, Grid and house, Solar, Tariff and planning,
