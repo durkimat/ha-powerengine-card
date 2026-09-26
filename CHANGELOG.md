@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.7.6
+
+- No card changes; version kept in step with the app (phone-friendly charts in the dashboard).
+
 ## 0.7.5
 
 - Handover panel: an entity it can't read makes the status *not fully live* (with a note) instead of *live*.
