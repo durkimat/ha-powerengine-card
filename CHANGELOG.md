@@ -2,6 +2,12 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.7.3
+
+- New `custom:powerengine-handover-card`: switch battery control between Predbat and PowerEngine through
+  `input_select.battery_controller` (the app's handover package), with a confirm step, progress, a should-be/is table
+  and *Re-apply*. Options: `title`, `selector`, `read_only`, `pause`, `mode`, `scripts`, `legacy`.
+
 ## 0.7.2 (beta)
 
 ### Behaviour changes

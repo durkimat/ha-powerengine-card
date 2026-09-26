@@ -177,3 +177,33 @@ test("simulator history plan and month range", () => {
   assert.equal(r.start, "2025-11-30T00:00:00.000Z");
   assert.equal(r.end, "2026-01-02T00:00:00.000Z");
 });
+
+test("handoverRows: PowerEngine selected and settled, Passive noted", () => {
+  const s = (v, a) => ({ state: v, attributes: a || {} });
+  const states = {
+    "input_select.battery_controller": s("PowerEngine"),
+    "switch.predbat_set_read_only": s("on"),
+    "switch.pe_ctl_pause": s("off"),
+    "sensor.pe_state_operation_mode": s("passive", { reason: "Passive" }),
+    "automation.charge_house_battery_on": s("off"),
+  };
+  const r = h.handoverRows(states);
+  assert.equal(r.selected, "PowerEngine");
+  assert.deepEqual(r.rows.map((x) => x.ok), [true, true, true, false]);
+  assert.match(r.rows[3].note, /Operation mode to Active/);
+});
+
+test("handoverRows: Predbat selected with leftovers", () => {
+  const s = (v) => ({ state: v, attributes: {} });
+  const states = {
+    "input_select.battery_controller": s("Predbat"),
+    "switch.predbat_set_read_only": s("on"),
+    "switch.pe_ctl_pause": s("on"),
+    "sensor.pe_state_operation_mode": s("paused"),
+    "automation.house_battery_start_charging": s("on"),
+  };
+  const r = h.handoverRows(states);
+  assert.deepEqual(r.rows.map((x) => x.ok), [false, false, true, true]);
+  assert.equal(r.rows[1].have, "1 on");
+  assert.equal(r.allOk, false);
+});
