@@ -2,6 +2,12 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.6.1 (beta)
+
+### Behaviour changes
+- **New `custom:powerengine-sim-card`** (Simulator tab): imports a year of hourly energy from Home Assistant's
+  statistics for the Simulator while an admin has the page open, and holds the heat-pump settings.
+
 ## 0.6.0 (beta)
 
 ### Behaviour changes

@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.6.0";
+const CARD_VERSION = "0.6.1";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -1016,6 +1016,168 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-te
   window.customCards.push({ type: "powerengine-test-card", name: "PowerEngine supervised test", description: "Run a short, supervised inverter write test." });
 }
 
+// --- Simulator card: history import (automatic) and heat-pump settings ---------------------------------------
+// HA only lets admins read long-term statistics and fire events, so this runs in an admin's browser. When the app
+// asks for months of history, the card reads them (hourly energy per sensor) one month at a time and hands each to
+// the app. The heat-pump form saves its settings to the app, which uses them in the next overnight run.
+const SIM_ENTITY = "sensor.pe_cost_simulator";
+const HP_FIELDS = [
+  ["gas_kwh_year", "Gas used in a year", "kWh", "From your gas bills (all gas, heating + hot water). Used to work out how much heat the house needs."],
+  ["boiler_efficiency", "Boiler efficiency", "%", "About 85% for a modern condensing boiler, 70-75% for an older one."],
+  ["heat_loss_kw", "Heat loss (survey)", "kW", "Optional: the heat-loss figure from a survey (at -3 °C). Replaces the gas estimate when set."],
+  ["hot_water_kwh_day", "Hot water heat per day", "kWh", "About 5-8 kWh for a family."],
+  ["tank_litres", "Hot water tank", "litres", "For the notes; hot water is heated in the day's cheapest hours."],
+  ["cop_cold", "Efficiency (COP) at -3 °C", "", "From the pump's datasheet at 45 °C flow; about 2.5 if unknown."],
+  ["cop_mild", "Efficiency (COP) at 12 °C", "", "About 4.5 if unknown."],
+  ["max_kw", "Pump size", "kW heat", "Heat output; anything beyond it is counted as an electric immersion (COP 1)."],
+  ["preheat_h", "Pre-heating allowed", "hours", "How far ahead heating may run in cheaper hours (0-6)."],
+  ["gas_price_p", "Gas unit price", "p/kWh", "For the keep-gas comparison."],
+  ["gas_standing_p", "Gas standing charge", "p/day", "Saved if the gas supply is removed."],
+  ["install_cost", "Installed cost after grants", "£", "For payback in years (shown once there's a year of history)."],
+];
+
+function simHistoryPlan(state) {
+  const a = (state && state.attributes) || {};
+  const req = a.history_request || {};
+  return { months: req.months || [], entities: req.entities || {}, imported: req.imported || [] };
+}
+
+function monthRange(month) {
+  const [y, m] = month.split("-").map(Number);
+  const start = new Date(Date.UTC(y, m - 1, 1) - 86400000);
+  const end = new Date(Date.UTC(m === 12 ? y + 1 : y, m === 12 ? 0 : m, 1) + 86400000);
+  return { start: start.toISOString(), end: end.toISOString() };
+}
+
+class PowerEngineSimCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
+  setConfig(config) {
+    this._config = config || {};
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+  }
+
+  set hass(hass) {
+    const first = !this._hass;
+    this._hass = hass;
+    if (first) this._build();
+    this._render();
+    this._maybeImport();
+  }
+
+  getCardSize() { return 6; }
+
+  _admin() { return !!(this._hass && this._hass.user && this._hass.user.is_admin); }
+
+  async _maybeImport() {
+    if (this._importing || !this._admin()) return;
+    const plan = simHistoryPlan(this._hass.states[SIM_ENTITY]);
+    const month = plan.months.find((m) => !(this._tried || new Set()).has(m));
+    if (!month) return;
+    const ids = [...new Set(Object.values(plan.entities).flat())];
+    if (!ids.length) return;
+    this._importing = true;
+    this._tried = this._tried || new Set();
+    this._tried.add(month);
+    this._status = `Reading ${month} from Home Assistant's statistics…`;
+    this._render();
+    try {
+      const { start, end } = monthRange(month);
+      const stats = await this._hass.callWS({ type: "recorder/statistics_during_period", start_time: start, end_time: end,
+        statistic_ids: ids, period: "hour", types: ["change"] });
+      const compact = {};                                  // [start, change] pairs keep the event small
+      Object.entries(stats || {}).forEach(([id, rows]) => { compact[id] = rows.map((r) => [r.start, r.change]); });
+      await this._hass.callWS({ type: "fire_event", event_type: "pe_sim_history", event_data: { month, stats: compact } });
+      this._status = `Imported ${month}.`;
+    } catch (err) {
+      this._status = `Couldn't import ${month}: ${(err && err.message) || err}`;
+    }
+    this._importing = false;
+    this._render();
+    setTimeout(() => this._maybeImport(), 1500);            // next month, once the app has recorded this one
+  }
+
+  _build() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        ha-card { padding: 16px; }
+        h2 { margin: 0 0 6px; font-size: 1.2em; font-weight: 500; }
+        h3 { margin: 16px 0 6px; font-size: 1.05em; font-weight: 500; }
+        p, .muted { color: var(--secondary-text-color); margin: 4px 0; }
+        .grid { display: grid; grid-template-columns: minmax(160px, 1fr) 120px; gap: 6px 12px; align-items: center; }
+        .grid .help { grid-column: 1 / -1; font-size: .85em; color: var(--secondary-text-color); margin-top: -4px; }
+        input[type=number] { font: inherit; padding: 4px 6px; width: 100%; box-sizing: border-box; }
+        button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--divider-color);
+                 background: var(--primary-color); color: var(--text-primary-color, #fff); cursor: pointer; margin-top: 10px; }
+        button:disabled { opacity: .5; cursor: default; }
+        .msg { margin-left: 8px; }
+        .ok { color: var(--success-color, #43a047); } .bad { color: var(--error-color, #db4437); }
+      </style>
+      <ha-card>
+        <h2>Simulator set-up</h2>
+        <h3>A year of history</h3>
+        <p class="hist"></p>
+        <h3>Heat pump</h3>
+        <p>Adds a heat pump to your tariff, the heat-pump tariffs and the five best others, and compares each with keeping gas. Saved settings are used in the next overnight run.</p>
+        <label><input type="checkbox" class="hp_on"> Include a heat pump</label>
+        <div class="grid">${HP_FIELDS.map(([k, label, unit, help]) => `
+          <label for="f_${k}">${label}${unit ? ` (${unit})` : ""}</label><input type="number" step="any" id="f_${k}" data-k="${k}">
+          <div class="help">${help}</div>`).join("")}
+        </div>
+        <button class="save">Save heat pump settings</button><span class="msg"></span>
+      </ha-card>`;
+    this.shadowRoot.querySelector(".save").addEventListener("click", () => this._save());
+    this._fill();
+  }
+
+  _fill() {
+    const a = ((this._hass.states[SIM_ENTITY] || {}).attributes || {});
+    const s = (a.settings || {}).heat_pump || {};
+    const defaults = { boiler_efficiency: 85, hot_water_kwh_day: 6, tank_litres: 200, cop_cold: 2.5, cop_mild: 4.5, max_kw: 8, preheat_h: 2, gas_price_p: 6, gas_standing_p: 30 };
+    this.shadowRoot.querySelector(".hp_on").checked = !!s.enabled;
+    this.shadowRoot.querySelectorAll("input[data-k]").forEach((inp) => {
+      const k = inp.dataset.k;
+      const v = s[k] !== undefined && s[k] !== 0 ? s[k] : defaults[k];
+      inp.value = v === undefined ? "" : v;
+    });
+    this._filled = !!a.settings;
+  }
+
+  async _save() {
+    const hp = { enabled: this.shadowRoot.querySelector(".hp_on").checked };
+    this.shadowRoot.querySelectorAll("input[data-k]").forEach((inp) => { hp[inp.dataset.k] = inp.value === "" ? 0 : Number(inp.value); });
+    const msg = this.shadowRoot.querySelector(".msg");
+    try {
+      const unsub = await this._hass.connection.subscribeEvents((ev) => {
+        msg.textContent = ev.data.message; msg.className = "msg " + (ev.data.ok ? "ok" : "bad"); unsub();
+      }, "pe_sim_result");
+      await this._hass.callWS({ type: "fire_event", event_type: "pe_sim_settings", event_data: { heat_pump: hp } });
+      msg.textContent = "Saving…"; msg.className = "msg";
+    } catch (err) {
+      msg.textContent = "Couldn't save: " + ((err && err.message) || err) + " (admin users only)"; msg.className = "msg bad";
+    }
+  }
+
+  _render() {
+    if (!this.shadowRoot || !this._hass) return;
+    const st = this._hass.states[SIM_ENTITY];
+    if (!this._filled && st && st.attributes && st.attributes.settings) this._fill();
+    const plan = simHistoryPlan(st);
+    const el = this.shadowRoot.querySelector(".hist");
+    let text;
+    if (!st) text = "Waiting for PowerEngine.";
+    else if (!plan.months.length) text = plan.imported.length ? `Imported ${plan.imported.length} month${plan.imported.length === 1 ? "" : "s"} of history from Home Assistant's statistics (hourly energy). The Simulator uses them from the next overnight run.` : "Nothing to import.";
+    else if (!this._admin()) text = `${plan.months.length} month(s) of history can be imported from Home Assistant's statistics. Open this page as an admin user and it happens automatically.`;
+    else text = `Importing ${plan.months.length} month(s) of hourly energy from Home Assistant's statistics while this page is open (each month takes a few seconds).`;
+    el.textContent = text + (this._status ? " " + this._status : "");
+    this.shadowRoot.querySelector(".save").disabled = !this._admin();
+  }
+}
+
+if (typeof customElements !== "undefined" && !customElements.get("powerengine-sim-card")) {
+  customElements.define("powerengine-sim-card", PowerEngineSimCard);
+  window.customCards = window.customCards || [];
+  window.customCards.push({ type: "powerengine-sim-card", name: "PowerEngine simulator set-up", description: "Imports a year of history for the Simulator and holds its heat-pump settings." });
+}
+
 if (typeof customElements !== "undefined" && !customElements.get("powerengine-config-card")) {
   customElements.define("powerengine-config-card", PowerEngineConfigCard);
   window.customCards = window.customCards || [];
@@ -1028,5 +1190,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, measuredText, CARD_VERSION };
+  module.exports = { parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, measuredText, simHistoryPlan, monthRange, CARD_VERSION };
 }

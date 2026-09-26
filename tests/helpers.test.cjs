@@ -168,3 +168,12 @@ test("measuredText", () => {
   assert.equal(h.measuredText(eff, "battery_round_trip"), "(88.4% measured)");
   assert.equal(h.measuredText({ states: { "sensor.pe_diag_battery_efficiency": { state: "90.3", attributes: { measured: false } } } }, "battery_round_trip"), "(not measured yet)");
 });
+
+test("simulator history plan and month range", () => {
+  const st = { attributes: { history_request: { months: ["2025-10"], entities: { house: ["sensor.h"] }, imported: [] } } };
+  assert.deepEqual(h.simHistoryPlan(st).months, ["2025-10"]);
+  assert.deepEqual(h.simHistoryPlan(undefined).months, []);
+  const r = h.monthRange("2025-12");
+  assert.equal(r.start, "2025-11-30T00:00:00.000Z");
+  assert.equal(r.end, "2026-01-02T00:00:00.000Z");
+});
