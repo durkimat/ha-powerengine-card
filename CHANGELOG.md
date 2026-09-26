@@ -2,6 +2,21 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.8.2
+
+- **Config page reorganised by topic.** One section per topic (Battery, Grid and house, Solar, Tariff and planning,
+  Car and EDF smart charge, Selling, Axle, Free power, Cold battery, Inverter control, Tariff simulator,
+  Notifications), each holding its switches, inputs, settings and learning. Anything new that isn't placed yet
+  appears under *Other*.
+- **Search** (names, descriptions and entity IDs) and filters: *All*, *Needs attention*, *Required*, *Optional*.
+- **Colour:** green strip for a working required input, red for one missing or failing, amber for one needed
+  only for something not in use (going live, or a switched-off feature), grey for optional. Section headers count
+  required and optional inputs; a line at the top says how many required inputs need attention and jumps to the
+  first.
+- Inverter window, current, storage-mode and apply entities show as *Needed to go live* (required once live).
+- Switched-off topics (Axle, Free power, Cold battery, Simulator) are greyed out with a note.
+- Fix: new features (learning, cold caution) showed unticked on configs saved before 0.8.0.
+
 ## 0.8.1
 
 - Features: four *Learn: …* switches replace *Use learned limits*.

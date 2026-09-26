@@ -233,3 +233,36 @@ test("measuredText for learned rates", () => {
   assert.equal(h.measuredText(hass, "battery_max_charge_power"), "(4.20 kW measured)");
   assert.equal(h.measuredText(hass, "battery_max_discharge_power"), "(not measured yet)");
 });
+
+test("every feature has a default", () => {
+  assert.deepEqual(h.FEATURES.map((f) => f[0]).sort(), Object.keys(h.FEATURE_DEFAULTS).sort());
+});
+
+test("topicPlan puts everything somewhere, clocks together, leftovers in Other", () => {
+  const plan = h.topicPlan(["battery_soc", "inverter_clock", "inverter_clock_sync", "new_thing"], ["min_reserve_soc"],
+    ["axle", "learn_taper"], ["battery_location"]);
+  const where = (k) => plan.find((t) => t.roles.includes(k)).key;
+  assert.equal(where("inverter_clock"), "control");
+  assert.equal(where("inverter_clock_sync"), "control");
+  assert.equal(where("new_thing"), "other");
+  assert.deepEqual(plan.find((t) => t.key === "battery").learning, ["learn_taper"]);
+  assert.deepEqual(plan.find((t) => t.key === "cold").system, ["battery_location"]);
+});
+
+test("roleNeed", () => {
+  const d = (mode, f) => ({ operation: { mode }, features: f || {} });
+  assert.equal(h.roleNeed({ key: "battery_soc", required: "yes" }, d("passive")).level, "req");
+  assert.equal(h.roleNeed({ key: "timed_charge_current", required: "no" }, d("passive")).level, "cond");
+  assert.equal(h.roleNeed({ key: "timed_charge_current", required: "no" }, d("active")).badge, "Required to go live");
+  assert.equal(h.roleNeed({ key: "axle_event_active", required: "axle" }, d("passive", { axle: false })).level, "cond");
+  assert.equal(h.roleNeed({ key: "axle_event_active", required: "axle" }, d("passive", { axle: true })).level, "req");
+  assert.equal(h.roleNeed({ key: "smart_target_soc", required: "no" }, d("passive", { smart_charge_optimisation: true })).level, "req");
+  assert.equal(h.roleNeed({ key: "battery_soh", required: "no" }, d("passive")).level, "opt");
+  assert.equal(h.roleNeed({ key: "battery_power", required: "yes" }, d("passive"), true).level, "unused");
+});
+
+test("matchesSearch", () => {
+  assert.ok(h.matchesSearch("Inverter clock sensor.solis_rtc", "clock rtc"));
+  assert.ok(!h.matchesSearch("Main supply fuse", "clock"));
+  assert.ok(h.matchesSearch("anything", "  "));
+});
