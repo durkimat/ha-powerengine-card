@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.7.2";
+const CARD_VERSION = "0.7.3";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -891,6 +891,185 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-to
   window.customCards.push({ type: "powerengine-toggle-card", name: "PowerEngine toggle", description: "A discreet title + switch row." });
 }
 
+// --- Battery controller handover ---------------------------------------------------------------------------
+// Switches between Predbat and PowerEngine through input_select.battery_controller (docs/ha/
+// powerengine_handover.yaml runs the handover scripts). Shows what each related entity should be for the chosen
+// controller, so a half-finished or manually undone handover is obvious and can be re-applied.
+const HANDOVER_DEFAULTS = {
+  selector: "input_select.battery_controller",
+  read_only: "switch.predbat_set_read_only",
+  pause: "switch.pe_ctl_pause",
+  mode: "sensor.pe_state_operation_mode",
+  scripts: { PowerEngine: "script.battery_handover_to_powerengine", Predbat: "script.battery_handover_to_predbat" },
+  legacy: [
+    "automation.charge_house_battery_on", "automation.charge_house_battery_off",
+    "automation.discharge_house_battery_on", "automation.discharge_house_battery_off",
+    "automation.house_battery_start_charging", "automation.house_battery_stop_charging",
+    "automation.house_battery_start_charging_2", "automation.house_battery_stop_charging_2",
+  ],
+};
+const CONTROLLERS = ["Predbat", "PowerEngine"];
+const HANDOVER_STEPS = {
+  PowerEngine: "Predbat goes read-only, the legacy automations stay off, then PowerEngine is resumed and takes " +
+    "over at its next decision (only if its Operation mode is Active).",
+  Predbat: "PowerEngine is paused and closes its inverter windows (Self-Use), then Predbat leaves read-only and " +
+    "takes over at its next update. About 30 seconds.",
+};
+
+// Rows of {label, want, have, ok, note} for the controller currently selected. ok is null when unknown.
+function handoverRows(states, cfg) {
+  const c = Object.assign({}, HANDOVER_DEFAULTS, cfg || {});
+  const st = (id) => (states && states[id]) || null;
+  const val = (id) => (st(id) ? st(id).state : "missing");
+  const sel = val(c.selector);
+  const toPE = sel === "PowerEngine";
+  const rows = [];
+  const add = (label, want, have, ok, note) => rows.push({ label, want, have, ok, note: note || "" });
+  const known = (v) => !["missing", "unknown", "unavailable"].includes(v);
+
+  const ro = val(c.read_only);
+  add("Predbat read-only", toPE ? "on" : "off", ro, known(ro) ? ro === (toPE ? "on" : "off") : null);
+
+  const on = c.legacy.filter((id) => val(id) === "on");
+  const found = c.legacy.filter((id) => st(id));
+  add("Legacy automations", "all off", found.length ? (on.length ? `${on.length} on` : "all off") : "not found",
+      found.length ? on.length === 0 : null,
+      on.length ? on.map((id) => id.replace("automation.", "")).join(", ") : "");
+
+  const pz = val(c.pause);
+  add("PowerEngine paused", toPE ? "off" : "on", pz, known(pz) ? pz === (toPE ? "off" : "on") : null);
+
+  const m = val(c.mode);
+  const reason = (st(c.mode) && st(c.mode).attributes && st(c.mode).attributes.reason) || "";
+  if (toPE) {
+    add("PowerEngine mode", "active", m, known(m) ? m === "active" : null,
+        m === "passive" ? "Passive: PowerEngine is watching but not writing. Set Operation mode to Active (settings " +
+          "above) to give it control; until then the inverter stays on Self-Use." : (m === "active" ? "" : reason));
+  } else {
+    add("PowerEngine mode", "not active", m, known(m) ? m !== "active" : null, m === "active" ? reason : "");
+  }
+  return { selected: sel, rows, allOk: rows.every((r) => r.ok !== false) };
+}
+
+class PowerEngineHandoverCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
+  setConfig(config) {
+    this._config = config || {};
+    this._c = Object.assign({}, HANDOVER_DEFAULTS, this._config);
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+
+  getCardSize() { return 5; }
+
+  _busy() {
+    const s = this._hass && this._hass.states;
+    return !!s && Object.values(this._c.scripts).some((id) => s[id] && s[id].state === "on");
+  }
+
+  async _switch(target) {
+    this._confirm = null;
+    try {
+      await this._hass.callService("input_select", "select_option", { entity_id: this._c.selector, option: target });
+      this._msg = "";
+    } catch (err) {
+      this._msg = "Could not switch: " + ((err && err.message) || err);
+    }
+    this._render();
+  }
+
+  async _reapply(sel) {
+    try {
+      await this._hass.callService("script", "turn_on", { entity_id: this._c.scripts[sel] });
+      this._msg = "";
+    } catch (err) {
+      this._msg = "Could not re-apply: " + ((err && err.message) || err);
+    }
+    this._render();
+  }
+
+  _render() {
+    if (!this.shadowRoot || !this._c) return;
+    if (!this._built) {
+      this.shadowRoot.innerHTML = `
+        <style>
+          ha-card { padding: 16px; }
+          h2 { margin: 0 0 8px; font-size: 1.2em; font-weight: 500; }
+          p { margin: 4px 0 10px; color: var(--secondary-text-color); }
+          .seg { display: inline-flex; border: 1px solid var(--divider-color); border-radius: 18px; overflow: hidden; }
+          .seg button { font: inherit; padding: 6px 16px; border: 0; background: none; color: var(--primary-text-color);
+                        cursor: pointer; }
+          .seg button.on { background: var(--primary-color); color: var(--text-primary-color, #fff); cursor: default; }
+          .seg button:disabled:not(.on) { opacity: .5; cursor: default; }
+          .confirm { margin: 10px 0; padding: 10px; border-radius: 8px; background: var(--secondary-background-color); }
+          .btn { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--divider-color);
+                 background: var(--primary-color); color: var(--text-primary-color, #fff); cursor: pointer; margin-right: 6px; }
+          .btn.plain { background: none; color: var(--primary-text-color); }
+          table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+          td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--divider-color); vertical-align: top; }
+          th { font-weight: 500; color: var(--secondary-text-color); }
+          .ok { color: var(--success-color, #43a047); } .bad { color: var(--error-color, #db4437); }
+          .note { color: var(--secondary-text-color); font-size: .9em; }
+          .msg { color: var(--error-color, #db4437); margin-top: 8px; }
+          .busy { color: var(--warning-color, #ffa000); margin-left: 10px; }
+        </style>
+        <ha-card><div class="body"></div></ha-card>`;
+      this.shadowRoot.addEventListener("click", (ev) => {
+        const b = ev.target.closest("button");
+        if (!b || b.disabled) return;
+        if (b.dataset.pick) { this._confirm = b.dataset.pick; this._render(); }
+        else if (b.dataset.go) this._switch(b.dataset.go);
+        else if (b.dataset.cancel !== undefined) { this._confirm = null; this._render(); }
+        else if (b.dataset.reapply) this._reapply(b.dataset.reapply);
+      });
+      this._built = true;
+    }
+    const esc = (t) => String(t).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+    const body = this.shadowRoot.querySelector(".body");
+    const states = this._hass ? this._hass.states : {};
+    const title = `<h2>${esc(this._config.title || "Battery controller")}</h2>`;
+    if (!states[this._c.selector]) {
+      body.innerHTML = title + `<p>${esc(this._c.selector)} not found. Install docs/ha/powerengine_handover.yaml as a ` +
+        `package (see INSTALL.md), check the config and restart Home Assistant.</p>`;
+      return;
+    }
+    const h = handoverRows(states, this._config);
+    const busy = this._busy();
+    const seg = CONTROLLERS.map((c) => `<button class="${c === h.selected ? "on" : ""}" ${busy || c === h.selected ? "disabled" : ""}
+        data-pick="${c}">${c}</button>`).join("");
+    let html = title + `<p>Which system drives the battery. Switching runs a handover so only one of them writes to
+      the inverter at a time.</p><div><span class="seg">${seg}</span>${busy ? '<span class="busy">Switching…</span>' : ""}</div>`;
+    if (this._confirm && this._confirm !== h.selected && !busy) {
+      html += `<div class="confirm"><b>Hand control to ${esc(this._confirm)}?</b><p>${esc(HANDOVER_STEPS[this._confirm])}</p>
+        <button class="btn" data-go="${esc(this._confirm)}">Switch to ${esc(this._confirm)}</button>
+        <button class="btn plain" data-cancel>Cancel</button></div>`;
+    }
+    html += `<table><tr><th></th><th>Should be</th><th>Is</th></tr>` + h.rows.map((r) => {
+      const mark = r.ok === true ? '<span class="ok">✓</span>' : r.ok === false ? '<span class="bad">✗</span>' : "?";
+      return `<tr><td>${mark} ${esc(r.label)}${r.note ? `<div class="note">${esc(r.note)}</div>` : ""}</td>` +
+        `<td>${esc(r.want)}</td><td>${esc(r.have)}</td></tr>`;
+    }).join("") + `</table>`;
+    const settled = h.rows.filter((r) => r.label !== "PowerEngine mode").every((r) => r.ok !== false);
+    if (!settled && !busy && this._c.scripts[h.selected]) {
+      html += `<p>Something doesn't match ${esc(h.selected)} (changed by hand, or a handover didn't finish).</p>
+        <button class="btn" data-reapply="${esc(h.selected)}">Re-apply ${esc(h.selected)} handover</button>`;
+    }
+    if (this._msg) html += `<div class="msg">${esc(this._msg)}</div>`;
+    body.innerHTML = html;
+  }
+}
+
+if (typeof customElements !== "undefined" && !customElements.get("powerengine-handover-card")) {
+  customElements.define("powerengine-handover-card", PowerEngineHandoverCard);
+  window.customCards = window.customCards || [];
+  window.customCards.push({ type: "powerengine-handover-card", name: "PowerEngine handover",
+    description: "Switch battery control between Predbat and PowerEngine." });
+}
+
 // --- Supervised test writes -------------------------------------------------------------------------------
 // Admin only (HA only lets admins fire events). Writes one action's settings to the inverter for a few
 // minutes, reads them back, then returns the inverter to Self-Use. The app refuses unless the handover guards
@@ -1218,5 +1397,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, measuredText, simHistoryPlan, monthRange, CARD_VERSION };
+  module.exports = { parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, measuredText, simHistoryPlan, monthRange, handoverRows, CARD_VERSION };
 }
