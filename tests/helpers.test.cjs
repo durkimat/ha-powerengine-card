@@ -164,4 +164,7 @@ test("measuredText", () => {
   assert.equal(h.measuredText({ states: {} }, "battery_capacity"), "(not measured yet)");
   const hass = { states: { "sensor.pe_diag_battery_capacity": { state: "18.084", attributes: { measured: true, unit_of_measurement: "kWh" } } } };
   assert.equal(h.measuredText(hass, "battery_capacity"), "(18.08 kWh measured)");
+  const eff = { states: { "sensor.pe_diag_battery_efficiency": { state: "90.3", attributes: { measured: true, measured_round_trip: 88.44 } } } };
+  assert.equal(h.measuredText(eff, "battery_round_trip"), "(88.4% measured)");
+  assert.equal(h.measuredText({ states: { "sensor.pe_diag_battery_efficiency": { state: "90.3", attributes: { measured: false } } } }, "battery_round_trip"), "(not measured yet)");
 });

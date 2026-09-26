@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.5.16";
+const CARD_VERSION = "0.5.17";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -236,10 +236,14 @@ function slugify(name, taken) {
 
 /** "(18.08 kWh measured)" / "(not measured yet)" for a measurable input, from PowerEngine's diagnostic sensor. */
 function measuredText(hass, key) {
-  const eid = { battery_capacity: "sensor.pe_diag_battery_capacity" }[key];
-  const st = hass && eid && hass.states[eid];
-  if (!st || !st.attributes || !st.attributes.measured) return "(not measured yet)";
-  return `(${Number(st.state).toFixed(2)} ${st.attributes.unit_of_measurement || "kWh"} measured)`;
+  const src = {
+    battery_capacity: ["sensor.pe_diag_battery_capacity", (st) => `${Number(st.state).toFixed(2)} kWh`],
+    battery_round_trip: ["sensor.pe_diag_battery_efficiency", (st) => st.attributes.measured_round_trip != null
+      ? `${Number(st.attributes.measured_round_trip).toFixed(1)}%` : null],
+  }[key];
+  const st = hass && src && hass.states[src[0]];
+  const text = st && st.attributes && st.attributes.measured ? src[1](st) : null;
+  return text ? `(${text} measured)` : "(not measured yet)";
 }
 
 /** The config object to save: drop empty inputs, keep everything else. */
@@ -635,7 +639,12 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       // PowerEngine measures this (e.g. usable capacity); ticked = use the measured figure once there is one
       const cb = el("input", { type: "checkbox", onchange: (ev) => {
         const s = spec();
-        if (s && s.value !== undefined) { s.use_measured = ev.target.checked; this._refresh(); }
+        if (s && s.value !== undefined) s.use_measured = ev.target.checked;
+        else {                                   // no figure entered yet: keep the default alongside the choice
+          set({ value: role.suggest_static, use_measured: ev.target.checked });
+          staticInput.value = role.suggest_static;
+        }
+        this._refresh();
       } });
       cb.checked = cur.use_measured !== false;
       ctl.append(el("label", { title: "Once PowerEngine has measured it (Health tab), use the measured figure instead of this one" }, cb, " Use measured ",
