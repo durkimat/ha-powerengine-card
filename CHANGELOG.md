@@ -2,6 +2,11 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.7.1 (beta)
+
+### Behaviour changes
+- None (the new *Window change cost* setting appears under Inverter control automatically). Version kept in step.
+
 ## 0.7.0 (beta)
 
 ### Behaviour changes
