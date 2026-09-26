@@ -2,6 +2,11 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.6.4 (beta)
+
+### Behaviour changes
+- None (the new arbitrage settings appear in the Arbitrage section automatically). Version kept in step.
+
 ## 0.6.3 (beta)
 
 ### Behaviour changes
