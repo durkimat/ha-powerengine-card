@@ -2,6 +2,11 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.5.17 (beta)
+
+### Behaviour changes
+- **Use measured** tick box also on the new *Battery round-trip efficiency* input.
+
 ## 0.5.16 (beta)
 
 ### Behaviour changes
