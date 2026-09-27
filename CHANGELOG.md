@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.21
+
+- Inverter control section: **RAM max power**.
+
 ## 0.9.20
 
 - No card changes; version kept in step with the app.
