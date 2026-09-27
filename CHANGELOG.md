@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.17
+
+- No card changes; version kept in step with the app.
+
 ## 0.9.16
 
 - Inverter control section: **Control method** (Timed windows / RAM remote control) and **RAM refresh**.
