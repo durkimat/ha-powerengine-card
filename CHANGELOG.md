@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.34
+
+- No card changes; version kept in step with the app.
+
 ## 0.9.33
 
 - Configuration: the Check meter input now sits under Grid and house (it showed under Other).
