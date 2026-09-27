@@ -175,6 +175,18 @@ test("every test has instructions", () => {
   assert.deepEqual(h.TESTS.filter((t) => t.group === "rc").map((t) => t.key), ["rc_charge", "rc_discharge", "rc_hold", "rc_failsafe"]);
 });
 
+test("diagnostics: config entities, states filter and private attributes, file name", () => {
+  const cfg = { inputs: { battery_soc: { entity: "sensor.soc" }, x: { value: 3 } }, solar_plants: [{ inputs: { power: { entity: "sensor.pv" } } }] };
+  assert.deepEqual([...h.configEntities(cfg)].sort(), ["sensor.pv", "sensor.soc"]);
+  const st = { "sensor.pe_state_battery_soc": { state: "50", attributes: {} }, "sensor.soc": { state: "50", attributes: { account_number: "123", unit_of_measurement: "%" } },
+    "light.kitchen": { state: "on", attributes: {} }, "number.solis_timed_charge_current": { state: "50", attributes: {} } };
+  const out = h.diagStates(st, h.configEntities(cfg));
+  assert.deepEqual(Object.keys(out).sort(), ["number.solis_timed_charge_current", "sensor.pe_state_battery_soc", "sensor.soc"]);
+  assert.equal(out["sensor.soc"].attributes.account_number, "(removed)");
+  assert.equal(out["sensor.soc"].attributes.unit_of_measurement, "%");
+  assert.equal(h.diagFileName(new Date(2026, 8, 27, 19, 5)), "powerengine-diagnostics-20260927-1905.json");
+});
+
 test("liveLine", () => {
   const st = { "sensor.pe_state_battery_power": { state: "-2000" }, "sensor.pe_state_grid_power": { state: "2500" }, "sensor.pe_state_battery_soc": { state: "61.2" } };
   assert.equal(h.liveLine(st), "Battery 61% · charging 2000 W · grid import 2500 W");

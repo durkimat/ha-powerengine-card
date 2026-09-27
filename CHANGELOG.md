@@ -2,6 +2,12 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.7
+
+- New **diagnostics export** card (Health tab): one JSON file with the app's settings, write log, plan and recent
+  log lines, plus live entity states and 24 h of history. Download, Share or Copy, for uploading when there's no
+  shell. Account numbers, serials and similar attributes are removed.
+
 ## 0.9.6
 
 - No card changes; version kept in step with the app.

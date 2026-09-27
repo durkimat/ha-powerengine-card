@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.6";
+const CARD_VERSION = "0.9.7";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -1636,6 +1636,210 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-te
   window.customCards.push({ type: "powerengine-test-card", name: "PowerEngine supervised tests", description: "Run short, supervised inverter tests (timed windows and RAM remote control)." });
 }
 
+// --- Diagnostics export (Health tab) --------------------------------------------------------------------------
+// Admin only (HA only lets admins fire and subscribe to events). Asks the app for its file-backed parts (config,
+// write journal, plan, recent log), adds live entity states and 24 h of history, and saves one JSON file in the
+// browser, to upload when there's no shell to pull files.
+const DIAG_REQUEST = "pe_diag_request";
+const DIAG_BUNDLE = "pe_diag_bundle";
+const DIAG_HISTORY = ["sensor.pe_state_battery_soc", "sensor.pe_state_battery_power", "sensor.pe_state_grid_power",
+  "sensor.pe_state_solar_power", "sensor.pe_state_house_power", "sensor.pe_state_decision",
+  "sensor.pe_state_operation_mode", "sensor.pe_diag_writes_today", "switch.pe_ctl_pause"];
+const DIAG_CONTROL = /^(number|select|button|sensor)\.solis_.*(timed_|storage_control|battery_control_override|update_charge)/;
+
+function configEntities(cfg) {
+  const out = new Set();
+  const walk = (v) => {
+    if (!v || typeof v !== "object") return;
+    if (typeof v.entity === "string") out.add(v.entity);
+    for (const x of Object.values(v)) walk(x);
+  };
+  walk(cfg && cfg.inputs);
+  walk(cfg && cfg.solar_plants);
+  return out;
+}
+
+const DIAG_PRIVATE = /account|mpan|mprn|serial|meter_point|email|token|password|secret|api_?key|latitude|longitude|address/i;
+
+function diagStates(states, extra) {
+  const out = {};
+  for (const [id, st] of Object.entries(states || {}).sort()) {
+    if (/^[a-z_]+\.pe_/.test(id) || (extra && extra.has(id)) || DIAG_CONTROL.test(id)) {
+      const attributes = {};
+      for (const [k, v] of Object.entries(st.attributes || {})) attributes[k] = DIAG_PRIVATE.test(k) ? "(removed)" : v;
+      out[id] = { state: st.state, attributes, last_changed: st.last_changed };
+    }
+  }
+  return out;
+}
+
+function diagFileName(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `powerengine-diagnostics-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.json`;
+}
+
+class PowerEngineDiagnosticsCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
+  setConfig(config) {
+    this._config = config || {};
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (!this._built) this._render();
+  }
+
+  getCardSize() { return 2; }
+
+  async _askApp(id) {
+    let unsub = null;
+    try {
+      const answer = new Promise((resolve) => {
+        this._hass.connection.subscribeEvents((ev) => {
+          if (ev && ev.data && ev.data.id === id) resolve(ev.data);
+        }, DIAG_BUNDLE).then((u) => { unsub = u; });
+        setTimeout(() => resolve(null), 20000);
+      });
+      await new Promise((r) => setTimeout(r, 300));          // let the subscription land first
+      await this._hass.callWS({ type: "fire_event", event_type: DIAG_REQUEST, event_data: { id } });
+      return (await answer) || { bundle: { error: "PowerEngine didn't answer within 20 s (is AppDaemon running?)" } };
+    } catch (err) {
+      return { bundle: { error: "Could not ask PowerEngine: " + ((err && err.message) || err) + " (admin users only)" } };
+    } finally {
+      if (unsub) { try { unsub(); } catch (e) { /* already gone */ } }
+    }
+  }
+
+  async _history() {
+    const end = new Date();
+    const start = new Date(end.getTime() - 24 * 3600 * 1000);
+    try {
+      return await this._hass.callWS({ type: "history/history_during_period", start_time: start.toISOString(),
+        end_time: end.toISOString(), entity_ids: DIAG_HISTORY, minimal_response: true, no_attributes: true,
+        significant_changes_only: false });
+    } catch (err) {
+      return { error: String((err && err.message) || err) };
+    }
+  }
+
+  async _export() {
+    if (!this._hass || this._busy) return;
+    this._busy = true;
+    this._file = null;
+    this._status("Collecting from PowerEngine…");
+    const now = new Date();
+    const id = Math.random().toString(36).slice(2) + now.getTime().toString(36);
+    const app = await this._askApp(id);
+    this._status("Adding entity states and 24 h of history…");
+    const history = await this._history();
+    const cfg = app.bundle && app.bundle.config;
+    const bundle = {
+      generated: now.toISOString(), card_version: CARD_VERSION,
+      browser: typeof navigator !== "undefined" ? navigator.userAgent : "",
+      app: app.bundle, app_copy: app.saved || null,
+      states: diagStates(this._hass.states, configEntities(cfg)),
+      history,
+    };
+    const text = JSON.stringify(bundle, null, 1);
+    this._name = diagFileName(now);
+    this._file = new Blob([text], { type: "application/json" });
+    this._busy = false;
+    this._download();
+    this._status(`Ready: ${this._name} (${Math.round(text.length / 1024)} KB). If nothing downloaded, use Share or ` +
+      `Copy.${app.saved ? " A copy of PowerEngine's part is also in " + app.saved.replace(/^.*\/powerengine\//, "/homeassistant/powerengine/") + "." : ""}`);
+  }
+
+  _download() {
+    if (!this._file) return;
+    const url = URL.createObjectURL(this._file);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = this._name;
+    this.shadowRoot.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+
+  async _share() {
+    if (!this._file) return;
+    try {
+      const file = new File([this._file], this._name, { type: "application/json" });
+      await navigator.share({ files: [file], title: "PowerEngine diagnostics" });
+    } catch (err) {
+      this._status("Share didn't work here: " + ((err && err.message) || err));
+    }
+  }
+
+  async _copy() {
+    if (!this._file) return;
+    try {
+      await navigator.clipboard.writeText(await this._file.text());
+      this._status("Copied to the clipboard.");
+    } catch (err) {
+      this._status("Copy didn't work here: " + ((err && err.message) || err));
+    }
+  }
+
+  _status(text) {
+    this._msg = text;
+    this._render();
+  }
+
+  _render() {
+    if (!this.shadowRoot) return;
+    if (!this._built) {
+      this.shadowRoot.innerHTML = `
+        <style>
+          ha-card { padding: 16px; }
+          h2 { margin: 0 0 6px; font-size: 1.2em; font-weight: 500; }
+          p { margin: 4px 0 8px; color: var(--secondary-text-color); }
+          .row { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+          button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--divider-color);
+                   background: var(--primary-color); color: var(--text-primary-color, #fff); cursor: pointer; }
+          button.second { background: none; color: var(--primary-text-color); }
+          button:disabled { opacity: .5; cursor: default; }
+          .msg { color: var(--primary-text-color); }
+        </style>
+        <ha-card>
+          <h2>Diagnostics export</h2>
+          <p>One file with PowerEngine's settings, the inverter write log (48 h), the plan, recent log lines, the
+             current state of its entities and the inverter controls, and 24 h of battery, grid and mode history.
+             Upload it to Claude when you can't pull files from the shell. Account numbers, serials and similar attributes are left out; no passwords or tokens are included.</p>
+          <div class="row">
+            <button class="go">Export diagnostics</button>
+            <button class="second again">Download again</button>
+            <button class="second share">Share</button>
+            <button class="second copy">Copy</button>
+          </div>
+          <p class="msg"></p>
+        </ha-card>`;
+      const q = (sel) => this.shadowRoot.querySelector(sel);
+      q(".go").addEventListener("click", () => this._export());
+      q(".again").addEventListener("click", () => this._download());
+      q(".share").addEventListener("click", () => this._share());
+      q(".copy").addEventListener("click", () => this._copy());
+      this._built = true;
+    }
+    const q = (sel) => this.shadowRoot.querySelector(sel);
+    const have = !!this._file;
+    q(".go").disabled = !!this._busy;
+    q(".again").disabled = !have;
+    q(".copy").disabled = !have;
+    q(".share").disabled = !have;
+    q(".share").style.display = typeof navigator !== "undefined" && navigator.share ? "" : "none";
+    q(".msg").textContent = this._msg || "";
+  }
+}
+
+if (typeof customElements !== "undefined" && !customElements.get("powerengine-diagnostics-card")) {
+  customElements.define("powerengine-diagnostics-card", PowerEngineDiagnosticsCard);
+  window.customCards = window.customCards || [];
+  window.customCards.push({ type: "powerengine-diagnostics-card", name: "PowerEngine diagnostics export",
+    description: "Download one diagnostics file for troubleshooting." });
+}
+
 // --- Simulator card: history import (automatic) and heat-pump settings ---------------------------------------
 // HA only lets admins read long-term statistics and fire events, so this runs in an admin's browser. When the app
 // asks for months of history, the card reads them (hourly energy per sensor) one month at a time and hands each to
@@ -1837,5 +2041,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION };
+  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, configEntities, diagStates, diagFileName, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION };
 }
