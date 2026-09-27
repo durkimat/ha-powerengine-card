@@ -322,3 +322,14 @@ test("handoverRows: Predbat missing is safe under PowerEngine", () => {
   assert.match(r.rows[0].note, /isn't connected/);
   assert.equal(r.status, "live");
 });
+
+test("diagnostics history adds the mapped raw meters and the grid cross-check", () => {
+  const ids = h.diagHistoryIds({ inputs: { grid_power: { entity: "sensor.solis_meter_active_power" },
+    grid_power_reference: { entity: "sensor.myenergi_67lr_power_grid" }, battery_capacity: { value: 18 } } });
+  assert.ok(ids.includes("sensor.solis_meter_active_power"));
+  assert.ok(ids.includes("sensor.myenergi_67lr_power_grid"));
+  assert.ok(ids.includes("sensor.pe_diag_grid_check"));
+  assert.ok(ids.includes("sensor.pe_state_battery_power"));
+  assert.equal(new Set(ids).size, ids.length);
+  assert.ok(h.diagHistoryIds(null).includes("sensor.pe_state_grid_power"));
+});

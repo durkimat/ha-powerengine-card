@@ -2,6 +2,11 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.32
+
+- Diagnostics export: adds 24 h of history for the mapped raw grid, check-meter, battery, house-load and car
+  readings, and for the grid meter cross-check.
+
 ## 0.9.31
 
 - No card changes; version kept in step with the app.
