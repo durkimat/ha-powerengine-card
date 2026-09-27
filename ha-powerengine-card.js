@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.11";
+const CARD_VERSION = "0.9.12";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -34,6 +34,8 @@ const FEATURES = [
   ["learn_car", "Learn: car charge rate", "Plan the car's share of smart-charge slots with its real charging kW instead of Car charger power."],
   ["cold_caution", "Cold battery caution", "Plan a slower charge when the battery is likely to be cold, estimated from the outside temperature (Open-Meteo forecast for your home's location) with a lag, so a cold spell is expected to chill it gradually and it stays cautious until the weather has been milder for a while. Settings under Cold battery."],
   ["cold_learning", "Learn cold behaviour", "Adjust the cold threshold and rate from what's seen: charging slowed at 5°C raises the threshold; charging normally at 3°C lowers it to 3°C."],
+  ["damp_restart", "Restart hold-off", "After PowerEngine starts, or control resumes or goes live, write nothing for a few minutes (Restart hold-off setting) while the plan and its inputs settle. The inverter keeps running the windows already set. Safety changes (Axle, free power, the car charging, the reserve) never wait."],
+  ["damp_bursts", "Burst damping", "The first change to a window slot, current or the mode goes straight through; another change to the same thing within the Burst window waits until the plan has been steady for the Burst settle time, so several quick changes become one write. Off by default while its effect is evaluated. Safety changes never wait."],
   ["tariff_simulator", "Tariff simulator", "Each night at 01:30, compare your recorded days on current Octopus and EDF tariffs (fetched from their public tariff lists) and notify you if one would save noticeably. Reads only; changes nothing."],
 ];
 const NOTIFY_EVENTS = [
@@ -45,7 +47,8 @@ const NOTIFY_EVENTS = [
   ["simulator", "Tariff opportunities", "When the overnight Simulator finds a tariff that would have cost noticeably less (at least £5 and 5% a month), or new tariffs appear.", true],
 ];
 const FEATURE_DEFAULTS = { auto_cheap_threshold: true, fill_when_cheap: true, smart_charge_optimisation: true, arbitrage: false, axle: true, free_power_days: true, tariff_simulator: true, optimised_plan: true,
-  learn_taper: true, learn_reserve: true, learn_export: true, learn_car: true, cold_caution: true, cold_learning: true };
+  learn_taper: true, learn_reserve: true, learn_export: true, learn_car: true, cold_caution: true, cold_learning: true,
+  damp_restart: true, damp_bursts: false };
 
 /* ------------------------------------------------------------------ helpers
  * Pure functions (no DOM), exported for tests at the bottom of the file.
@@ -201,6 +204,10 @@ const TOPICS = [
       "timed_discharge_end_minute", "timed_discharge_current", "timed_update_button", "storage_mode",
       "inverter_clock", "inverter_clock_sync", "guard_read_only", "guard_off_1", "guard_off_2"],
     settings: ["max_writes_per_day"] },
+  { key: "damping", title: "Dampening tuning",
+    note: "Holding inverter writes back briefly when the settings are likely to change again, to save writes. Health tab, Inverter writes today, shows how many changes were held back.",
+    features: ["damp_restart", "damp_bursts"],
+    settings: ["damp_restart_min", "damp_burst_window_min", "damp_burst_settle_min"] },
   { key: "simulator", title: "Tariff simulator", main: "tariff_simulator", features: ["tariff_simulator"] },
 ];
 // needed before PowerEngine can go live (the rest of the control group is optional)
