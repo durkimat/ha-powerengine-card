@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.15";
+const CARD_VERSION = "0.9.16";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -198,12 +198,12 @@ const TOPICS = [
     settings: ["cold_caution_temp_c", "cold_charge_pct", "cold_release_c", "battery_temp_lag_h"],
     roles: ["outside_temperature", "battery_temperature"] },
   { key: "control", title: "Inverter control (needed to go live)",
-    note: "Written only when PowerEngine is live. Map them now so it can show what it would set (Health tab) and count your current setup's writes. Windows 2 and 3 are found from window 1's entities.",
+    note: "Written only when PowerEngine is live. Map them now so it can show what it would set (Health tab) and count your current setup's writes. Windows 2 and 3 are found from window 1's entities. RAM remote control uses SolaX Modbus's Battery control override entities, found by name (the timed windows are still mapped: they're closed when it takes over, and used if those entities go missing).",
     roles: ["timed_charge_start_hour", "timed_charge_start_minute", "timed_charge_end_hour", "timed_charge_end_minute",
       "timed_charge_current", "timed_discharge_start_hour", "timed_discharge_start_minute", "timed_discharge_end_hour",
       "timed_discharge_end_minute", "timed_discharge_current", "timed_update_button", "storage_mode",
       "inverter_clock", "inverter_clock_sync", "guard_read_only", "guard_off_1", "guard_off_2"],
-    settings: ["max_writes_per_day"] },
+    system: ["control_method"], settings: ["max_writes_per_day", "ram_refresh_min"] },
   { key: "damping", title: "Dampening tuning",
     note: "Holding inverter writes back briefly when the settings are likely to change again, to save writes. Health tab, Inverter writes today, shows how many changes were held back.",
     features: ["damp_restart", "damp_bursts"],
