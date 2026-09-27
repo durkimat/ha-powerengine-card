@@ -153,7 +153,31 @@ test("testSummary: steps become readable lines", () => {
     steps: [{ time: "2026-09-25T10:00:00+00:00", what: "wrote", writes: [{}, {}, {}] },
             { time: "2026-09-25T10:00:10+00:00", what: "read back (start)", ok: false, mismatched: ["timed_charge_current"], soc: 54.6, battery_w: -2100 }] } });
   assert.equal(s.status, "failed");
-  assert.deepEqual(s.lines, ["10:00:00 wrote: 3 writes", "10:00:10 read back (start): MISMATCH: timed_charge_current, SoC 55%, battery -2100 W"]);
+  assert.deepEqual(s.lines, ["10:00:00 wrote: 3 writes", "10:00:10 read back (start): MISMATCH: timed_charge_current, SoC 55%, battery charging 2100 W"]);
+});
+
+test("testSummary: RC verdict, grid and remote-control state", () => {
+  const s = h.testSummary({ state: "passed", attributes: { action: "rc_charge", verdict: "worked", explanation: "battery charged",
+    steps: [{ time: "2026-09-27T20:00:30+00:00", what: "reading", battery_w: 1500, grid_w: -800, rc: "Force discharge" }] } });
+  assert.equal(s.verdict, "worked");
+  assert.deepEqual(s.lines, ["20:00:30 reading: battery discharging 1500 W, grid export 800 W, RC Force discharge"]);
+});
+
+test("findRcEntities prefers the solis entities", () => {
+  const states = { "select.x_battery_control_override": {}, "select.solis_inverter_battery_control_override": {},
+    "number.solis_inverter_battery_control_override_charge_power": {} };
+  assert.deepEqual(h.findRcEntities(states), { rc_mode: "select.solis_inverter_battery_control_override",
+    rc_charge_power: "number.solis_inverter_battery_control_override_charge_power" });
+});
+
+test("every test has instructions", () => {
+  for (const t of h.TESTS) assert.ok(t.what && t.watch && t.checks && t.label, t.key);
+  assert.deepEqual(h.TESTS.filter((t) => t.group === "rc").map((t) => t.key), ["rc_charge", "rc_discharge", "rc_hold", "rc_failsafe"]);
+});
+
+test("liveLine", () => {
+  const st = { "sensor.pe_state_battery_power": { state: "-2000" }, "sensor.pe_state_grid_power": { state: "2500" }, "sensor.pe_state_battery_soc": { state: "61.2" } };
+  assert.equal(h.liveLine(st), "Battery 61% · charging 2000 W · grid import 2500 W");
 });
 
 test("buildConfig keeps use_measured on a fixed value", () => {

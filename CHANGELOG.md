@@ -2,6 +2,13 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.5
+
+- Supervised test card rebuilt for the new **Tests** tab: per-test instructions (what it does, what to watch for on
+  the inverter screen, what PowerEngine checks), live battery/grid readings, the new RAM remote-control tests
+  (RC force charge/discharge, hold, failsafe) with their verdict, and a check that SolaX Modbus exposes the
+  remote-control entities.
+
 ## 0.9.4
 
 - No card changes; version kept in step with the app.
