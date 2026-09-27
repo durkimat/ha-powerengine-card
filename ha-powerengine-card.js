@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.13";
+const CARD_VERSION = "0.9.14";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -677,6 +677,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       const body = section(`topic_${t.key}`, t.title, t.note);
       this._sections[`topic_${t.key}`].main = t.main;
       t.features.forEach((k) => { const r = featureRow(k); if (r) body.append(r); });
+      if (t.key === "damping") body.append(el("div", { class: "note" }, dampingNote(this._hass && this._hass.states)));
       if (t.main) body.append(this._sections[`topic_${t.key}`].offNote = el("div", { class: "offnote" },
         "Switched off: the inputs and settings below aren't used."));
       const inTopic = t.roles.map((k) => byKey[k]).filter(Boolean);
@@ -1449,6 +1450,16 @@ function findRcEntities(states) {
   return out;
 }
 
+function dampingNote(states) {
+  const st = states && states["sensor.pe_diag_writes_today"];
+  const w = st && st.attributes && st.attributes.damping_week;
+  if (!w || !(w.none || w.restart || w.both)) return "Measured savings appear here (and on the Health tab) once PowerEngine has been live for a while.";
+  const on = (st.attributes.damping || {});
+  const n = (x) => `${x} write${x === 1 ? "" : "s"}`;
+  return `Last ${w.days} days (modelled): no dampening ${n(w.none)}; restart hold-off saved ${n(w.saved_restart)}` +
+    `${on.restart === false ? " (would have)" : ""}; burst damping ${on.bursts ? "saved" : "would have saved"} ${n(w.saved_bursts)} more.`;
+}
+
 function testSummary(st) {
   if (!st || ["unknown", "unavailable"].includes(st.state)) return { status: "idle", problems: [], lines: [] };
   const a = st.attributes || {};
@@ -2048,5 +2059,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, configEntities, diagStates, diagFileName, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION };
+  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION };
 }

@@ -187,6 +187,13 @@ test("diagnostics: config entities, states filter and private attributes, file n
   assert.equal(h.diagFileName(new Date(2026, 8, 27, 19, 5)), "powerengine-diagnostics-20260927-1905.json");
 });
 
+test("dampingNote", () => {
+  assert.match(h.dampingNote({}), /appear here/);
+  const st = { "sensor.pe_diag_writes_today": { state: "5", attributes: { damping: { restart: true, bursts: false },
+    damping_week: { days: 7, none: 60, restart: 50, both: 42, saved_restart: 10, saved_bursts: 8 } } } };
+  assert.equal(h.dampingNote(st), "Last 7 days (modelled): no dampening 60 writes; restart hold-off saved 10 writes; burst damping would have saved 8 writes more.");
+});
+
 test("liveLine", () => {
   const st = { "sensor.pe_state_battery_power": { state: "-2000" }, "sensor.pe_state_grid_power": { state: "2500" }, "sensor.pe_state_battery_soc": { state: "61.2" } };
   assert.equal(h.liveLine(st), "Battery 61% · charging 2000 W · grid import 2500 W");
