@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.15
+
+- No card changes; version kept in step with the app.
+
 ## 0.9.14
 
 - The Dampening tuning section shows what each setting saved over the last 7 days (or would have, if off).
