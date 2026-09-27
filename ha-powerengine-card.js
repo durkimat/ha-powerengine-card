@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.32";
+const CARD_VERSION = "0.9.33";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -173,7 +173,8 @@ const TOPICS = [
     settings: ["min_reserve_soc", "grid_charge_target_soc", "charge_hysteresis_soc"],
     learning: ["learn_taper", "learn_reserve"] },
   { key: "grid", title: "Grid and house",
-    roles: ["grid_power", "grid_import_today", "grid_export_today", "house_load_power", "house_load_today"],
+    roles: ["grid_power", "grid_import_today", "grid_export_today", "house_load_power", "house_load_today",
+      "grid_power_reference"],
     settings: ["main_fuse_a"], system: ["house_load_includes_ev"] },
   { key: "solar", title: "Solar", roles: ["solar_forecast_today", "solar_forecast_tomorrow", "solar_forecast_day3"],
     plants: true },

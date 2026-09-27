@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.33
+
+- Configuration: the Check meter input now sits under Grid and house (it showed under Other).
+
 ## 0.9.32
 
 - Diagnostics export: adds 24 h of history for the mapped raw grid, check-meter, battery, house-load and car
