@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.4";
+const CARD_VERSION = "0.9.5";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -1364,33 +1364,119 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-ha
     description: "Switch battery control between Predbat and PowerEngine." });
 }
 
-// --- Supervised test writes -------------------------------------------------------------------------------
-// Admin only (HA only lets admins fire events). Writes one action's settings to the inverter for a few
-// minutes, reads them back, then returns the inverter to Self-Use. The app refuses unless the handover guards
-// are safe and PowerEngine isn't in control.
+// --- Supervised tests (the Tests page) ---------------------------------------------------------------------
+// Admin only (HA only lets admins fire events). Each test writes to the inverter for a few minutes while someone
+// watches, records what the battery did, then hands the inverter back to Self-Use. The app refuses unless the
+// handover guards are safe and PowerEngine isn't in control.
 const TEST_EVENT = "pe_test_write";
 const TEST_ENTITY = "sensor.pe_diag_test_write";
-const TEST_ACTIONS = [
-  ["hold", "Hold (0 A charge window)"],
-  ["charge", "Grid charge"],
-  ["discharge", "Force discharge"],
-  ["self_use", "Self-Use (windows closed)"],
+const RC_TAILS = {
+  rc_mode: ["select.", "battery_control_override"],
+  rc_charge_power: ["number.", "battery_control_override_charge_power"],
+  rc_discharge_power: ["number.", "battery_control_override_discharge_power"],
+};
+const SCREEN = "On the inverter screen watch the battery reading (power or current, and whether it is charging or " +
+  "discharging) and the grid reading. If the screen is slow to update, the Solis app's live view or the readings " +
+  "below show the same thing.";
+const TESTS = [
+  { key: "hold", group: "timed", label: "Hold (0 A charge window)", minutes: 5, power: false,
+    what: "Opens a timed charge window with 0 A, which should stop the battery charging or discharging.",
+    watch: "Battery near 0 W (neither charging nor discharging); the house runs from the grid (and any solar).",
+    checks: "The window settings read back from the inverter; battery power is logged every minute." },
+  { key: "charge", group: "timed", label: "Grid charge (timed window)", minutes: 5, power: true,
+    what: "Opens a timed charge window: the battery charges from the grid at the chosen power (or the maximum).",
+    watch: "Battery charging at about the chosen power; grid import goes up by the same amount.",
+    checks: "The window settings read back; battery power is logged every minute." },
+  { key: "discharge", group: "timed", label: "Force discharge (timed window)", minutes: 5, power: true,
+    what: "Opens a timed discharge window: the battery discharges at the chosen power, exporting what the house " +
+      "doesn't use.",
+    watch: "Battery discharging at about the chosen power; the grid shows export.",
+    checks: "The window settings read back; battery power is logged every minute." },
+  { key: "self_use", group: "timed", label: "Self-Use (windows closed)", minutes: 2, power: false,
+    what: "Closes both timed windows: plain Self-Use.",
+    watch: "Battery covers the house load (discharging about what the house uses); little or no grid import.",
+    checks: "The settings read back as closed." },
+  { key: "rc_charge", group: "rc", label: "RC force charge", minutes: 5, power: true, defPower: 2000,
+    what: "Closes the timed windows, then sets remote control to 'Force charge' at the chosen power (register " +
+      "43135 with 43136). No timed-window (EEPROM) settings are used for the charge itself.",
+    watch: "Battery charging at about the chosen power within a minute; grid import goes up by the same amount. " +
+      "At the end the battery goes back to normal Self-Use.",
+    checks: "Battery power every 30 s: 'worked' if it charged at 60% or more of the asked power. Also checks the " +
+      "timed-window settings didn't change and that remote control is Off at the end." },
+  { key: "rc_discharge", group: "rc", label: "RC force discharge", minutes: 5, power: true, defPower: 2000,
+    what: "Closes the timed windows, then sets remote control to 'Force discharge' at the chosen power (43135 " +
+      "with 43129).",
+    watch: "Battery discharging at about the chosen power; the grid shows export of whatever the house doesn't " +
+      "use.",
+    checks: "'Worked' if the battery discharged at 60% or more of the asked power; windows unchanged; Off at the " +
+      "end." },
+  { key: "rc_hold", group: "rc", label: "RC hold (force charge at 0 W)", minutes: 5, power: false,
+    what: "Remote control 'Force charge' at 0 W. The RC registers have no hold option, so this checks whether a " +
+      "0 W force charge holds the battery. Run it with some house load (a kettle helps) so a hold is visible.",
+    watch: "Battery near 0 W while the house draws from the grid. If the battery discharges to cover the house, " +
+      "0 W doesn't mean hold on this firmware.",
+    checks: "'Worked' if the battery stayed within 300 W of zero throughout." },
+  { key: "rc_failsafe", group: "rc", label: "RC failsafe (stop re-sending)", minutes: 12, power: true,
+    defPower: 2000,
+    what: "Force charges for 2 minutes, then stops the command being re-sent by reloading the SolaX Modbus " +
+      "integration, without writing Off. This is what would happen if HA or AppDaemon died: the inverter should " +
+      "drop the command by itself after its RC timeout (reported as 5 to 30 minutes). SolaX entities show as " +
+      "unavailable for a few seconds during the reload; that's expected.",
+    watch: "Charging starts, then keeps going for a while after the reload. Note the time it stops by itself " +
+      "and the battery goes back to Self-Use. If it's still charging when the test ends, the test switches it " +
+      "Off.",
+    checks: "'Reverted' (with the time) if charging stopped by itself after the reload; 'did not revert' if it " +
+      "was still charging at the end (then run it again with more minutes, up to 35). This is the key test for a " +
+      "safe fallback." },
 ];
+const TEST_BY_KEY = Object.fromEntries(TESTS.map((t) => [t.key, t]));
+
+function findRcEntities(states) {
+  const ids = Object.keys(states || {}).sort();
+  const out = {};
+  for (const [role, [domain, tail]] of Object.entries(RC_TAILS)) {
+    const hits = ids.filter((e) => e.startsWith(domain) && e.endsWith(tail));
+    hits.sort((a, b) => (a.includes("solis") ? 0 : 1) - (b.includes("solis") ? 0 : 1) || a.localeCompare(b));
+    if (hits.length) out[role] = hits[0];
+  }
+  return out;
+}
 
 function testSummary(st) {
   if (!st || ["unknown", "unavailable"].includes(st.state)) return { status: "idle", problems: [], lines: [] };
   const a = st.attributes || {};
+  const w = (v) => (v === undefined || v === null ? null : Math.round(v));
   const lines = (a.steps || []).map((s) => {
     const t = (s.time || "").slice(11, 19);
     const bits = [];
     if (s.ok === true) bits.push("OK");
     if (s.ok === false) bits.push("MISMATCH: " + (s.mismatched || []).join(", "));
     if (s.writes) bits.push(`${s.writes.length} write${s.writes.length === 1 ? "" : "s"}`);
-    if (s.soc !== undefined && s.soc !== null) bits.push(`SoC ${Math.round(s.soc)}%`);
-    if (s.battery_w !== undefined && s.battery_w !== null) bits.push(`battery ${Math.round(s.battery_w)} W`);
+    if (w(s.soc) !== null) bits.push(`SoC ${w(s.soc)}%`);
+    if (w(s.battery_w) !== null) {
+      const b = w(s.battery_w);
+      bits.push(`battery ${b < 0 ? "charging " + -b : b > 0 ? "discharging " + b : "0"} W`);
+    }
+    if (w(s.grid_w) !== null) {
+      const g = w(s.grid_w);
+      bits.push(`grid ${g < 0 ? "export " + -g : "import " + g} W`);
+    }
+    if (s.rc) bits.push(`RC ${s.rc}`);
+    if (s.note) bits.push(s.note);
     return `${t} ${s.what}${bits.length ? ": " + bits.join(", ") : ""}`;
   });
-  return { status: st.state, action: a.action, minutes: a.minutes, problems: a.problems || [], lines };
+  return { status: st.state, action: a.action, minutes: a.minutes, problems: a.problems || [], lines,
+    verdict: a.verdict || null, explanation: a.explanation || "" };
+}
+
+function liveLine(states) {
+  const v = (id) => { const s = states && states[id]; return s && !isNaN(Number(s.state)) ? Number(s.state) : null; };
+  const b = v("sensor.pe_state_battery_power"), g = v("sensor.pe_state_grid_power"), c = v("sensor.pe_state_battery_soc");
+  const parts = [];
+  if (c !== null) parts.push(`Battery ${Math.round(c)}%`);
+  if (b !== null) parts.push(b < 0 ? `charging ${Math.round(-b)} W` : b > 0 ? `discharging ${Math.round(b)} W` : "idle");
+  if (g !== null) parts.push(g < 0 ? `grid export ${Math.round(-g)} W` : `grid import ${Math.round(g)} W`);
+  return parts.join(" · ") || "No live readings";
 }
 
 class PowerEngineTestCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
@@ -1405,7 +1491,7 @@ class PowerEngineTestCard extends (typeof HTMLElement !== "undefined" ? HTMLElem
     this._render();
   }
 
-  getCardSize() { return 4; }
+  getCardSize() { return 8; }
 
   async _fire(data) {
     try {
@@ -1417,68 +1503,128 @@ class PowerEngineTestCard extends (typeof HTMLElement !== "undefined" ? HTMLElem
     this._render();
   }
 
+  _describe() {
+    const q = (sel) => this.shadowRoot.querySelector(sel);
+    const t = TEST_BY_KEY[q(".action").value];
+    q(".what").textContent = t.what;
+    q(".watch").textContent = t.watch;
+    q(".checks").textContent = t.checks;
+    q(".minutes").value = t.minutes;
+    q(".minutes").max = t.key === "rc_failsafe" ? 35 : t.group === "rc" ? 15 : 10;
+    q(".minutes").min = t.key === "rc_failsafe" ? 4 : 1;
+    q(".powerrow").style.display = t.power ? "" : "none";
+    q(".power").value = t.defPower || "";
+    q(".power").placeholder = t.defPower ? String(t.defPower) : "max";
+  }
+
   _render() {
     if (!this.shadowRoot) return;
     if (!this._built) {
+      const opts = (g) => TESTS.filter((t) => t.group === g).map((t) => `<option value="${t.key}">${t.label}</option>`).join("");
       this.shadowRoot.innerHTML = `
         <style>
           ha-card { padding: 16px; }
           h2 { margin: 0 0 8px; font-size: 1.2em; font-weight: 500; }
-          p { margin: 4px 0 10px; color: var(--secondary-text-color); }
+          h3 { margin: 14px 0 4px; font-size: 1em; font-weight: 500; }
+          p, li { color: var(--secondary-text-color); }
+          p { margin: 4px 0 8px; }
+          ol { margin: 4px 0 8px; padding-left: 1.3em; }
           .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
-          select, input { font: inherit; padding: 4px 6px; }
+          select, input { font: inherit; padding: 4px 6px; max-width: 100%; }
           input[type=number] { width: 6em; }
           button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--divider-color);
                    background: var(--primary-color); color: var(--text-primary-color, #fff); cursor: pointer; }
           button.stop { background: var(--error-color, #db4437); }
           button:disabled { opacity: .5; cursor: default; }
+          .box { border: 1px solid var(--divider-color); border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
+          .box b { color: var(--primary-text-color); }
+          .live { font-weight: 500; }
           .status { font-weight: 500; }
-          .passed { color: var(--success-color, #43a047); }
-          .failed, .refused { color: var(--error-color, #db4437); }
+          .passed, .worked, .reverted { color: var(--success-color, #43a047); }
+          .failed, .refused, .no-effect, .did-not-revert { color: var(--error-color, #db4437); }
+          .inconclusive { color: var(--warning-color, #f9a825); }
           pre { background: var(--secondary-background-color); padding: 8px; border-radius: 6px; overflow-x: auto;
                 font-size: .85em; margin: 8px 0 0; white-space: pre-wrap; }
           .msg { color: var(--error-color, #db4437); }
+          .rc { font-size: .9em; }
         </style>
         <ha-card>
-          <h2>Supervised inverter test</h2>
-          <p>Writes one action to the inverter for a few minutes while you watch, reads the settings back, then
-             returns the inverter to Self-Use. Needs the handover guards to be safe (Predbat read-only, legacy
-             automations off) and PowerEngine not in control. Watch the inverter and battery power while it runs.</p>
+          <h2>Supervised inverter tests</h2>
+          <p>Each test writes to the inverter for a few minutes while you watch, logs what the battery did, then
+             hands the inverter back to Self-Use. Run one at a time.</p>
+          <h3>Before you start</h3>
+          <ol>
+            <li>Keep PowerEngine selected in the battery controller switch (Predbat stays read-only), and turn on
+                <b>Pause control</b> on the Monitoring page. Tests are refused while PowerEngine is in control.</li>
+            <li>Best in the evening or at night: no solar, the car not charging, battery between about 30% and 90%
+                so it can both charge and discharge.</li>
+            <li>Stand where you can see the inverter screen, or have the Solis app's live view open.</li>
+            <li>When you've finished, turn Pause control off again.</li>
+          </ol>
+          <div class="row"><span>Now:</span><span class="live"></span></div>
+          <h3>Choose a test</h3>
           <div class="row">
-            <select class="action">${TEST_ACTIONS.map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}</select>
-            <label>Minutes <input class="minutes" type="number" min="1" max="10" value="5"></label>
-            <label>Power (W) <input class="power" type="number" min="100" max="6000" step="100" placeholder="max"></label>
+            <select class="action">
+              <optgroup label="RAM remote control (43135): no EEPROM writes">${opts("rc")}</optgroup>
+              <optgroup label="Timed windows (current method, EEPROM)">${opts("timed")}</optgroup>
+            </select>
+          </div>
+          <div class="box">
+            <p><b>What it does:</b> <span class="what"></span></p>
+            <p><b>Watch for:</b> <span class="watch"></span></p>
+            <p class="screen"></p>
+            <p><b>PowerEngine checks:</b> <span class="checks"></span></p>
           </div>
           <div class="row">
-            <label><input class="confirm" type="checkbox"> I'm watching and other control is handed over</label>
+            <label>Minutes <input class="minutes" type="number" min="1" max="15"></label>
+            <label class="powerrow">Power (W) <input class="power" type="number" min="100" max="6000" step="100"></label>
+          </div>
+          <div class="row">
+            <label><input class="confirm" type="checkbox"> I'm watching the inverter and PowerEngine is paused</label>
           </div>
           <div class="row">
             <button class="start">Start test</button>
             <button class="stop">Stop and revert</button>
             <span class="msg"></span>
           </div>
-          <div class="row"><span>Status:</span><span class="status"></span></div>
+          <div class="row"><span>Status:</span><span class="status"></span><span class="verdict"></span></div>
           <pre class="log"></pre>
+          <p class="rc"></p>
         </ha-card>`;
       const q = (sel) => this.shadowRoot.querySelector(sel);
+      q(".screen").textContent = SCREEN;
+      q(".action").addEventListener("change", () => { this._describe(); this._render(); });
       q(".start").addEventListener("click", () => {
-        const data = { action: q(".action").value, minutes: Number(q(".minutes").value), confirm: q(".confirm").checked };
+        const t = TEST_BY_KEY[q(".action").value];
+        const data = { action: t.key, minutes: Number(q(".minutes").value), confirm: q(".confirm").checked };
         const power = q(".power").value;
-        if (power) data.power_w = Number(power);
+        if (t.power && power) data.power_w = Number(power);
         this._fire(data);
         q(".confirm").checked = false;
       });
       q(".stop").addEventListener("click", () => this._fire({ action: "stop" }));
       q(".confirm").addEventListener("change", () => this._render());
       this._built = true;
+      this._describe();
     }
     const q = (sel) => this.shadowRoot.querySelector(sel);
-    const sum = testSummary(this._hass && this._hass.states[TEST_ENTITY]);
+    const states = this._hass ? this._hass.states : {};
+    const sum = testSummary(states[TEST_ENTITY]);
     const running = sum.status === "running" || sum.status === "reverting";
+    q(".live").textContent = liveLine(states);
     q(".status").textContent = sum.status + (sum.action && sum.status !== "idle" ? ` (${sum.action}${sum.minutes ? ", " + sum.minutes + " min" : ""})` : "");
     q(".status").className = "status " + sum.status;
+    q(".verdict").textContent = sum.verdict ? `: ${sum.verdict}${sum.explanation ? " (" + sum.explanation + ")" : ""}` : "";
+    q(".verdict").className = "verdict " + (sum.verdict || "").replace(/ /g, "-");
     q(".log").textContent = [...sum.problems.map((p) => "Problem: " + p), ...sum.lines].join("\n") || "No test run yet.";
-    q(".start").disabled = running || !q(".confirm").checked;
+    const t = TEST_BY_KEY[q(".action").value];
+    const rc = findRcEntities(states);
+    const need = t.group !== "rc" ? [] : ["rc_mode", t.key === "rc_discharge" ? "rc_discharge_power" : "rc_charge_power"];
+    const gone = need.filter((r) => !rc[r]);
+    q(".rc").textContent = t.group !== "rc" ? "" : gone.length
+      ? "Remote-control entities not found in HA: " + gone.join(", ") + ". SolaX Modbus needs to expose the Solis 'Battery control override' entities."
+      : "Remote-control entities: " + need.map((r) => `${rc[r]} (${(states[rc[r]] || {}).state})`).join(", ");
+    q(".start").disabled = running || !q(".confirm").checked || gone.length > 0;
     q(".stop").disabled = !running;
     q(".msg").textContent = this._msg || "";
   }
@@ -1487,7 +1633,7 @@ class PowerEngineTestCard extends (typeof HTMLElement !== "undefined" ? HTMLElem
 if (typeof customElements !== "undefined" && !customElements.get("powerengine-test-card")) {
   customElements.define("powerengine-test-card", PowerEngineTestCard);
   window.customCards = window.customCards || [];
-  window.customCards.push({ type: "powerengine-test-card", name: "PowerEngine supervised test", description: "Run a short, supervised inverter write test." });
+  window.customCards.push({ type: "powerengine-test-card", name: "PowerEngine supervised tests", description: "Run short, supervised inverter tests (timed windows and RAM remote control)." });
 }
 
 // --- Simulator card: history import (automatic) and heat-pump settings ---------------------------------------
@@ -1691,5 +1837,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION };
+  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION };
 }
