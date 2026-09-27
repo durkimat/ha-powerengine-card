@@ -2,6 +2,11 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.12
+
+- New **Dampening tuning** section on the config page: Restart hold-off (on) and Burst damping (off), with their
+  timings.
+
 ## 0.9.11
 
 - No card changes; version kept in step with the app.
