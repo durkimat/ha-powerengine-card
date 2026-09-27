@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.18
+
+- Inverter control section: **RAM switch cost**.
+
 ## 0.9.17
 
 - No card changes; version kept in step with the app.

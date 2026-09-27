@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.17";
+const CARD_VERSION = "0.9.18";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -203,7 +203,7 @@ const TOPICS = [
       "timed_charge_current", "timed_discharge_start_hour", "timed_discharge_start_minute", "timed_discharge_end_hour",
       "timed_discharge_end_minute", "timed_discharge_current", "timed_update_button", "storage_mode",
       "inverter_clock", "inverter_clock_sync", "guard_read_only", "guard_off_1", "guard_off_2"],
-    system: ["control_method"], settings: ["max_writes_per_day", "ram_refresh_min"] },
+    system: ["control_method"], settings: ["max_writes_per_day", "ram_refresh_min", "ram_switch_cost_p"] },
   { key: "damping", title: "Dampening tuning",
     note: "Holding inverter writes back briefly when the settings are likely to change again, to save writes. Health tab, Inverter writes today, shows how many changes were held back.",
     features: ["damp_restart", "damp_bursts"],
