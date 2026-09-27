@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.28
+
+- Selling section: **Deeper selling overnight** tick box (on by default).
+
 ## 0.9.27
 
 - No card changes; version kept in step with the app.

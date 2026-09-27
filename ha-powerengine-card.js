@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.27";
+const CARD_VERSION = "0.9.28";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -25,6 +25,7 @@ const FEATURES = [
   ["smart_charge_optimisation", "Smart-charge optimisation", "Ask EDF for extra smart-charge slots by changing the car's ready-by time when it's worth it, with back-off and at most 6 requests a day. Replaces the fixed daily triggers. Sends nothing in Passive mode."],
   ["arbitrage", "Energy arbitrage", "Sell stored energy just before a cheap refill when it pays after losses and wear, keeping enough for the house. In Passive mode this only plans and simulates it, so you can see what it would earn.",
     "Check your export tariff terms first: some only pay for exported solar, not energy bought from the grid."],
+  ["deep_overnight", "Deeper selling overnight", "Inside the fixed overnight window, where the cheap refill is guaranteed, arbitrage may sell below the band's bottom (down to the reserve plus 10%): one deeper sale and one refill instead of many shallow cycles, for the same money. Off: the band's bottom holds overnight too."],
   ["axle", "Axle VPP events", "Force-discharge during Axle events and hold charge beforehand."],
   ["free_power_days", "Free-power sessions", "Make full use of EDF free-electricity sessions."],
   ["optimised_plan", "Optimised planning", "The optimiser chooses each half-hour's action for the lowest cost (arbitrage band and safety rules included), with plain-English reasons. Off: the simpler rule-based planner."],
@@ -48,7 +49,7 @@ const NOTIFY_EVENTS = [
 ];
 const FEATURE_DEFAULTS = { auto_cheap_threshold: true, fill_when_cheap: true, smart_charge_optimisation: true, arbitrage: false, axle: true, free_power_days: true, tariff_simulator: true, optimised_plan: true,
   learn_taper: true, learn_reserve: true, learn_export: true, learn_car: true, cold_caution: true, cold_learning: true,
-  damp_restart: true, damp_bursts: false };
+  damp_restart: true, damp_bursts: false, deep_overnight: true };
 
 /* ------------------------------------------------------------------ helpers
  * Pure functions (no DOM), exported for tests at the bottom of the file.
@@ -184,7 +185,7 @@ const TOPICS = [
     roles: ["ev_plug_status", "ev_charger_status", "ev_charge_power", "ev_energy_today", "ev_charge_mode",
       "ev_session_energy", "smart_dispatches", "smart_state", "smart_target_soc", "smart_target_time"],
     features: ["smart_charge_optimisation"], settings: ["ev_charger_kw"], learning: ["learn_car"] },
-  { key: "selling", title: "Selling (arbitrage and export)", features: ["arbitrage"],
+  { key: "selling", title: "Selling (arbitrage and export)", features: ["arbitrage", "deep_overnight"],
     settings: ["export_limit_kw", "battery_wear_p", "arbitrage_min_margin_p", "arbitrage_min_soc", "arbitrage_max_soc",
       "arbitrage_band_penalty_p"],
     roles: ["inverter_export_limit"], learning: ["learn_export"] },
