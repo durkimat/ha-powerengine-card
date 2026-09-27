@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.31";
+const CARD_VERSION = "0.9.32";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -1664,6 +1664,20 @@ const DIAG_BUNDLE = "pe_diag_bundle";
 const DIAG_HISTORY = ["sensor.pe_state_battery_soc", "sensor.pe_state_battery_power", "sensor.pe_state_grid_power",
   "sensor.pe_state_solar_power", "sensor.pe_state_house_power", "sensor.pe_state_decision",
   "sensor.pe_state_operation_mode", "sensor.pe_diag_writes_today", "switch.pe_ctl_pause"];
+// raw readings behind the PowerEngine figures (when mapped), for cross-checks such as the grid meter comparison
+const DIAG_HISTORY_ROLES = ["grid_power", "grid_power_reference", "battery_power", "house_load_power", "ev_charge_power"];
+
+function diagHistoryIds(cfg) {
+  const ids = new Set(DIAG_HISTORY);
+  ids.add("sensor.pe_diag_grid_check");
+  const inputs = (cfg && cfg.inputs) || {};
+  for (const role of DIAG_HISTORY_ROLES) {
+    const spec = inputs[role];
+    if (spec && typeof spec.entity === "string") ids.add(spec.entity);
+  }
+  return [...ids];
+}
+
 const DIAG_CONTROL = /^(number|select|button|sensor)\.solis_.*(timed_|storage_control|battery_control_override|update_charge)/;
 
 function configEntities(cfg) {
@@ -1730,12 +1744,12 @@ class PowerEngineDiagnosticsCard extends (typeof HTMLElement !== "undefined" ? H
     }
   }
 
-  async _history() {
+  async _history(ids) {
     const end = new Date();
     const start = new Date(end.getTime() - 24 * 3600 * 1000);
     try {
       return await this._hass.callWS({ type: "history/history_during_period", start_time: start.toISOString(),
-        end_time: end.toISOString(), entity_ids: DIAG_HISTORY, minimal_response: true, no_attributes: true,
+        end_time: end.toISOString(), entity_ids: ids || DIAG_HISTORY, minimal_response: true, no_attributes: true,
         significant_changes_only: false });
     } catch (err) {
       return { error: String((err && err.message) || err) };
@@ -1751,7 +1765,7 @@ class PowerEngineDiagnosticsCard extends (typeof HTMLElement !== "undefined" ? H
     const id = Math.random().toString(36).slice(2) + now.getTime().toString(36);
     const app = await this._askApp(id);
     this._status("Adding entity states and 24 h of history…");
-    const history = await this._history();
+    const history = await this._history(diagHistoryIds(app.bundle && app.bundle.config));
     const cfg = app.bundle && app.bundle.config;
     const bundle = {
       generated: now.toISOString(), card_version: CARD_VERSION,
@@ -2060,5 +2074,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION };
+  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION };
 }
