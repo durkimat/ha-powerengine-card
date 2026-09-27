@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.6
+
+- No card changes; version kept in step with the app.
+
 ## 0.9.5
 
 - Supervised test card rebuilt for the new **Tests** tab: per-test instructions (what it does, what to watch for on
