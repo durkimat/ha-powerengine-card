@@ -2,6 +2,11 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.46
+
+- New `powerengine-update-card` on Configuration: refreshes both PowerEngine repositories in HACS, runs
+  `script.powerengine_update`, shows progress and a Reload page button.
+
 ## 0.9.45
 
 - No card changes; version kept in step with the app.

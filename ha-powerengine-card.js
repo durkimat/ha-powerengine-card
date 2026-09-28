@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.45";
+const CARD_VERSION = "0.9.46";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -1660,6 +1660,140 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-te
   window.customCards.push({ type: "powerengine-test-card", name: "PowerEngine supervised tests", description: "Run short, supervised inverter tests (timed windows and RAM remote control)." });
 }
 
+// --- Update (Configuration page) ---------------------------------------------------------------------------
+// One button: ask HACS to check GitHub now for both PowerEngine repositories (otherwise HACS may not notice a new
+// release for hours), then run the handover package's script.powerengine_update, which installs what's new and
+// restarts AppDaemon. Admins only (HACS's refresh and the add-on restart both need admin).
+const UPDATE_SCRIPT = "script.powerengine_update";
+
+function peRepos(list) {
+  return (list || []).filter((r) => r && r.installed && /powerengine/i.test(String(r.full_name || r.name || "")));
+}
+
+function updateEntities(states) {
+  return Object.keys(states || {}).filter((id) => /^update\..*powerengine/i.test(id)).sort();
+}
+
+function versionLine(states) {
+  const running = ((states || {})["sensor.pe_diag_version"] || {}).state || "?";
+  const parts = updateEntities(states).map((id) => {
+    const a = (states[id] || {}).attributes || {};
+    const what = /card/i.test(id) ? "card" : "app";
+    const more = states[id].state === "on" && a.latest_version ? ` → ${a.latest_version} available` : "";
+    return `${what} ${a.installed_version || "?"}${more}`;
+  });
+  return { running, parts };
+}
+
+class PowerEngineUpdateCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
+  setConfig(config) {
+    this._config = config || {};
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const running = ((hass.states || {})["sensor.pe_diag_version"] || {}).state;
+    if (this._busy && this._from && running && running !== this._from && running !== "unavailable") {
+      this._busy = false;
+      this._msg = `PowerEngine ${running} is running. Reload the page to load the matching card.`;
+      this._reload = true;
+    }
+    this._render();
+  }
+
+  getCardSize() { return 2; }
+
+  getGridOptions() { return { columns: "full", rows: "auto" }; }
+
+  async _update() {
+    const hass = this._hass;
+    if (!hass || this._busy) return;
+    this._busy = true;
+    this._reload = false;
+    this._from = ((hass.states || {})["sensor.pe_diag_version"] || {}).state;
+    try {
+      if (hass.user && hass.user.is_admin) {
+        this._status("Asking HACS to check GitHub for new releases…");
+        const repos = peRepos(await hass.callWS({ type: "hacs/repositories/list" }));
+        for (const r of repos) {
+          await hass.callWS({ type: "hacs/repository/refresh", repository: String(r.id) });
+        }
+        await new Promise((res) => setTimeout(res, 3000));      // let the update entities catch up
+      }
+      if (!hass.states[UPDATE_SCRIPT]) {
+        this._busy = false;
+        this._status("The update script isn't installed: copy docs/ha/powerengine_handover.yaml (0.9.42 or later) " +
+          "into /config/packages/ and reload scripts.");
+        return;
+      }
+      this._status("Installing what's new and restarting AppDaemon if the app changed (about a minute)…");
+      await hass.callService("script", "turn_on", { entity_id: UPDATE_SCRIPT });
+      setTimeout(() => {
+        if (this._busy) {
+          this._busy = false;
+          const now = ((this._hass.states || {})["sensor.pe_diag_version"] || {}).state;
+          this._status(now === this._from
+            ? `Still ${now}: nothing new to install, or it's still going (see the notification).`
+            : `PowerEngine ${now} is running. Reload the page to load the matching card.`);
+          this._reload = now !== this._from;
+          this._render();
+        }
+      }, 180000);
+    } catch (err) {
+      this._busy = false;
+      this._status("Update failed: " + ((err && err.message) || err));
+    }
+  }
+
+  _status(text) {
+    this._msg = text;
+    this._render();
+  }
+
+  _render() {
+    if (!this.shadowRoot || !this._hass) return;
+    if (!this._built) {
+      this.shadowRoot.innerHTML = `
+        <style>
+          ha-card { padding: 12px 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+          .text { flex: 1 1 260px; }
+          .msg { color: var(--secondary-text-color); font-size: 0.9em; margin-top: 4px; }
+          button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--divider-color);
+                   background: var(--primary-color); color: var(--text-primary-color, #fff); cursor: pointer; }
+          button.second { background: none; color: var(--primary-text-color); }
+          button:disabled { opacity: .5; cursor: default; }
+        </style>
+        <ha-card>
+          <div class="text"><div class="line"></div><div class="msg"></div></div>
+          <button class="reload second">Reload page</button>
+          <button class="go">Update</button>
+        </ha-card>`;
+      this.shadowRoot.querySelector(".go").addEventListener("click", () => {
+        if (confirm("Install the latest PowerEngine app and card, then restart AppDaemon? Control pauses for " +
+            "about a minute while it restarts.")) this._update();
+      });
+      this.shadowRoot.querySelector(".reload").addEventListener("click", () => location.reload());
+      this._built = true;
+    }
+    const { running, parts } = versionLine(this._hass.states);
+    const q = (s) => this.shadowRoot.querySelector(s);
+    q(".line").innerHTML = `<b>PowerEngine ${running}</b> running` + (parts.length
+      ? " · " + parts.join(" · ") : " · HACS update entities not found");
+    q(".msg").textContent = this._msg || "";
+    q(".go").disabled = !!this._busy;
+    q(".go").textContent = this._busy ? "Updating…" : "Update";
+    q(".reload").style.display = this._reload ? "" : "none";
+  }
+}
+
+if (typeof customElements !== "undefined" && !customElements.get("powerengine-update-card")) {
+  customElements.define("powerengine-update-card", PowerEngineUpdateCard);
+  window.customCards = window.customCards || [];
+  window.customCards.push({ type: "powerengine-update-card", name: "PowerEngine update",
+    description: "Check for and install the latest PowerEngine release." });
+}
+
 // --- Diagnostics export (Health tab) --------------------------------------------------------------------------
 // Admin only (HA only lets admins fire and subscribe to events). Asks the app for its file-backed parts (config,
 // write journal, plan, recent log), adds live entity states and 24 h of history, and saves one JSON file in the
@@ -2079,5 +2213,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION };
+  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION };
 }
