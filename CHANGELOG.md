@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.39
+
+- Battery topic: *Learn: inverter conversion losses*; the slow-down option now covers discharging too.
+
 ## 0.9.38
 
 - Axle events: *Axle also earns the export rate* option.

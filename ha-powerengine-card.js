@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.38";
+const CARD_VERSION = "0.9.39";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -31,7 +31,8 @@ const FEATURES = [
   ["axle_plus_export", "Axle also earns the export rate", "Your supplier pays its normal export rate on Axle exports as well as Axle's £1/kWh (EDF: £1 + 15p). Planning and the event figures count both. Off: Axle's £1 only."],
   ["free_power_days", "Free-power sessions", "Make full use of EDF free-electricity sessions."],
   ["optimised_plan", "Optimised planning", "The optimiser chooses each half-hour's action for the lowest cost (arbitrage band and safety rules included), with plain-English reasons. Off: the simpler rule-based planner."],
-  ["learn_taper", "Learn: charge slow-down near full", "Plan with how much charging slows from 90% and 95%, as seen, so the overnight charge starts early enough to finish. Health tab, Learned from use, shows each learned figure and how many half-hours it's based on."],
+  ["learn_taper", "Learn: charge and discharge slow-down", "Plan with how much charging slows from 90% and 95%, and how much discharging slows below 40%, 30% and 20%, as seen: the overnight charge starts early enough to finish, and deep sales are planned at the speed they really run. Health tab, Learned from use, shows each learned figure and how many half-hours it's based on."],
+  ["learn_conversion", "Learn: inverter conversion losses", "Measure how much grid energy reaches the battery when charging, and how much of the battery's output reaches the house and grid when selling (no solar, full rate). Plans then use the real grid-to-grid round trip, so arbitrage is only planned where it pays after all losses. Works for any inverter and battery, and re-learns if either changes."],
   ["learn_reserve", "Learn: where discharging stops", "Plan with the charge level where the battery has been seen to stop supplying the house. Only ever raises the Minimum reserve, never lowers it."],
   ["learn_export", "Learn: export ceiling", "If selling is seen to top out below the battery's own rate (a grid limit), plan with that ceiling."],
   ["learn_car", "Learn: car charge rate", "Plan the car's share of smart-charge slots with its real charging kW instead of Car charger power."],
@@ -50,7 +51,7 @@ const NOTIFY_EVENTS = [
   ["simulator", "Tariff opportunities", "When the overnight Simulator finds a tariff that would have cost noticeably less (at least £5 and 5% a month), or new tariffs appear.", true],
 ];
 const FEATURE_DEFAULTS = { auto_cheap_threshold: true, fill_when_cheap: true, smart_charge_optimisation: true, arbitrage: false, axle: true, free_power_days: true, tariff_simulator: true, optimised_plan: true,
-  learn_taper: true, learn_reserve: true, learn_export: true, learn_car: true, cold_caution: true, cold_learning: true,
+  learn_taper: true, learn_conversion: true, learn_reserve: true, learn_export: true, learn_car: true, cold_caution: true, cold_learning: true,
   damp_restart: true, damp_bursts: false, deep_overnight: true,
   use_check_meter: true, axle_plus_export: true };
 
@@ -174,7 +175,7 @@ const TOPICS = [
       "battery_max_charge_power", "battery_max_discharge_power", "battery_charge_today", "battery_discharge_today",
       "battery_round_trip", "battery_soh", "inverter_min_soc"],
     settings: ["min_reserve_soc", "grid_charge_target_soc", "charge_hysteresis_soc"],
-    learning: ["learn_taper", "learn_reserve"] },
+    learning: ["learn_taper", "learn_conversion", "learn_reserve"] },
   { key: "grid", title: "Grid and house",
     roles: ["grid_power", "grid_import_today", "grid_export_today", "house_load_power", "house_load_today",
       "grid_power_reference", "grid_import_today_check", "grid_export_today_check"],
