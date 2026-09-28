@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.36
+
+- Grid and house: *Use the check meter* option. Selling: *Overnight switch cost* setting.
+
 ## 0.9.35
 
 - No card changes; version kept in step with the app.
