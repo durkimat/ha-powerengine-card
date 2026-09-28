@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.53";
+const CARD_VERSION = "0.9.54";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -2013,7 +2013,7 @@ const WATERFALL_SHORT = {
   "No solar or battery": "No solar/ battery",
   "EDF tariff": "Tariff",
   "Battery on self-use": "Self-use battery",
-  "Everyday cost": "Every\u00ADday",
+  "Day-to-day cost": "Day-to-day",
   "Battery carry-over": "Carry-over",
   "Axle & free power": "Axle",
 };
@@ -2057,6 +2057,7 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
 
   _setPeriod(key) {
     this._period = key;
+    this._sel = null;
     const st = this._hass && this._hass.states[this._config.entity];
     this._sig = (st ? st.last_updated : "") + "|" + key;
     this._render();
@@ -2098,26 +2099,29 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
       const conn = i > 0 ? `<div class="conn" style="bottom:${pct(rows[i - 1].to, scale)}%"></div>` : "";
       const full = this._gbp(r.value);
       return `
-        <div class="col" title="${escHtml(r.label)}: ${full}">
+        <div class="col${this._sel === i ? " sel" : ""}" data-i="${i}" title="${escHtml(r.label)}: ${full}">
           ${conn}
           <div class="bar ${cls}" style="bottom:${lo}%; height:${height}%"></div>
           <div class="v" style="bottom:${hi}%"><span class="full">${full}</span><span class="short">${compactGbp(r.value)}</span></div>
         </div>`;
     }).join("");
     const labels = rows.map((r) =>
-      `<div class="lbl"><span class="full">${escHtml(r.label)}</span><span class="short">${escHtml(waterfallShortLabel(r.label))}</span></div>`).join("");
+      `<div class="lbl" data-i="${rows.indexOf(r)}"><span class="full">${escHtml(r.label)}</span><span class="short">${escHtml(waterfallShortLabel(r.label))}</span></div>`).join("");
     const n = rows.length;
 
     this.shadowRoot.innerHTML = `
       <style>${this._css()}</style>
       <ha-card class="wf">
         <div class="top">${buttons}</div>
+        <div class="selinfo">${this._sel != null && rows[this._sel]
+          ? `<b>${escHtml(rows[this._sel].label)}:</b> ${this._gbp(rows[this._sel].value)}`
+          : "Tap a column for its name and exact value."}</div>
         <div class="plot" style="grid-template-columns: repeat(${n}, 1fr)">
           <div class="zero" style="bottom:${zeroPct}%"></div>
           ${cols}
         </div>
         <div class="labels" style="grid-template-columns: repeat(${n}, 1fr)">${labels}</div>
-        <p class="caption">${escHtml(p.from)}–${escHtml(p.to)}, ${p.days} day${p.days === 1 ? "" : "s"}. Green steps saved money; orange ones cost money. Tap a bar for its exact value.</p>
+        <p class="caption">${escHtml(p.from)}–${escHtml(p.to)}, ${p.days} day${p.days === 1 ? "" : "s"}. Green steps saved money; orange ones cost money.</p>
       </ha-card>`;
     this._wire();
   }
@@ -2125,6 +2129,12 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
   _wire() {
     this.shadowRoot.querySelectorAll("button[data-period]").forEach((b) =>
       b.addEventListener("click", () => this._setPeriod(b.dataset.period)));
+    this.shadowRoot.querySelectorAll("[data-i]").forEach((el) =>
+      el.addEventListener("click", () => {
+        const i = Number(el.dataset.i);
+        this._sel = this._sel === i ? null : i;       // tap again to clear
+        this._render();
+      }));
   }
 
   _css() {
@@ -2135,7 +2145,10 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
                border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color); }
       button.on { background: var(--primary-color); color: var(--text-primary-color, #fff); }
       .plot { position: relative; display: grid; column-gap: 6px; height: 220px; margin-top: 18px; }
-      .col { position: relative; height: 100%; }
+      .col { position: relative; height: 100%; cursor: pointer; }
+      .col.sel .bar { outline: 2px solid var(--primary-color); outline-offset: 1px; }
+      .lbl { cursor: pointer; }
+      .selinfo { min-height: 1.3em; font-size: 0.9em; color: var(--primary-text-color); margin: 2px 0 0; }
       .zero { position: absolute; left: 0; right: 0; height: 0; border-top: 1px solid var(--divider-color); }
       .bar { position: absolute; left: 15%; right: 15%; border-radius: 3px 3px 0 0; }
       .conn { position: absolute; left: calc(-15% - 6px); width: calc(30% + 6px); height: 0;

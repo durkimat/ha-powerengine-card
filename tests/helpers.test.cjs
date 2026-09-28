@@ -372,7 +372,7 @@ test("waterfall rows chain: totals reset the baseline, steps float between runni
     { label: "EDF tariff", kind: "step", value: -4 },
     { label: "Battery on self-use", kind: "step", value: -3 },
     { label: "PowerEngine", kind: "step", value: -2 },
-    { label: "Everyday cost", kind: "subtotal", value: 3 },
+    { label: "Day-to-day cost", kind: "subtotal", value: 3 },
     { label: "Battery carry-over", kind: "step", value: 0.5 },
     { label: "You paid", kind: "total", value: 3.5 },
   ];
@@ -396,7 +396,7 @@ test("waterfall rows: a day you earned money gives a negative running total", ()
     { label: "EDF tariff", kind: "step", value: -2 },
     { label: "Battery on self-use", kind: "step", value: -2 },
     { label: "PowerEngine", kind: "step", value: -1 },
-    { label: "Everyday cost", kind: "subtotal", value: -3 },
+    { label: "Day-to-day cost", kind: "subtotal", value: -3 },
     { label: "Battery carry-over", kind: "step", value: 0 },
     { label: "You paid", kind: "total", value: -3 },
   ];
@@ -410,7 +410,7 @@ test("waterfall rows: an all-zero day still produces a valid, non-degenerate sca
   const steps = [
     { label: "No solar or battery", kind: "total", value: 0 },
     { label: "Solar", kind: "step", value: 0 },
-    { label: "Everyday cost", kind: "subtotal", value: 0 },
+    { label: "Day-to-day cost", kind: "subtotal", value: 0 },
     { label: "You paid", kind: "total", value: 0 },
   ];
   const rows = h.waterfallRows(steps);
