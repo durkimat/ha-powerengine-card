@@ -347,3 +347,20 @@ test("update card finds the PowerEngine repositories and reads the versions", ()
   assert.equal(v.running, "0.9.45");
   assert.deepEqual(v.parts, ["card v0.9.45", "app v0.9.45 → v0.9.46 available"]);
 });
+
+test("log card rows and times, and escaping", () => {
+  const attrs = { recent: [{ t: "2026-09-28T12:00:00+01:00", l: "I", m: "a" }], warnings: [{ t: "x", l: "W", m: "b" }] };
+  assert.equal(h.logRows(attrs, true)[0].m, "b");
+  assert.equal(h.logRows(attrs, false)[0].m, "a");
+  assert.deepEqual(h.logRows(null, true), []);
+  assert.equal(h.logWhen("not a date"), "not a date");
+  assert.equal(h.escHtml('<b>"x"&'), "&lt;b&gt;&quot;x&quot;&amp;");
+});
+
+test("version line shows a release HACS hasn't seen yet, with its notes", () => {
+  const v = h.versionLine({ "sensor.pe_diag_version": { state: "0.9.48" },
+    "sensor.pe_diag_update": { state: "available", attributes: { latest: "0.9.50", notes: "### 0.9.50\n\n- x" } } });
+  assert.equal(v.released, "0.9.50");
+  assert.ok(v.notes.startsWith("### 0.9.50"));
+  assert.equal(h.versionLine({ "sensor.pe_diag_update": { state: "up to date", attributes: {} } }).released, null);
+});
