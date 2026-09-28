@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.54
+
+- Waterfall card: tap a column (or its label) for its name and exact value; "Day-to-day" label.
+
 ## 0.9.53
 
 - Waterfall card drawn as columns cascading left to right (short labels and rounded values on narrow screens).
