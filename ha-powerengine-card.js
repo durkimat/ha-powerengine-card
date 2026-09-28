@@ -1957,6 +1957,165 @@ if (typeof customElements !== "undefined") {
   if (!customElements.get("powerengine-log-card")) customElements.define("powerengine-log-card", PowerEngineLogCard);
 }
 
+/* ------------------------------------------------------------ waterfall card
+ * The Costs page's savings waterfall: what each feature saved, period by period (from sensor.pe_cost_waterfall's
+ * `periods` attribute, built by pe_core.costs.waterfall).
+ *   type: custom:powerengine-waterfall-card
+ *   entity: sensor.pe_cost_waterfall
+ *   period: week            (yesterday | week | month | days30; a button row also switches it)
+ */
+
+function waterfallRows(steps) {
+  // steps: [{label, kind, value}] (kind: total | subtotal | step). Returns [{label, kind, from, to, value}]:
+  // a total/subtotal bar runs from 0 to its value and resets the running total; a step bar floats between the
+  // running total before and after it.
+  let running = 0;
+  return (steps || []).map((s) => {
+    if (s.kind === "total" || s.kind === "subtotal") {
+      running = s.value;
+      return { label: s.label, kind: s.kind, from: 0, to: s.value, value: s.value };
+    }
+    const from = running;
+    running += s.value;
+    return { label: s.label, kind: s.kind, from, to: running, value: s.value };
+  });
+}
+
+function waterfallScale(rows) {
+  // The x-axis range for a set of rows: always includes 0 (so a day you earned money still shows the zero line).
+  let min = 0;
+  let max = 0;
+  for (const r of rows) {
+    min = Math.min(min, r.from, r.to);
+    max = Math.max(max, r.from, r.to);
+  }
+  if (min === max) { min -= 1; max += 1; }
+  const pad = (max - min) * 0.08 || 1;
+  return { min: min - pad, max: max + pad };
+}
+
+const WATERFALL_PERIODS = [
+  { key: "yesterday", label: "Yesterday" },
+  { key: "week", label: "7 days" },
+  { key: "month", label: "This month" },
+  { key: "days30", label: "30 days" },
+];
+
+class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
+  setConfig(config) {
+    if (!config || !config.entity) throw new Error("entity is required");
+    this._config = config;
+    this._period = config.period || "week";
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+
+  getCardSize() { return 6; }
+
+  getGridOptions() { return { columns: "full", rows: "auto" }; }
+
+  _setPeriod(key) {
+    this._period = key;
+    this._render();
+  }
+
+  _gbp(v) {
+    const s = Math.abs(v) < 0.005 ? 0 : v;
+    return (s < 0 ? "−£" : "£") + Math.abs(s).toFixed(2);
+  }
+
+  _render() {
+    if (!this.shadowRoot || !this._hass || !this._config) return;
+    const st = this._hass.states[this._config.entity];
+    const periods = (st && st.attributes && st.attributes.periods) || {};
+    const p = periods[this._period];
+    const buttons = WATERFALL_PERIODS.map((w) =>
+      `<button data-period="${w.key}" class="${w.key === this._period ? "on" : ""}">${escHtml(w.label)}</button>`).join("");
+
+    if (!st || !p || !p.days) {
+      this.shadowRoot.innerHTML = `
+        <style>${this._css()}</style>
+        <ha-card><div class="top">${buttons}</div><p class="none">Costs appear after the first full day.</p></ha-card>`;
+      this._wire();
+      return;
+    }
+
+    const rows = waterfallRows(p.steps);
+    const { min, max } = waterfallScale(rows);
+    const W = 600;
+    const rowH = 34;
+    const padL = 148;
+    const padR = 56;
+    const chartW = W - padL - padR;
+    const H = rows.length * rowH + 8;
+    const x = (v) => padL + ((v - min) / (max - min)) * chartW;
+    const zeroX = x(0);
+    const bars = rows.map((r, i) => {
+      const y = i * rowH;
+      const x1 = Math.min(x(r.from), x(r.to));
+      const x2 = Math.max(x(r.from), x(r.to));
+      const w = Math.max(2, x2 - x1);
+      let cls = "neutral";
+      if (r.kind === "step") cls = r.value <= 0 ? "good" : "bad";
+      if (r.kind === "total" && i === rows.length - 1) cls = "final";
+      const connector = i > 0
+        ? `<line class="conn" x1="${x(rows[i - 1].to)}" y1="${y}" x2="${x(rows[i - 1].to)}" y2="${y + rowH}" />` : "";
+      return `${connector}
+        <text class="lbl" x="8" y="${y + rowH / 2 + 4}">${escHtml(r.label)}</text>
+        <rect class="bar ${cls}" x="${x1}" y="${y + 6}" width="${w}" height="${rowH - 14}" rx="3"></rect>
+        <text class="val" x="${W - 8}" y="${y + rowH / 2 + 4}">${this._gbp(r.value)}</text>`;
+    }).join("");
+
+    this.shadowRoot.innerHTML = `
+      <style>${this._css()}</style>
+      <ha-card>
+        <div class="top">${buttons}</div>
+        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" class="chart">
+          <line class="zero" x1="${zeroX}" y1="0" x2="${zeroX}" y2="${H}" />
+          ${bars}
+        </svg>
+        <p class="caption">${escHtml(p.from)}–${escHtml(p.to)}, ${p.days} day${p.days === 1 ? "" : "s"}. Green steps saved money; orange ones cost money.</p>
+      </ha-card>`;
+    this._wire();
+  }
+
+  _wire() {
+    this.shadowRoot.querySelectorAll("button[data-period]").forEach((b) =>
+      b.addEventListener("click", () => this._setPeriod(b.dataset.period)));
+  }
+
+  _css() {
+    return `
+      ha-card { padding: 12px 16px; }
+      .top { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+      button { font: inherit; font-size: 0.85em; padding: 3px 10px; border-radius: 6px; cursor: pointer;
+               border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color); }
+      button.on { background: var(--primary-color); color: var(--text-primary-color, #fff); }
+      .chart { width: 100%; height: auto; display: block; }
+      .lbl { font-size: 11px; fill: var(--primary-text-color); }
+      .val { font-size: 11px; fill: var(--primary-text-color); text-anchor: end; }
+      .zero { stroke: var(--divider-color); stroke-width: 1; }
+      .conn { stroke: var(--divider-color); stroke-width: 1; stroke-dasharray: 2,2; }
+      .bar.neutral { fill: var(--secondary-text-color); opacity: .55; }
+      .bar.final { fill: var(--primary-text-color); opacity: .8; }
+      .bar.good { fill: var(--success-color, #43a047); }
+      .bar.bad { fill: var(--warning-color, #fb8c00); }
+      .none { color: var(--secondary-text-color); font-size: 0.9em; }
+      .caption { color: var(--secondary-text-color); font-size: 0.85em; margin-top: 6px; }
+    `;
+  }
+}
+
+if (typeof customElements !== "undefined" && !customElements.get("powerengine-waterfall-card")) {
+  customElements.define("powerengine-waterfall-card", PowerEngineWaterfallCard);
+  window.customCards = window.customCards || [];
+  window.customCards.push({ type: "powerengine-waterfall-card", name: "PowerEngine savings waterfall", description: "Where the Costs page's savings came from, period by period." });
+}
+
 // --- Diagnostics export (Health tab) --------------------------------------------------------------------------
 // Admin only (HA only lets admins fire and subscribe to events). Asks the app for its file-backed parts (config,
 // write journal, plan, recent log), adds live entity states and 24 h of history, and saves one JSON file in the
@@ -2376,5 +2535,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION };
+  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale };
 }
