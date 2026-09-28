@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.48";
+const CARD_VERSION = "0.9.49";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -1682,7 +1682,9 @@ function versionLine(states) {
     const more = states[id].state === "on" && a.latest_version ? ` → ${a.latest_version} available` : "";
     return `${what} ${a.installed_version || "?"}${more}`;
   });
-  return { running, parts };
+  const rel = (states || {})["sensor.pe_diag_update"];
+  const released = rel && rel.state === "available" ? (rel.attributes || {}).latest : null;
+  return { running, parts, released, notes: released ? (rel.attributes || {}).notes || "" : "" };
 }
 
 class PowerEngineUpdateCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
@@ -1759,6 +1761,8 @@ class PowerEngineUpdateCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
           ha-card { padding: 12px 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
           .text { flex: 1 1 260px; }
           .msg { color: var(--secondary-text-color); font-size: 0.9em; margin-top: 4px; }
+          .notes { flex: 1 1 100%; border-top: 1px solid var(--divider-color); padding-top: 4px; }
+          .notes:empty { display: none; }
           button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--divider-color);
                    background: var(--primary-color); color: var(--text-primary-color, #fff); cursor: pointer; }
           button.second { background: none; color: var(--primary-text-color); }
@@ -1768,6 +1772,7 @@ class PowerEngineUpdateCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
           <div class="text"><div class="line"></div><div class="msg"></div></div>
           <button class="reload second">Reload page</button>
           <button class="go">Update</button>
+          <div class="notes"></div>
         </ha-card>`;
       this.shadowRoot.querySelector(".go").addEventListener("click", () => {
         if (confirm("Install the latest PowerEngine app and card, then restart AppDaemon? Control pauses for " +
@@ -1776,10 +1781,22 @@ class PowerEngineUpdateCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       this.shadowRoot.querySelector(".reload").addEventListener("click", () => location.reload());
       this._built = true;
     }
-    const { running, parts } = versionLine(this._hass.states);
+    const { running, parts, released, notes } = versionLine(this._hass.states);
     const q = (s) => this.shadowRoot.querySelector(s);
     q(".line").innerHTML = `<b>PowerEngine ${running}</b> running` + (parts.length
-      ? " · " + parts.join(" · ") : " · HACS update entities not found");
+      ? " · " + parts.join(" · ") : " · HACS update entities not found")
+      + (released ? ` · <b>${released} released</b>` : "");
+    if (notes !== this._notes) {
+      this._notes = notes;
+      const box = q(".notes");
+      box.innerHTML = "";
+      if (notes) {
+        const md = document.createElement("ha-markdown");
+        md.breaks = true;
+        md.content = "**What's new**\n\n" + notes;
+        box.appendChild(md);
+      }
+    }
     q(".msg").textContent = this._msg || "";
     q(".go").disabled = !!this._busy;
     q(".go").textContent = this._busy ? "Updating…" : "Update";
@@ -1792,6 +1809,152 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-up
   window.customCards = window.customCards || [];
   window.customCards.push({ type: "powerengine-update-card", name: "PowerEngine update",
     description: "Check for and install the latest PowerEngine release." });
+}
+
+// --- Health findings with Dismiss, and PowerEngine's log (Health tab) -------------------------------------------
+function escHtml(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function logWhen(iso, now) {
+  const d = new Date(iso);
+  if (isNaN(d)) return iso || "";
+  const p = (n) => String(n).padStart(2, "0");
+  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`;
+  const today = (now || new Date()).toDateString() === d.toDateString();
+  return today ? hm : `${d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })} ${hm}`;
+}
+
+function logRows(attrs, warningsOnly) {
+  const a = attrs || {};
+  return (warningsOnly ? a.warnings : a.recent) || [];
+}
+
+class PowerEngineHealthCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
+  setConfig(config) {
+    this._config = config || {};
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const st = hass.states["sensor.pe_diag_health"];
+    const sig = st ? st.last_updated + st.state : "";
+    if (sig !== this._sig) {
+      this._sig = sig;
+      this._render();
+    }
+  }
+
+  getCardSize() { return 3; }
+
+  getGridOptions() { return { columns: "full", rows: "auto" }; }
+
+  async _dismiss(key) {
+    try {
+      await this._hass.callWS({ type: "fire_event", event_type: "pe_health_dismiss", event_data: { key } });
+    } catch (err) {
+      this._err = "Couldn't dismiss (admin users only): " + ((err && err.message) || err);
+      this._render();
+    }
+  }
+
+  _render() {
+    if (!this.shadowRoot || !this._hass) return;
+    const st = this._hass.states["sensor.pe_diag_health"];
+    const a = (st && st.attributes) || {};
+    const f = a.findings || [];
+    const admin = !!(this._hass.user && this._hass.user.is_admin);
+    let body;
+    if (!st || !["ok", "warnings", "problems"].includes(st.state)) {
+      body = "<p>Health checks run after start-up and each night.</p>";
+    } else if (!f.length) {
+      body = "<p><b>All clear.</b> Inputs look healthy and yesterday's data adds up.</p>";
+    } else {
+      body = `<p><b>${f.length} thing${f.length === 1 ? "" : "s"} to look at${st.state === "problems" ? " (including problems)" : ""}:</b></p><ul>` +
+        f.map((x) => `<li><span class="lvl ${x.level === "problem" ? "p" : "w"}">${x.level === "problem" ? "Problem" : "Check"}</span>
+          <b>${escHtml(x.title)}.</b> ${escHtml(x.detail)}
+          ${admin && x.key ? `<button data-key="${escHtml(x.key)}">Dismiss</button>` : ""}</li>`).join("") + "</ul>";
+    }
+    const gone = (a.dismissed || []).length
+      ? `<p class="small">Dismissed recently: ${a.dismissed.map((d) => escHtml(d.title)).join("; ")}. A new or changed finding shows again.</p>` : "";
+    this.shadowRoot.innerHTML = `
+      <style>
+        ha-card { padding: 12px 16px; }
+        ul { padding-left: 18px; margin: 4px 0; }
+        li { margin: 6px 0; }
+        .lvl { font-size: 0.8em; padding: 1px 6px; border-radius: 8px; margin-right: 4px; color: #fff; }
+        .lvl.p { background: var(--error-color, #db4437); }
+        .lvl.w { background: var(--warning-color, #ffa600); }
+        button { font: inherit; font-size: 0.85em; margin-left: 6px; padding: 2px 10px; border-radius: 6px;
+                 border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color); cursor: pointer; }
+        .small, .err { color: var(--secondary-text-color); font-size: 0.85em; }
+        .err { color: var(--error-color, #db4437); }
+      </style>
+      <ha-card>${body}${gone}${this._err ? `<p class="err">${escHtml(this._err)}</p>` : ""}</ha-card>`;
+    this.shadowRoot.querySelectorAll("button[data-key]").forEach((b) =>
+      b.addEventListener("click", () => this._dismiss(b.dataset.key)));
+  }
+}
+
+class PowerEngineLogCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
+  setConfig(config) {
+    this._config = config || {};
+    this._warn = this._config.warnings_only !== false;
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const st = hass.states["sensor.pe_diag_log"];
+    const sig = st ? st.last_updated : "";
+    if (sig !== this._sig) {
+      this._sig = sig;
+      this._render();
+    }
+  }
+
+  getCardSize() { return 6; }
+
+  getGridOptions() { return { columns: "full", rows: "auto" }; }
+
+  _render() {
+    if (!this.shadowRoot || !this._hass) return;
+    const st = this._hass.states["sensor.pe_diag_log"];
+    const rows = logRows(st && st.attributes, this._warn);
+    const n = (st && st.attributes && st.attributes.warning_count) || 0;
+    this.shadowRoot.innerHTML = `
+      <style>
+        ha-card { padding: 12px 16px; }
+        .top { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+        .top b { flex: 1; }
+        button { font: inherit; font-size: 0.85em; padding: 3px 10px; border-radius: 6px; cursor: pointer;
+                 border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color); }
+        button.on { background: var(--primary-color); color: var(--text-primary-color, #fff); }
+        table { width: 100%; border-collapse: collapse; font-size: 0.88em; }
+        td { padding: 3px 6px 3px 0; vertical-align: top; border-top: 1px solid var(--divider-color); }
+        td.t { white-space: nowrap; color: var(--secondary-text-color); width: 1%; }
+        tr.W td.m, tr.E td.m { color: var(--warning-color, #ffa600); }
+        tr.E td.m { color: var(--error-color, #db4437); }
+        .none { color: var(--secondary-text-color); }
+      </style>
+      <ha-card>
+        <div class="top"><b>PowerEngine log</b>
+          <button class="w ${this._warn ? "on" : ""}">Warnings (${n})</button>
+          <button class="a ${this._warn ? "" : "on"}">All recent</button></div>
+        ${rows.length ? `<table>${rows.map((r) => `<tr class="${escHtml(r.l)}"><td class="t">${escHtml(logWhen(r.t))}</td>
+          <td class="m">${escHtml(r.m)}</td></tr>`).join("")}</table>`
+          : `<p class="none">${st ? "Nothing to show." : "The log appears once PowerEngine 0.9.49 or later is running."}</p>`}
+        <p class="none">Newest first; the full log is in the diagnostics export.</p>
+      </ha-card>`;
+    this.shadowRoot.querySelector("button.w").addEventListener("click", () => { this._warn = true; this._render(); });
+    this.shadowRoot.querySelector("button.a").addEventListener("click", () => { this._warn = false; this._render(); });
+  }
+}
+
+if (typeof customElements !== "undefined") {
+  if (!customElements.get("powerengine-health-card")) customElements.define("powerengine-health-card", PowerEngineHealthCard);
+  if (!customElements.get("powerengine-log-card")) customElements.define("powerengine-log-card", PowerEngineLogCard);
 }
 
 // --- Diagnostics export (Health tab) --------------------------------------------------------------------------
@@ -2213,5 +2376,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION };
+  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION };
 }
