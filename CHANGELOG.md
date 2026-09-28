@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.50
+
+No card changes; version kept in step with the app.
+
 ## 0.9.49
 
 - New `powerengine-health-card` (findings with Dismiss) and `powerengine-log-card` (Health tab).
