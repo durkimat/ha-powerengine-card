@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.51";
+const CARD_VERSION = "0.9.52";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -1957,6 +1957,185 @@ if (typeof customElements !== "undefined") {
   if (!customElements.get("powerengine-log-card")) customElements.define("powerengine-log-card", PowerEngineLogCard);
 }
 
+/* ------------------------------------------------------------ waterfall card
+ * The Costs page's savings waterfall: what each feature saved, period by period (from sensor.pe_cost_waterfall's
+ * `periods` attribute, built by pe_core.costs.waterfall).
+ *   type: custom:powerengine-waterfall-card
+ *   entity: sensor.pe_cost_waterfall
+ *   period: week            (yesterday | week | month | days30; a button row also switches it)
+ */
+
+function waterfallRows(steps) {
+  // steps: [{label, kind, value}] (kind: total | subtotal | step). Returns [{label, kind, from, to, value}]:
+  // a total/subtotal bar runs from 0 to its value and resets the running total; a step bar floats between the
+  // running total before and after it.
+  let running = 0;
+  return (steps || []).map((s) => {
+    if (s.kind === "total" || s.kind === "subtotal") {
+      running = s.value;
+      return { label: s.label, kind: s.kind, from: 0, to: s.value, value: s.value };
+    }
+    const from = running;
+    running += s.value;
+    return { label: s.label, kind: s.kind, from, to: running, value: s.value };
+  });
+}
+
+function waterfallScale(rows) {
+  // The x-axis range for a set of rows: always includes 0 (so a day you earned money still shows the zero line).
+  let min = 0;
+  let max = 0;
+  for (const r of rows) {
+    min = Math.min(min, r.from, r.to);
+    max = Math.max(max, r.from, r.to);
+  }
+  if (min === max) { min -= 1; max += 1; }
+  const pad = (max - min) * 0.08 || 1;
+  return { min: min - pad, max: max + pad };
+}
+
+const WATERFALL_PERIODS = [
+  { key: "yesterday", label: "Yesterday" },
+  { key: "week", label: "7 days" },
+  { key: "month", label: "This month" },
+  { key: "days30", label: "30 days" },
+];
+
+function pct(v, scale) {
+  // Maps a value to a 0-100 position given a {min, max} scale (from waterfallScale). Pure; used to place bars,
+  // the zero line and connectors as percentages inside a relatively-positioned track.
+  const span = scale.max - scale.min;
+  if (!span) return 50;
+  return ((v - scale.min) / span) * 100;
+}
+
+class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
+  setConfig(config) {
+    if (!config || !config.entity) throw new Error("entity is required");
+    this._config = config;
+    this._period = config.period || "week";
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const st = hass.states[this._config && this._config.entity];
+    const sig = (st ? st.last_updated : "") + "|" + this._period;
+    if (sig !== this._sig) {
+      this._sig = sig;
+      this._render();
+    }
+  }
+
+  getCardSize() { return 6; }
+
+  getGridOptions() { return { columns: "full", rows: "auto" }; }
+
+  _setPeriod(key) {
+    this._period = key;
+    const st = this._hass && this._hass.states[this._config.entity];
+    this._sig = (st ? st.last_updated : "") + "|" + key;
+    this._render();
+  }
+
+  _gbp(v) {
+    const s = Math.abs(v) < 0.005 ? 0 : v;
+    return (s < 0 ? "−£" : "£") + Math.abs(s).toFixed(2);
+  }
+
+  _render() {
+    if (!this.shadowRoot || !this._hass || !this._config) return;
+    const st = this._hass.states[this._config.entity];
+    const periods = (st && st.attributes && st.attributes.periods) || {};
+    const p = periods[this._period];
+    const buttons = WATERFALL_PERIODS.map((w) =>
+      `<button data-period="${w.key}" class="${w.key === this._period ? "on" : ""}">${escHtml(w.label)}</button>`).join("");
+
+    if (!st || !p || !p.days) {
+      this.shadowRoot.innerHTML = `
+        <style>${this._css()}</style>
+        <ha-card class="wf"><div class="top">${buttons}</div><p class="none">Costs appear after the first full day.</p></ha-card>`;
+      this._wire();
+      return;
+    }
+
+    const rows = waterfallRows(p.steps);
+    const scale = waterfallScale(rows);
+    const zeroPct = pct(0, scale);
+    const rowsHtml = rows.map((r, i) => {
+      let cls = "neutral";
+      if (r.kind === "step") cls = r.value <= 0 ? "good" : "bad";
+      if (r.kind === "total" && i === rows.length - 1) cls = "final";
+      const p1 = pct(Math.min(r.from, r.to), scale);
+      const p2 = pct(Math.max(r.from, r.to), scale);
+      const width = Math.max(0.6, p2 - p1);
+      const connector = i > 0
+        ? `<div class="conn" style="left:${pct(rows[i - 1].to, scale)}%"></div>` : "";
+      return `
+        <div class="row">
+          <div class="lbl">${escHtml(r.label)}</div>
+          <div class="track">
+            <div class="zero" style="left:${zeroPct}%"></div>
+            ${connector}
+            <div class="bar ${cls}" style="left:${p1}%; width:${width}%"></div>
+          </div>
+          <div class="val">${this._gbp(r.value)}</div>
+        </div>`;
+    }).join("");
+
+    this.shadowRoot.innerHTML = `
+      <style>${this._css()}</style>
+      <ha-card class="wf">
+        <div class="top">${buttons}</div>
+        <div class="rows">${rowsHtml}</div>
+        <p class="caption">${escHtml(p.from)}–${escHtml(p.to)}, ${p.days} day${p.days === 1 ? "" : "s"}. Green steps saved money; orange ones cost money.</p>
+      </ha-card>`;
+    this._wire();
+  }
+
+  _wire() {
+    this.shadowRoot.querySelectorAll("button[data-period]").forEach((b) =>
+      b.addEventListener("click", () => this._setPeriod(b.dataset.period)));
+  }
+
+  _css() {
+    return `
+      ha-card.wf { padding: 12px 16px; container-type: inline-size; }
+      .top { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+      button { font: inherit; font-size: 0.85em; padding: 3px 10px; border-radius: 6px; cursor: pointer;
+               border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color); }
+      button.on { background: var(--primary-color); color: var(--text-primary-color, #fff); }
+      .rows { display: flex; flex-direction: column; gap: 4px; }
+      .row { display: grid; grid-template-columns: minmax(0, 40%) 1fr max-content;
+             grid-template-areas: "lbl track val"; align-items: center; gap: 8px; padding: 3px 0; }
+      .row .lbl { grid-area: lbl; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                  font-size: 0.9em; color: var(--primary-text-color); }
+      .row .track { grid-area: track; position: relative; height: 18px; }
+      .row .val { grid-area: val; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap;
+                  font-size: 0.9em; color: var(--primary-text-color); }
+      .bar { position: absolute; top: 2px; bottom: 2px; border-radius: 3px; }
+      .zero { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--divider-color); }
+      .conn { position: absolute; top: -6px; bottom: -6px; width: 0; border-left: 1px dashed var(--divider-color); }
+      .bar.neutral { background: var(--secondary-text-color); opacity: .55; }
+      .bar.final { background: var(--primary-text-color); opacity: .8; }
+      .bar.good { background: var(--success-color, #43a047); }
+      .bar.bad { background: var(--warning-color, #fb8c00); }
+      .none { color: var(--secondary-text-color); font-size: 0.9em; }
+      .caption { color: var(--secondary-text-color); font-size: 0.85em; margin-top: 8px; }
+      @container (max-width: 420px) {
+        .row { grid-template-columns: 1fr max-content; grid-template-areas: "lbl lbl" "track val"; row-gap: 2px; }
+        .row .lbl { white-space: normal; }
+      }
+    `;
+  }
+}
+
+if (typeof customElements !== "undefined" && !customElements.get("powerengine-waterfall-card")) {
+  customElements.define("powerengine-waterfall-card", PowerEngineWaterfallCard);
+  window.customCards = window.customCards || [];
+  window.customCards.push({ type: "powerengine-waterfall-card", name: "PowerEngine savings waterfall", description: "Where the Costs page's savings came from, period by period." });
+}
+
 // --- Diagnostics export (Health tab) --------------------------------------------------------------------------
 // Admin only (HA only lets admins fire and subscribe to events). Asks the app for its file-backed parts (config,
 // write journal, plan, recent log), adds live entity states and 24 h of history, and saves one JSON file in the
@@ -2376,5 +2555,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION };
+  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct };
 }

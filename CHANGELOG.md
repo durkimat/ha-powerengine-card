@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.52
+
+- New `powerengine-waterfall-card` (Costs page): where the savings came from, per period, drawn as rows that stay readable on a phone.
+
 ## 0.9.51
 
 No card changes; version kept in step with the app.

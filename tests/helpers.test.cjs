@@ -364,3 +364,80 @@ test("version line shows a release HACS hasn't seen yet, with its notes", () => 
   assert.ok(v.notes.startsWith("### 0.9.50"));
   assert.equal(h.versionLine({ "sensor.pe_diag_update": { state: "up to date", attributes: {} } }).released, null);
 });
+
+test("waterfall rows chain: totals reset the baseline, steps float between running totals", () => {
+  const steps = [
+    { label: "No solar or battery", kind: "total", value: 20 },
+    { label: "Solar", kind: "step", value: -8 },
+    { label: "EDF tariff", kind: "step", value: -4 },
+    { label: "Battery on self-use", kind: "step", value: -3 },
+    { label: "PowerEngine", kind: "step", value: -2 },
+    { label: "Everyday cost", kind: "subtotal", value: 3 },
+    { label: "Battery carry-over", kind: "step", value: 0.5 },
+    { label: "You paid", kind: "total", value: 3.5 },
+  ];
+  const rows = h.waterfallRows(steps);
+  assert.equal(rows.length, 8);
+  assert.deepEqual([rows[0].from, rows[0].to], [0, 20]);
+  assert.deepEqual([rows[1].from, rows[1].to], [20, 12]);
+  assert.deepEqual([rows[2].from, rows[2].to], [12, 8]);
+  assert.deepEqual([rows[3].from, rows[3].to], [8, 5]);
+  assert.deepEqual([rows[4].from, rows[4].to], [5, 3]);
+  assert.deepEqual([rows[5].from, rows[5].to], [0, 3]);       // subtotal resets the baseline
+  assert.deepEqual([rows[6].from, rows[6].to], [3, 3.5]);
+  assert.deepEqual([rows[7].from, rows[7].to], [0, 3.5]);     // final total also resets
+  assert.equal(rows[rows.length - 1].to, 3.5);
+});
+
+test("waterfall rows: a day you earned money gives a negative running total", () => {
+  const steps = [
+    { label: "No solar or battery", kind: "total", value: 5 },
+    { label: "Solar", kind: "step", value: -3 },
+    { label: "EDF tariff", kind: "step", value: -2 },
+    { label: "Battery on self-use", kind: "step", value: -2 },
+    { label: "PowerEngine", kind: "step", value: -1 },
+    { label: "Everyday cost", kind: "subtotal", value: -3 },
+    { label: "Battery carry-over", kind: "step", value: 0 },
+    { label: "You paid", kind: "total", value: -3 },
+  ];
+  const rows = h.waterfallRows(steps);
+  const scale = h.waterfallScale(rows);
+  assert.ok(scale.min < -3 && scale.max > 5);      // the scale always spans 0
+  assert.equal(rows[rows.length - 1].value, -3);
+});
+
+test("waterfall rows: an all-zero day still produces a valid, non-degenerate scale", () => {
+  const steps = [
+    { label: "No solar or battery", kind: "total", value: 0 },
+    { label: "Solar", kind: "step", value: 0 },
+    { label: "Everyday cost", kind: "subtotal", value: 0 },
+    { label: "You paid", kind: "total", value: 0 },
+  ];
+  const rows = h.waterfallRows(steps);
+  const scale = h.waterfallScale(rows);
+  assert.ok(scale.min < 0 && scale.max > 0);       // degenerate (all-equal) range still gives room either side
+  assert.equal(rows.every((r) => r.from === 0 && r.to === 0), true);
+});
+
+test("waterfall scale always includes zero even when every value is positive", () => {
+  const rows = h.waterfallRows([
+    { label: "No solar or battery", kind: "total", value: 10 },
+    { label: "You paid", kind: "total", value: 12 },
+  ]);
+  const scale = h.waterfallScale(rows);
+  assert.ok(scale.min <= 0);
+  assert.ok(scale.max >= 12);
+});
+
+test("pct: maps a value to its 0-100 position within a scale", () => {
+  assert.equal(h.pct(5, { min: 0, max: 10 }), 50);
+  assert.equal(h.pct(0, { min: 0, max: 10 }), 0);
+  assert.equal(h.pct(10, { min: 0, max: 10 }), 100);
+  assert.equal(h.pct(-5, { min: -10, max: 10 }), 25);
+});
+
+test("pct: handles a negative-only scale and a degenerate (zero-width) scale", () => {
+  assert.equal(h.pct(-5, { min: -10, max: 0 }), 50);
+  assert.equal(h.pct(3, { min: 3, max: 3 }), 50);   // no span: pick the middle rather than divide by zero
+});
+
