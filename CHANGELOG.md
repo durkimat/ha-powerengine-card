@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.38
+
+- Axle events: *Axle also earns the export rate* option.
+
 ## 0.9.37
 
 - Grid and house: *Check meter import today* and *Check meter export today* inputs.

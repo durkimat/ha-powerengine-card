@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.37";
+const CARD_VERSION = "0.9.38";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -28,6 +28,7 @@ const FEATURES = [
   ["deep_overnight", "Deeper selling overnight", "Inside the fixed overnight window, where the cheap refill is guaranteed, arbitrage may sell below the band's bottom (down to the reserve plus 10%): one deeper sale and one refill instead of many shallow cycles, for the same money. Off: the band's bottom holds overnight too."],
   ["use_check_meter", "Use the check meter", "When a check meter is set and reporting, use it for grid power instead of the inverter's meter, and correct the inverter's house load by the difference (also in the learned usage history). If it stops reporting for 3 minutes, the inverter's meter is used again. Off: the check meter is only compared."],
   ["axle", "Axle VPP events", "Force-discharge during Axle events and hold charge beforehand."],
+  ["axle_plus_export", "Axle also earns the export rate", "Your supplier pays its normal export rate on Axle exports as well as Axle's £1/kWh (EDF: £1 + 15p). Planning and the event figures count both. Off: Axle's £1 only."],
   ["free_power_days", "Free-power sessions", "Make full use of EDF free-electricity sessions."],
   ["optimised_plan", "Optimised planning", "The optimiser chooses each half-hour's action for the lowest cost (arbitrage band and safety rules included), with plain-English reasons. Off: the simpler rule-based planner."],
   ["learn_taper", "Learn: charge slow-down near full", "Plan with how much charging slows from 90% and 95%, as seen, so the overnight charge starts early enough to finish. Health tab, Learned from use, shows each learned figure and how many half-hours it's based on."],
@@ -51,7 +52,7 @@ const NOTIFY_EVENTS = [
 const FEATURE_DEFAULTS = { auto_cheap_threshold: true, fill_when_cheap: true, smart_charge_optimisation: true, arbitrage: false, axle: true, free_power_days: true, tariff_simulator: true, optimised_plan: true,
   learn_taper: true, learn_reserve: true, learn_export: true, learn_car: true, cold_caution: true, cold_learning: true,
   damp_restart: true, damp_bursts: false, deep_overnight: true,
-  use_check_meter: true };
+  use_check_meter: true, axle_plus_export: true };
 
 /* ------------------------------------------------------------------ helpers
  * Pure functions (no DOM), exported for tests at the bottom of the file.
@@ -192,7 +193,7 @@ const TOPICS = [
     settings: ["export_limit_kw", "battery_wear_p", "arbitrage_min_margin_p", "arbitrage_min_soc", "arbitrage_max_soc",
       "arbitrage_band_penalty_p", "overnight_switch_cost_p"],
     roles: ["inverter_export_limit"], learning: ["learn_export"] },
-  { key: "axle", title: "Axle events", main: "axle", features: ["axle"],
+  { key: "axle", title: "Axle events", main: "axle", features: ["axle", "axle_plus_export"],
     roles: ["axle_event_active", "axle_event_start", "axle_event_end", "axle_direction"],
     settings: ["pre_axle_lookahead_h", "axle_margin_soc"] },
   { key: "free", title: "Free-power sessions", main: "free_power_days", features: ["free_power_days"],
