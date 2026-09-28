@@ -441,3 +441,17 @@ test("pct: handles a negative-only scale and a degenerate (zero-width) scale", (
   assert.equal(h.pct(3, { min: 3, max: 3 }), 50);   // no span: pick the middle rather than divide by zero
 });
 
+
+test("waterfall short labels fit narrow columns", () => {
+  assert.equal(h.waterfallShortLabel("You paid (after Axle payments)"), "You paid");
+  assert.equal(h.waterfallShortLabel("Battery carry-over"), "Carry-over");
+  assert.equal(h.waterfallShortLabel("Solar"), "Solar");
+});
+
+test("compact £ values: whole pounds from £10, one decimal below, minus sign for savings", () => {
+  assert.equal(h.compactGbp(36.9), "£37");
+  assert.equal(h.compactGbp(-19.64), "−£20");
+  assert.equal(h.compactGbp(-7.67), "−£7.7");
+  assert.equal(h.compactGbp(0.41), "£0.4");
+  assert.equal(h.compactGbp(0.02), "£0.0");
+});
