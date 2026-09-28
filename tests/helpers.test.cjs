@@ -333,3 +333,17 @@ test("diagnostics history adds the mapped raw meters and the grid cross-check", 
   assert.equal(new Set(ids).size, ids.length);
   assert.ok(h.diagHistoryIds(null).includes("sensor.pe_state_grid_power"));
 });
+
+test("update card finds the PowerEngine repositories and reads the versions", () => {
+  const repos = h.peRepos([{ id: 1, full_name: "durkimat/ha-powerengine-controller", installed: true },
+    { id: 2, full_name: "durkimat/ha-powerengine-card", installed: true },
+    { id: 3, full_name: "hacs/integration", installed: true },
+    { id: 4, full_name: "someone/powerengine-fork", installed: false }]);
+  assert.deepEqual(repos.map((r) => r.id), [1, 2]);
+  const states = { "sensor.pe_diag_version": { state: "0.9.45" },
+    "update.powerengine_update": { state: "on", attributes: { installed_version: "v0.9.45", latest_version: "v0.9.46" } },
+    "update.powerengine_card_update": { state: "off", attributes: { installed_version: "v0.9.45" } } };
+  const v = h.versionLine(states);
+  assert.equal(v.running, "0.9.45");
+  assert.deepEqual(v.parts, ["card v0.9.45", "app v0.9.45 → v0.9.46 available"]);
+});
