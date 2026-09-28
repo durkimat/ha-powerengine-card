@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.53
+
+- Waterfall card drawn as columns cascading left to right (short labels and rounded values on narrow screens).
+
 ## 0.9.52
 
 - New `powerengine-waterfall-card` (Costs page): where the savings came from, per period, drawn as rows that stay readable on a phone.

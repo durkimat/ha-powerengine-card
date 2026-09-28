@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.52";
+const CARD_VERSION = "0.9.53";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -2009,6 +2009,30 @@ function pct(v, scale) {
   return ((v - scale.min) / span) * 100;
 }
 
+const WATERFALL_SHORT = {
+  "No solar or battery": "No solar/ battery",
+  "EDF tariff": "Tariff",
+  "Battery on self-use": "Self-use battery",
+  "Everyday cost": "Every\u00ADday",
+  "Battery carry-over": "Carry-over",
+  "Axle & free power": "Axle",
+};
+
+function waterfallShortLabel(label) {
+  // A label that fits a narrow column on a phone ("You paid (after Axle payments)" -> "You paid").
+  const l = String(label || "");
+  if (WATERFALL_SHORT[l]) return WATERFALL_SHORT[l];
+  if (l.startsWith("You paid")) return "You paid";
+  return l;
+}
+
+function compactGbp(v) {
+  // £ for a narrow column: whole pounds from £10, else one decimal ("£37", "−£7.7", "£0.4").
+  const n = Math.abs(v) < 0.05 ? 0 : v;
+  const a = Math.abs(n);
+  return (n < 0 ? "−£" : "£") + (a >= 10 ? Math.round(a).toString() : a.toFixed(1));
+}
+
 class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
   setConfig(config) {
     if (!config || !config.entity) throw new Error("entity is required");
@@ -2062,33 +2086,38 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
     const rows = waterfallRows(p.steps);
     const scale = waterfallScale(rows);
     const zeroPct = pct(0, scale);
-    const rowsHtml = rows.map((r, i) => {
+    // columns left to right: the starting total, the steps cascading down, the final total on the right
+    const cols = rows.map((r, i) => {
       let cls = "neutral";
       if (r.kind === "step") cls = r.value <= 0 ? "good" : "bad";
       if (r.kind === "total" && i === rows.length - 1) cls = "final";
-      const p1 = pct(Math.min(r.from, r.to), scale);
-      const p2 = pct(Math.max(r.from, r.to), scale);
-      const width = Math.max(0.6, p2 - p1);
-      const connector = i > 0
-        ? `<div class="conn" style="left:${pct(rows[i - 1].to, scale)}%"></div>` : "";
+      const lo = pct(Math.min(r.from, r.to), scale);
+      const hi = pct(Math.max(r.from, r.to), scale);
+      const height = Math.max(0.8, hi - lo);
+      // dashed line from the previous bar's end level across the gap to this bar
+      const conn = i > 0 ? `<div class="conn" style="bottom:${pct(rows[i - 1].to, scale)}%"></div>` : "";
+      const full = this._gbp(r.value);
       return `
-        <div class="row">
-          <div class="lbl">${escHtml(r.label)}</div>
-          <div class="track">
-            <div class="zero" style="left:${zeroPct}%"></div>
-            ${connector}
-            <div class="bar ${cls}" style="left:${p1}%; width:${width}%"></div>
-          </div>
-          <div class="val">${this._gbp(r.value)}</div>
+        <div class="col" title="${escHtml(r.label)}: ${full}">
+          ${conn}
+          <div class="bar ${cls}" style="bottom:${lo}%; height:${height}%"></div>
+          <div class="v" style="bottom:${hi}%"><span class="full">${full}</span><span class="short">${compactGbp(r.value)}</span></div>
         </div>`;
     }).join("");
+    const labels = rows.map((r) =>
+      `<div class="lbl"><span class="full">${escHtml(r.label)}</span><span class="short">${escHtml(waterfallShortLabel(r.label))}</span></div>`).join("");
+    const n = rows.length;
 
     this.shadowRoot.innerHTML = `
       <style>${this._css()}</style>
       <ha-card class="wf">
         <div class="top">${buttons}</div>
-        <div class="rows">${rowsHtml}</div>
-        <p class="caption">${escHtml(p.from)}–${escHtml(p.to)}, ${p.days} day${p.days === 1 ? "" : "s"}. Green steps saved money; orange ones cost money.</p>
+        <div class="plot" style="grid-template-columns: repeat(${n}, 1fr)">
+          <div class="zero" style="bottom:${zeroPct}%"></div>
+          ${cols}
+        </div>
+        <div class="labels" style="grid-template-columns: repeat(${n}, 1fr)">${labels}</div>
+        <p class="caption">${escHtml(p.from)}–${escHtml(p.to)}, ${p.days} day${p.days === 1 ? "" : "s"}. Green steps saved money; orange ones cost money. Tap a bar for its exact value.</p>
       </ha-card>`;
     this._wire();
   }
@@ -2100,31 +2129,35 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
 
   _css() {
     return `
-      ha-card.wf { padding: 12px 16px; container-type: inline-size; }
+      ha-card.wf { display: block; padding: 12px 16px; container-type: inline-size; }
       .top { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
       button { font: inherit; font-size: 0.85em; padding: 3px 10px; border-radius: 6px; cursor: pointer;
                border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color); }
       button.on { background: var(--primary-color); color: var(--text-primary-color, #fff); }
-      .rows { display: flex; flex-direction: column; gap: 4px; }
-      .row { display: grid; grid-template-columns: minmax(0, 40%) 1fr max-content;
-             grid-template-areas: "lbl track val"; align-items: center; gap: 8px; padding: 3px 0; }
-      .row .lbl { grid-area: lbl; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-                  font-size: 0.9em; color: var(--primary-text-color); }
-      .row .track { grid-area: track; position: relative; height: 18px; }
-      .row .val { grid-area: val; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap;
-                  font-size: 0.9em; color: var(--primary-text-color); }
-      .bar { position: absolute; top: 2px; bottom: 2px; border-radius: 3px; }
-      .zero { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--divider-color); }
-      .conn { position: absolute; top: -6px; bottom: -6px; width: 0; border-left: 1px dashed var(--divider-color); }
+      .plot { position: relative; display: grid; column-gap: 6px; height: 220px; margin-top: 18px; }
+      .col { position: relative; height: 100%; }
+      .zero { position: absolute; left: 0; right: 0; height: 0; border-top: 1px solid var(--divider-color); }
+      .bar { position: absolute; left: 15%; right: 15%; border-radius: 3px 3px 0 0; }
+      .conn { position: absolute; left: calc(-15% - 6px); width: calc(30% + 6px); height: 0;
+              border-top: 1px dashed var(--secondary-text-color); opacity: .6; }
+      .v { position: absolute; left: -3px; right: -3px; margin-bottom: 2px; text-align: center; white-space: nowrap;
+           font-size: 0.75em; font-variant-numeric: tabular-nums; color: var(--primary-text-color); }
       .bar.neutral { background: var(--secondary-text-color); opacity: .55; }
       .bar.final { background: var(--primary-text-color); opacity: .8; }
       .bar.good { background: var(--success-color, #43a047); }
       .bar.bad { background: var(--warning-color, #fb8c00); }
+      .labels { display: grid; column-gap: 6px; margin-top: 6px; }
+      .lbl { text-align: center; font-size: 0.75em; line-height: 1.2; color: var(--secondary-text-color);
+             overflow-wrap: anywhere; }
+      .short { display: none; }
       .none { color: var(--secondary-text-color); font-size: 0.9em; }
       .caption { color: var(--secondary-text-color); font-size: 0.85em; margin-top: 8px; }
-      @container (max-width: 420px) {
-        .row { grid-template-columns: 1fr max-content; grid-template-areas: "lbl lbl" "track val"; row-gap: 2px; }
-        .row .lbl { white-space: normal; }
+      @container (max-width: 520px) {
+        .full { display: none; }
+        .short { display: inline; }
+        .plot, .labels { column-gap: 3px; }
+        .conn { left: calc(-15% - 3px); width: calc(30% + 3px); }
+        .v, .lbl { font-size: 0.68em; }
       }
     `;
   }
@@ -2555,5 +2588,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct };
+  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp };
 }
