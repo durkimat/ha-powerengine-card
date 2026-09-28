@@ -428,3 +428,16 @@ test("waterfall scale always includes zero even when every value is positive", (
   assert.ok(scale.min <= 0);
   assert.ok(scale.max >= 12);
 });
+
+test("pct: maps a value to its 0-100 position within a scale", () => {
+  assert.equal(h.pct(5, { min: 0, max: 10 }), 50);
+  assert.equal(h.pct(0, { min: 0, max: 10 }), 0);
+  assert.equal(h.pct(10, { min: 0, max: 10 }), 100);
+  assert.equal(h.pct(-5, { min: -10, max: 10 }), 25);
+});
+
+test("pct: handles a negative-only scale and a degenerate (zero-width) scale", () => {
+  assert.equal(h.pct(-5, { min: -10, max: 0 }), 50);
+  assert.equal(h.pct(3, { min: 3, max: 3 }), 50);   // no span: pick the middle rather than divide by zero
+});
+

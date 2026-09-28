@@ -2001,6 +2001,14 @@ const WATERFALL_PERIODS = [
   { key: "days30", label: "30 days" },
 ];
 
+function pct(v, scale) {
+  // Maps a value to a 0-100 position given a {min, max} scale (from waterfallScale). Pure; used to place bars,
+  // the zero line and connectors as percentages inside a relatively-positioned track.
+  const span = scale.max - scale.min;
+  if (!span) return 50;
+  return ((v - scale.min) / span) * 100;
+}
+
 class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
   setConfig(config) {
     if (!config || !config.entity) throw new Error("entity is required");
@@ -2011,7 +2019,12 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
 
   set hass(hass) {
     this._hass = hass;
-    this._render();
+    const st = hass.states[this._config && this._config.entity];
+    const sig = (st ? st.last_updated : "") + "|" + this._period;
+    if (sig !== this._sig) {
+      this._sig = sig;
+      this._render();
+    }
   }
 
   getCardSize() { return 6; }
@@ -2020,6 +2033,8 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
 
   _setPeriod(key) {
     this._period = key;
+    const st = this._hass && this._hass.states[this._config.entity];
+    this._sig = (st ? st.last_updated : "") + "|" + key;
     this._render();
   }
 
@@ -2039,45 +2054,40 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
     if (!st || !p || !p.days) {
       this.shadowRoot.innerHTML = `
         <style>${this._css()}</style>
-        <ha-card><div class="top">${buttons}</div><p class="none">Costs appear after the first full day.</p></ha-card>`;
+        <ha-card class="wf"><div class="top">${buttons}</div><p class="none">Costs appear after the first full day.</p></ha-card>`;
       this._wire();
       return;
     }
 
     const rows = waterfallRows(p.steps);
-    const { min, max } = waterfallScale(rows);
-    const W = 600;
-    const rowH = 34;
-    const padL = 148;
-    const padR = 56;
-    const chartW = W - padL - padR;
-    const H = rows.length * rowH + 8;
-    const x = (v) => padL + ((v - min) / (max - min)) * chartW;
-    const zeroX = x(0);
-    const bars = rows.map((r, i) => {
-      const y = i * rowH;
-      const x1 = Math.min(x(r.from), x(r.to));
-      const x2 = Math.max(x(r.from), x(r.to));
-      const w = Math.max(2, x2 - x1);
+    const scale = waterfallScale(rows);
+    const zeroPct = pct(0, scale);
+    const rowsHtml = rows.map((r, i) => {
       let cls = "neutral";
       if (r.kind === "step") cls = r.value <= 0 ? "good" : "bad";
       if (r.kind === "total" && i === rows.length - 1) cls = "final";
+      const p1 = pct(Math.min(r.from, r.to), scale);
+      const p2 = pct(Math.max(r.from, r.to), scale);
+      const width = Math.max(0.6, p2 - p1);
       const connector = i > 0
-        ? `<line class="conn" x1="${x(rows[i - 1].to)}" y1="${y}" x2="${x(rows[i - 1].to)}" y2="${y + rowH}" />` : "";
-      return `${connector}
-        <text class="lbl" x="8" y="${y + rowH / 2 + 4}">${escHtml(r.label)}</text>
-        <rect class="bar ${cls}" x="${x1}" y="${y + 6}" width="${w}" height="${rowH - 14}" rx="3"></rect>
-        <text class="val" x="${W - 8}" y="${y + rowH / 2 + 4}">${this._gbp(r.value)}</text>`;
+        ? `<div class="conn" style="left:${pct(rows[i - 1].to, scale)}%"></div>` : "";
+      return `
+        <div class="row">
+          <div class="lbl">${escHtml(r.label)}</div>
+          <div class="track">
+            <div class="zero" style="left:${zeroPct}%"></div>
+            ${connector}
+            <div class="bar ${cls}" style="left:${p1}%; width:${width}%"></div>
+          </div>
+          <div class="val">${this._gbp(r.value)}</div>
+        </div>`;
     }).join("");
 
     this.shadowRoot.innerHTML = `
       <style>${this._css()}</style>
-      <ha-card>
+      <ha-card class="wf">
         <div class="top">${buttons}</div>
-        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" class="chart">
-          <line class="zero" x1="${zeroX}" y1="0" x2="${zeroX}" y2="${H}" />
-          ${bars}
-        </svg>
+        <div class="rows">${rowsHtml}</div>
         <p class="caption">${escHtml(p.from)}–${escHtml(p.to)}, ${p.days} day${p.days === 1 ? "" : "s"}. Green steps saved money; orange ones cost money.</p>
       </ha-card>`;
     this._wire();
@@ -2090,22 +2100,32 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
 
   _css() {
     return `
-      ha-card { padding: 12px 16px; }
+      ha-card.wf { padding: 12px 16px; container-type: inline-size; }
       .top { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
       button { font: inherit; font-size: 0.85em; padding: 3px 10px; border-radius: 6px; cursor: pointer;
                border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color); }
       button.on { background: var(--primary-color); color: var(--text-primary-color, #fff); }
-      .chart { width: 100%; height: auto; display: block; }
-      .lbl { font-size: 11px; fill: var(--primary-text-color); }
-      .val { font-size: 11px; fill: var(--primary-text-color); text-anchor: end; }
-      .zero { stroke: var(--divider-color); stroke-width: 1; }
-      .conn { stroke: var(--divider-color); stroke-width: 1; stroke-dasharray: 2,2; }
-      .bar.neutral { fill: var(--secondary-text-color); opacity: .55; }
-      .bar.final { fill: var(--primary-text-color); opacity: .8; }
-      .bar.good { fill: var(--success-color, #43a047); }
-      .bar.bad { fill: var(--warning-color, #fb8c00); }
+      .rows { display: flex; flex-direction: column; gap: 4px; }
+      .row { display: grid; grid-template-columns: minmax(0, 40%) 1fr max-content;
+             grid-template-areas: "lbl track val"; align-items: center; gap: 8px; padding: 3px 0; }
+      .row .lbl { grid-area: lbl; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                  font-size: 0.9em; color: var(--primary-text-color); }
+      .row .track { grid-area: track; position: relative; height: 18px; }
+      .row .val { grid-area: val; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap;
+                  font-size: 0.9em; color: var(--primary-text-color); }
+      .bar { position: absolute; top: 2px; bottom: 2px; border-radius: 3px; }
+      .zero { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--divider-color); }
+      .conn { position: absolute; top: -6px; bottom: -6px; width: 0; border-left: 1px dashed var(--divider-color); }
+      .bar.neutral { background: var(--secondary-text-color); opacity: .55; }
+      .bar.final { background: var(--primary-text-color); opacity: .8; }
+      .bar.good { background: var(--success-color, #43a047); }
+      .bar.bad { background: var(--warning-color, #fb8c00); }
       .none { color: var(--secondary-text-color); font-size: 0.9em; }
-      .caption { color: var(--secondary-text-color); font-size: 0.85em; margin-top: 6px; }
+      .caption { color: var(--secondary-text-color); font-size: 0.85em; margin-top: 8px; }
+      @container (max-width: 420px) {
+        .row { grid-template-columns: 1fr max-content; grid-template-areas: "lbl lbl" "track val"; row-gap: 2px; }
+        .row .lbl { white-space: normal; }
+      }
     `;
   }
 }
@@ -2535,5 +2555,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale };
+  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct };
 }
