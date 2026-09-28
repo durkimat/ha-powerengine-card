@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.40
+
+- No card changes; version kept in step with the app.
+
 ## 0.9.39
 
 - Battery topic: *Learn: inverter conversion losses*; the slow-down option now covers discharging too.
