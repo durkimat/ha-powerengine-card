@@ -2080,7 +2080,8 @@ class PowerEngineSetupCard extends (typeof HTMLElement !== "undefined" ? HTMLEle
     });
     return { isAdmin: this._isAdmin(), hacs: s.hacs === undefined ? null : s.hacs, hacsReason: s.hacsReason, categories: s.categories,
       addon: s.addon, repos: s.repos, cardsLoaded, components: (hass.config && hass.config.components) || [],
-      peVersion: peRunning(hass.states) };
+      peVersion: peRunning(hass.states),
+      setup: (((hass.states || {})[VERSION_SENSOR] || {}).attributes || {}).setup || null };
   }
 
   _render() {
@@ -2097,7 +2098,7 @@ class PowerEngineSetupCard extends (typeof HTMLElement !== "undefined" ? HTMLEle
         ha-card { padding: 12px 16px; display: block; }
         .head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
         .head h2 { flex: 1 1 auto; margin: 0; font-size: 1.1em; font-weight: 500; }
-        .btns { display: flex; gap: 8px; flex: 0 0 auto; }
+        .btns { display: flex; gap: 8px; flex: 0 0 auto; flex-wrap: wrap; }
         .sub { color: var(--secondary-text-color); font-size: 0.9em; margin: 4px 0 8px; }
         .row { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; padding: 8px 0; border-top: 1px solid var(--divider-color); }
         .dot { flex: 0 0 22px; height: 22px; border-radius: 50%; color: #fff; text-align: center; line-height: 22px; font-size: 13px; font-weight: 600; }
@@ -2131,6 +2132,12 @@ class PowerEngineSetupCard extends (typeof HTMLElement !== "undefined" ? HTMLEle
       sub.textContent = "You're not an admin. An admin needs to run the installs; you can see what's missing here.";
     } else {
       sub.textContent = sum.todo ? `${sum.todo} thing${sum.todo === 1 ? "" : "s"} still to do.` : "";
+    }
+    if (showDemoLink(facts)) {
+      const tryIt = mk("button", "second", "Try the demo");
+      tryIt.title = "The demo is at the top of this page";
+      tryIt.addEventListener("click", () => { if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" }); });
+      head.append(tryIt);
     }
     const again = mk("button", "second", this._checking ? "Checking…" : "Check again");
     again.disabled = busy;
@@ -2177,6 +2184,277 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-se
   window.customCards = window.customCards || [];
   window.customCards.push({ type: "powerengine-setup-card", name: "PowerEngine setup",
     description: "Checks what PowerEngine needs and installs what HACS can install." });
+}
+
+// --- Demo card: welcome, banner, day picker and exit --------------------------------------------------------
+// The controller puts this card first on every dashboard view. What it shows comes from sensor.pe_diag_version:
+//   attributes.setup  "unconfigured" | "configured"
+//   attributes.demo   null, or {day, title, days: [{key, title}], note}
+// It asks for changes by firing the event pe_demo {action: "start" | "day" | "exit", day}, and hears the answer as the
+// event pe_demo_result {ok, message}. Only admins can fire (HA's fire_event needs admin).
+const DEMO_EVENT = "pe_demo";
+const DEMO_RESULT_EVENT = "pe_demo_result";
+const DEMO_NOTE = "Recorded data from a real home. Nothing is controlled.";
+// Until the app says which days exist (the welcome only knows "unconfigured"), these match the demo pack's keys.
+const DEMO_DAYS = [
+  { key: "sunny", title: "Sunny day" }, { key: "dull", title: "Dull day" },
+  { key: "axle", title: "<<event>> event day" }, { key: "car", title: "Car charging day" },
+];
+const DEMO_WAIT = "Starting the demo… (about a minute)";
+
+function capFirst(text) { const s = String(text); return s.charAt(0).toUpperCase() + s.slice(1); }
+
+/** Which of the card's three modes to show, and what goes in it. attrs: the version sensor's attributes. */
+function demoView(attrs, isAdmin) {
+  const a = attrs || {};
+  const names = a.names && typeof a.names === "object" ? a.names : null;
+  const title = (t) => capFirst(fillNames(t, names));
+  const canAct = !!isAdmin;
+  const demo = a.demo && typeof a.demo === "object" ? a.demo : null;
+  if (demo) {
+    const list = Array.isArray(demo.days) && demo.days.length ? demo.days : [];
+    return { mode: "banner", canAct, title: title(demo.title || demo.day || "demo"), day: demo.day || null,
+      note: demo.note || DEMO_NOTE,
+      days: list.filter((d) => d && d.key).map((d) => ({ key: d.key, title: title(d.title || d.key), current: d.key === demo.day })) };
+  }
+  if (a.setup === "unconfigured") {
+    return { mode: "welcome", canAct, days: DEMO_DAYS.map((d, i) => ({ key: d.key, title: title(d.title), current: i === 0 })) };
+  }
+  return { mode: "hidden", canAct, days: [] };
+}
+
+/** The fire_event call for a demo action, or null if the action or day isn't valid. */
+function demoEventPayload(action, day) {
+  if (!["start", "day", "exit"].includes(action)) return null;
+  const data = { action };
+  if (action !== "exit") {
+    if (!day || typeof day !== "string") return null;
+    data.day = day;
+  }
+  return { type: "fire_event", event_type: DEMO_EVENT, event_data: data };
+}
+
+/** Where the Configuration view is, on the dashboard the visitor is on: /<dashboard>/config. */
+function configPath(pathname) {
+  const seg = String(pathname || "").split("/").filter(Boolean)[0];
+  return seg ? `/${seg}/config` : "/powerengine/config";
+}
+
+/** The setup card offers the demo when PowerEngine runs but nothing is set up yet. */
+function showDemoLink(facts) {
+  const f = facts || {};
+  return !!f.peVersion && f.setup === "unconfigured";
+}
+
+class PowerEngineDemoCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
+  setConfig(config) {
+    this._config = config || {};
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    this._selected = this._selected || null;
+  }
+
+  // HA removes a hidden card's element from the page unless it says it wants to stay connected. We must stay, or the
+  // card could never come back when a demo starts.
+  get connectedWhileHidden() { return true; }
+
+  getCardSize() { return this._mode === "hidden" ? 0 : 2; }
+
+  getGridOptions() {
+    return this._mode === "hidden" ? { columns: "full", rows: 1, min_rows: 0 } : { columns: "full", rows: "auto" };
+  }
+
+  connectedCallback() { if (this._hass) this._subscribe(); }
+
+  disconnectedCallback() { this._unsubscribe(); }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._subscribe();
+    this._render();
+  }
+
+  _subscribe() {
+    const conn = this._hass && this._hass.connection;
+    if (this._unsub || this._subscribing || !conn || !conn.subscribeEvents) return;
+    this._subscribing = true;
+    conn.subscribeEvents((ev) => this._result(ev && ev.data), DEMO_RESULT_EVENT).then((unsub) => {
+      this._subscribing = false;
+      if (!this.isConnected) unsub();          // removed while we were subscribing
+      else this._unsub = unsub;
+    }, () => { this._subscribing = false; });
+  }
+
+  _unsubscribe() {
+    if (this._unsub) { try { this._unsub(); } catch (e) { /* connection already gone */ } }
+    this._unsub = null;
+  }
+
+  _result(data) {
+    const d = data || {};
+    this._msg = { ok: d.ok !== false, text: String(d.message || (d.ok === false ? "That didn't work." : "Done.")) };
+    if (d.ok === false) this._pending = null;
+    this._render();
+  }
+
+  async _fire(action, day) {
+    const payload = demoEventPayload(action, day);
+    if (!payload || !this._hass) return;
+    const view = demoView(this._attrs(), this._isAdmin());
+    if (!view.canAct) return;
+    this._msg = null;
+    this._confirm = false;
+    this._pending = { text: DEMO_WAIT, from: this._sig0 };
+    this._render();
+    try {
+      await this._hass.callWS(payload);
+    } catch (err) {
+      this._pending = null;
+      this._msg = { ok: false, text: "Couldn't send that: " + ((err && err.message) || err) };
+      this._render();
+    }
+  }
+
+  _isAdmin() { return !!(this._hass && this._hass.user && this._hass.user.is_admin); }
+
+  _attrs() {
+    const s = ((this._hass || {}).states || {})[VERSION_SENSOR];
+    return (s && s.attributes) || {};
+  }
+
+  _render() {
+    if (!this.shadowRoot || !this._hass) return;
+    const attrs = this._attrs();
+    const view = demoView(attrs, this._isAdmin());
+    this._mode = view.mode;
+    const state0 = JSON.stringify([attrs.setup, attrs.demo && attrs.demo.day, !!attrs.demo]);
+    if (this._pending && this._pending.from !== undefined && this._pending.from !== state0) {
+      this._pending = null;                        // the sensor moved on: the start, day change or exit happened
+      this._msg = null;
+    }
+    this._sig0 = state0;
+    const editing = !!this.editMode;
+    const hide = view.mode === "hidden" && !editing;
+    this.hidden = hide;                            // HA's card wrapper hides its tile when the card says so
+    if (hide !== this._wasHidden) {
+      this._wasHidden = hide;
+      this.dispatchEvent(new CustomEvent("card-visibility-changed", { detail: { value: !hide }, bubbles: true, composed: true }));
+    }
+    const sig = JSON.stringify([view, this._selected, this._pending, this._msg, this._confirm, editing]);
+    if (sig === this._sig) return;
+    this._sig = sig;
+    const root = this.shadowRoot;
+    if (hide) { root.innerHTML = ""; return; }
+    root.innerHTML = `
+      <style>
+        :host { display: block; }
+        ha-card { display: block; padding: 10px 16px; }
+        .banner { background: color-mix(in srgb, var(--primary-color, #03a9f4) 16%, var(--card-background-color, #fff));
+                  border-left: 5px solid var(--primary-color, #03a9f4); }
+        .row { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; }
+        .text { flex: 1 1 260px; min-width: 0; }
+        .text b { font-weight: 600; }
+        h2 { margin: 0 0 4px; font-size: 1.1em; font-weight: 500; }
+        .sub, .msg { color: var(--secondary-text-color); font-size: 0.9em; margin-top: 4px; overflow-wrap: anywhere; }
+        .msg.bad { color: var(--error-color, #db4437); }
+        .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+        .section { padding: 8px 0; border-top: 1px solid var(--divider-color); }
+        .section:first-of-type { border-top: 0; }
+        button, a.btn { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--divider-color); cursor: pointer;
+                        background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); text-decoration: none;
+                        display: inline-block; box-sizing: border-box; }
+        button.second, a.btn.second, button.chip { background: none; color: var(--primary-text-color); }
+        button.chip { border-radius: 16px; padding: 4px 12px; }
+        button.chip.on { background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); border-color: var(--primary-color, #03a9f4); }
+        button:disabled { opacity: .5; cursor: default; }
+      </style>
+      <ha-card class="${view.mode}"></ha-card>`;
+    const card = root.querySelector("ha-card");
+    const mk = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
+    const busy = !!this._pending;
+    const chips = (list, currentKey, onPick) => {
+      const box = mk("div", "chips");
+      list.forEach((d) => {
+        const on = d.key === currentKey;
+        const b = mk("button", "chip" + (on ? " on" : ""), d.title);
+        b.setAttribute("aria-pressed", on ? "true" : "false");
+        if (!view.canAct || busy) b.disabled = true;
+        b.addEventListener("click", () => onPick(d.key));
+        box.append(b);
+      });
+      return box;
+    };
+    const status = (parent) => {
+      const note = this._pending ? this._pending.text : this._msg ? this._msg.text : "";
+      if (note) parent.append(mk("div", "msg" + (this._msg && !this._msg.ok && !this._pending ? " bad" : ""), note));
+    };
+    if (view.mode === "hidden") {
+      card.append(mk("div", "sub", "PowerEngine demo card: shows a welcome when PowerEngine isn't set up yet, and a banner during the demo. Nothing to show now."));
+    } else if (view.mode === "banner") {
+      const row = mk("div", "row");
+      const text = mk("div", "text");
+      const line = mk("div");
+      line.append(mk("b", "", `Demo: ${view.title}.`), document.createTextNode(" " + view.note));
+      text.append(line);
+      status(text);
+      row.append(text);
+      if (view.canAct) {
+        const act = mk("div", "row");
+        if (this._confirm) {
+          act.append(mk("span", "", "Leave the demo? Settings you changed are reset."));
+          const yes = mk("button", "", "Leave demo");
+          yes.disabled = busy;
+          yes.addEventListener("click", () => this._fire("exit"));
+          const no = mk("button", "second", "Stay");
+          no.addEventListener("click", () => { this._confirm = false; this._render(); });
+          act.append(yes, no);
+        } else {
+          const exit = mk("button", "second", "Exit demo");
+          exit.disabled = busy;
+          exit.addEventListener("click", () => { this._confirm = true; this._render(); });
+          act.append(exit);
+        }
+        row.append(act);
+      }
+      card.append(row);
+      if (view.days.length > 1 && view.canAct) card.append(chips(view.days, view.day, (k) => this._fire("day", k)));
+    } else {
+      const pick = this._selected || view.days[0].key;
+      const a = mk("div", "section");
+      a.append(mk("h2", "", "PowerEngine is installed but not set up yet."));
+      a.append(mk("div", "sub", "Have a look around first, or set up your own system."));
+      const demo = mk("div", "section");
+      demo.append(mk("b", "", "Try the demo"));
+      demo.append(mk("div", "sub", "Uses recorded data from a real home and controls nothing. Pick a day to start with:"));
+      demo.append(chips(view.days, pick, (k) => { this._selected = k; this._render(); }));
+      if (view.canAct) {
+        const go = mk("button", "", busy ? "Starting…" : "Start the demo");
+        go.disabled = busy;
+        go.addEventListener("click", () => this._fire("start", pick));
+        demo.append(go);
+      } else demo.append(mk("div", "sub", "An admin can start the demo."));
+      status(demo);
+      const setup = mk("div", "section");
+      setup.append(mk("b", "", "Set up your system"));
+      setup.append(mk("div", "sub", "Open the Configuration page to connect your inverter and meters. The PowerEngine setup card there checks what is installed."));
+      const path = configPath(typeof location !== "undefined" ? location.pathname : "");
+      const link = mk("a", "btn second", "Open Configuration");
+      link.href = path;
+      link.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        history.pushState(null, "", path);
+        window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));
+      });
+      setup.append(link);
+      card.append(a, demo, setup);
+    }
+  }
+}
+
+if (typeof customElements !== "undefined" && !customElements.get("powerengine-demo-card")) {
+  customElements.define("powerengine-demo-card", PowerEngineDemoCard);
+  window.customCards = window.customCards || [];
+  window.customCards.push({ type: "powerengine-demo-card", name: "PowerEngine demo",
+    description: "Welcome and demo banner: try PowerEngine on recorded data before setting it up." });
 }
 
 // --- Health findings with Dismiss, and PowerEngine's log (Health tab) -------------------------------------------
@@ -2969,5 +3247,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK };
+  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK };
 }
