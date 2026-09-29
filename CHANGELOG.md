@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.62
+
+- New `powerengine-setup-card`: checks HACS (and its AppDaemon option), the AppDaemon add-on, the PowerEngine app, the chart cards and MQTT, with HACS install buttons for admins. Available in the card picker as "PowerEngine setup".
+
 ## 0.9.61
 
 - Supplier and device names on the Config page come from PowerEngine (identical text for EDF/Zappi/Solcast/Solis).

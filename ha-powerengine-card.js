@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.61";
+const CARD_VERSION = "0.9.62";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -1839,6 +1839,346 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-up
     description: "Check for and install the latest PowerEngine release." });
 }
 
+// --- Setup checklist ---------------------------------------------------------------------------------------
+// Checks each prerequisite once (on load, on "Check again", and after an install) and installs what HACS can
+// install with one button. Admins only: every HACS and Supervisor call below is admin-only on HA's side.
+//
+// Commands (verified against the sources, see the notes in tests/helpers.test.cjs):
+//   hacs/info                    (hacs/websocket/__init__.py)   -> {categories: [...], disabled_reason, version, ...}
+//   hacs/repositories/list       (hacs/websocket/repositories.py), optional "categories" -> [{id, full_name, category,
+//                                 installed, installed_version, ...}]
+//   hacs/repositories/add        (same file) {repository, category}; answers {} even when it refuses (the reason goes to
+//                                 HACS's error signal), so the card lists again to see whether it worked
+//   hacs/repository/download     (hacs/websocket/repository.py) {repository: <id as text>}; a failure is a WS error
+//   supervisor/api               (HA core hassio/websocket_api.py) {endpoint: "/addons", method: "get"} -> {addons: [...]}
+const SETUP_REPOS = {
+  app: { key: "app", full_name: "durkimat/ha-powerengine-controller", category: "appdaemon", label: "PowerEngine app" },
+  apex: { key: "apex", full_name: "RomRider/apexcharts-card", category: "plugin", label: "Chart card", element: "apexcharts-card" },
+  flow: { key: "flow", full_name: "slipx06/sunsynk-power-flow-card", category: "plugin", label: "Energy-flow card", element: "sunsynk-power-flow-card" },
+};
+const SETUP_LINKS = {
+  hacs: "https://hacs.xyz/docs/use/download/download/",
+  hacsOptions: "https://my.home-assistant.io/redirect/integration/?domain=hacs",
+  addon: "https://my.home-assistant.io/redirect/supervisor_addon/?addon=a0d7b954_appdaemon",
+  appdaemonDocs: "https://appdaemon.readthedocs.io/en/latest/INSTALL.html",
+  mqtt: "https://my.home-assistant.io/redirect/config_flow_start/?domain=mqtt",
+};
+
+/** The HACS repository (from hacs/repositories/list) for "owner/name", or null. Case doesn't matter. */
+function findHacsRepo(list, fullName) {
+  const want = String(fullName || "").toLowerCase();
+  return (list || []).find((r) => r && String(r.full_name || "").toLowerCase() === want) || null;
+}
+
+function hacsInfoPayload() { return { type: "hacs/info" }; }
+function hacsListPayload(categories) { return { type: "hacs/repositories/list", categories: categories || ["appdaemon", "plugin"] }; }
+function hacsAddPayload(fullName, category) { return { type: "hacs/repositories/add", repository: fullName, category }; }
+/** HACS wants the repository id as text. */
+function hacsDownloadPayload(id) { return { type: "hacs/repository/download", repository: String(id) }; }
+function addonsPayload() { return { type: "supervisor/api", endpoint: "/addons", method: "get" }; }
+
+/** The next HACS call to install one of SETUP_REPOS: add it to HACS if HACS doesn't know it yet, else download it. */
+function installStep(key, repos) {
+  const def = SETUP_REPOS[key];
+  if (!def) return null;
+  const repo = findHacsRepo(repos, def.full_name);
+  return repo ? hacsDownloadPayload(repo.id) : hacsAddPayload(def.full_name, def.category);
+}
+
+/** The AppDaemon add-on from a supervisor /addons answer: {state: "started" | "stopped" | "missing", slug, name, version}. */
+function addonFrom(result) {
+  const list = ((result || {}).addons || []).filter((a) => a && /appdaemon/i.test(String(a.slug || "")));
+  const a = list.find((x) => /^a0d7b954_appdaemon$/.test(x.slug)) || list[0];
+  if (!a) return { state: "missing" };
+  return { state: a.state === "started" ? "started" : "stopped", slug: a.slug, name: a.name, version: a.version };
+}
+
+/** A version sensor that exists and has a value. */
+function peRunning(states) {
+  const s = (states || {})[VERSION_SENSOR];
+  return s && s.state !== "unavailable" && s.state !== "unknown" && s.state !== "" ? String(s.state) : null;
+}
+
+const ADMIN_NOTE = "Only an admin can check or install this.";
+
+/**
+ * The checklist. facts: {isAdmin, hacs (true/false/null=unknown), hacsReason, categories (array or null), addon
+ * ({state: "started"|"stopped"|"missing"|"unsupervised"|"unknown"}), repos (HACS list, or null), cardsLoaded
+ * ({element: bool}), components (array), peVersion (string or null)}.
+ * Row: {key, title, why, status: "ok"|"missing"|"unknown", needed, detail, action}. action is null, or
+ * {kind: "install", target, label}, {kind: "link", href, label} or {kind: "reload", label}.
+ */
+function setupRows(facts) {
+  const f = facts || {};
+  const admin = !!f.isAdmin;
+  const cats = Array.isArray(f.categories) ? f.categories : null;
+  const repos = f.repos || null;
+  const comps = f.components || [];
+  const rows = [];
+  const hacsOk = f.hacs === true;
+  const install = (target, label) => (admin && hacsOk ? { kind: "install", target, label } : null);
+  const link = (href, label) => ({ kind: "link", href, label });
+  const unknownFor = (r) => (!admin ? { ...r, status: "unknown", detail: ADMIN_NOTE, action: null } : r);
+
+  // 1. HACS
+  const hacsRow = { key: "hacs", title: "HACS", why: "Installs PowerEngine and its cards.", needed: true };
+  rows.push(unknownFor(f.hacs === true
+    ? { ...hacsRow, status: "ok", detail: "Installed.", action: null }
+    : f.hacs === false
+      ? { ...hacsRow, status: "missing",
+          detail: f.hacsReason ? "HACS is switched off: " + f.hacsReason : "HACS isn't installed. Install it first; it takes a few minutes.",
+          action: link(SETUP_LINKS.hacs, "How to install HACS") }
+      : { ...hacsRow, status: "unknown", detail: "Couldn't check.", action: null }));
+
+  // 2. HACS AppDaemon discovery
+  const disc = { key: "discovery", title: "HACS shows AppDaemon apps", why: "Lets HACS install PowerEngine (an AppDaemon app).", needed: true };
+  if (f.hacs !== true || !cats) rows.push(unknownFor({ ...disc, status: "unknown", detail: "Check HACS first.", action: null }));
+  else if (cats.includes("appdaemon")) rows.push(unknownFor({ ...disc, status: "ok", detail: "On.", action: null }));
+  else rows.push(unknownFor({ ...disc, status: "missing",
+    detail: "Switch it on: Settings, Devices & services, HACS, Configure, then tick \"Enable AppDaemon apps discovery & tracking\" and submit. Then press Check again.",
+    action: link(SETUP_LINKS.hacsOptions, "Open HACS") }));
+
+  // 3. AppDaemon add-on
+  const ad = f.addon || { state: "unknown" };
+  const addon = { key: "addon", title: "AppDaemon add-on", why: "Runs PowerEngine.", needed: true };
+  if (ad.state === "started") rows.push(unknownFor({ ...addon, status: "ok", detail: "Installed and running" + (ad.version ? ` (${ad.version}).` : "."), action: null }));
+  else if (ad.state === "stopped") rows.push(unknownFor({ ...addon, status: "missing", detail: "Installed, but not running. Start it from its page.", action: link(SETUP_LINKS.addon, "Open add-on") }));
+  else if (ad.state === "missing") rows.push(unknownFor({ ...addon, status: "missing", detail: "Not installed. Install it from the add-on store.", action: link(SETUP_LINKS.addon, "Open add-on store page") }));
+  else rows.push(unknownFor({ ...addon, status: "unknown", detail: "Can't check this here. Make sure AppDaemon is running.", action: link(SETUP_LINKS.appdaemonDocs, "AppDaemon guide") }));
+
+  // 4. The PowerEngine app in HACS
+  const appRepo = findHacsRepo(repos, SETUP_REPOS.app.full_name);
+  const appRow = { key: "app", title: "PowerEngine app", why: "The energy manager itself, installed through HACS.", needed: true };
+  if (appRepo && appRepo.installed) rows.push(unknownFor({ ...appRow, status: "ok", detail: `Installed in HACS${appRepo.installed_version ? " (" + appRepo.installed_version + ")" : ""}.`, action: null }));
+  else if (!hacsOk || !repos) rows.push(unknownFor({ ...appRow, status: f.hacs === false ? "missing" : "unknown", detail: f.hacs === false ? "Needs HACS first." : "Check HACS first.", action: null }));
+  else if (!appRepo && !(cats || []).includes("appdaemon")) rows.push(unknownFor({ ...appRow, status: "missing", detail: "Switch on AppDaemon discovery in HACS first (above).", action: null }));
+  else rows.push(unknownFor({ ...appRow, status: "missing", detail: "Not installed.", action: install("app", "Install") }));
+
+  // 5. PowerEngine running
+  const ver = f.peVersion || null;
+  rows.push({ key: "running", title: "PowerEngine running", why: "It publishes its version once it has started.", status: ver ? "ok" : "missing", needed: true,
+    detail: ver ? `Version ${ver}.` : "Not running yet. After installing the app, restart the AppDaemon add-on.", action: null });
+
+  // 6. Chart cards
+  ["apex", "flow"].forEach((k) => {
+    const def = SETUP_REPOS[k];
+    const loaded = !!(f.cardsLoaded || {})[def.element];
+    const repo = findHacsRepo(repos, def.full_name);
+    const base = { key: k, title: def.label, why: k === "apex" ? "Draws the dashboard's charts." : "Draws the live energy-flow picture.", needed: true };
+    if (loaded) rows.push({ ...base, status: "ok", detail: `Loaded (${def.full_name}).`, action: null });
+    else if (repo && repo.installed) rows.push({ ...base, status: "missing", detail: "Installed. Reload this page to load it.", action: { kind: "reload", label: "Reload page" } });
+    else rows.push(unknownFor({ ...base, status: hacsOk || f.hacs === false ? "missing" : "unknown",
+      detail: hacsOk ? `Not installed (${def.full_name}).` : f.hacs === false ? "Needs HACS first." : `Check HACS first (${def.full_name}).`, action: install(k, "Install") }));
+  });
+
+  // 7. MQTT
+  const mq = { key: "mqtt", title: "MQTT", why: "Needed for full use, not for the demo. PowerEngine shares its data through it.", needed: false };
+  rows.push(comps.includes("mqtt") ? { ...mq, status: "ok", detail: "Set up.", action: null }
+    : { ...mq, status: "missing", detail: "Not set up.", action: link(SETUP_LINKS.mqtt, "Set up MQTT") });
+
+  return rows;
+}
+
+/** "All set" when PowerEngine is running and the chart cards are loaded (MQTT is optional). */
+function setupSummary(facts) {
+  const rows = setupRows(facts);
+  const ok = (k) => (rows.find((r) => r.key === k) || {}).status === "ok";
+  const allSet = ok("running") && ok("apex") && ok("flow");
+  return { allSet, line: allSet ? `All set. PowerEngine is running ${(facts || {}).peVersion}` : null,
+    todo: rows.filter((r) => r.needed && r.status !== "ok").length };
+}
+
+class PowerEngineSetupCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
+  setConfig(config) {
+    this._config = config || {};
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    this._notes = this._notes || {};
+    this._open = this._open || false;
+  }
+
+  set hass(hass) {
+    const first = !this._hass;
+    this._hass = hass;
+    if (first) this._check();          // once on load; never on a timer
+    else this._render();
+  }
+
+  getCardSize() { return 4; }
+
+  getGridOptions() { return { columns: "full", rows: "auto" }; }
+
+  _isAdmin() { return !!(this._hass && this._hass.user && this._hass.user.is_admin); }
+
+  /** One round of checks. Together with _install, the only place that calls HACS or the Supervisor. */
+  async _check() {
+    const hass = this._hass;
+    if (!hass || this._checking) return;
+    this._checking = true;
+    this._render();
+    const comps = (hass.config && hass.config.components) || [];
+    const s = { hacs: null, hacsReason: null, categories: null, addon: { state: "unknown" }, repos: null };
+    if (this._isAdmin()) {
+      if (!comps.includes("hacs")) s.hacs = false;
+      else {
+        try {
+          const info = await hass.callWS(hacsInfoPayload());
+          s.categories = info.categories || [];
+          s.hacsReason = info.disabled_reason || null;
+          s.hacs = !s.hacsReason;
+          if (s.hacs) s.repos = await hass.callWS(hacsListPayload());
+        } catch (err) { s.hacs = null; this._notes.hacs = "Couldn't ask HACS: " + ((err && err.message) || err); }
+      }
+      if (!comps.includes("hassio")) s.addon = { state: "unsupervised" };
+      else {
+        try { s.addon = addonFrom(await hass.callWS(addonsPayload())); }
+        catch (err) { s.addon = { state: "unknown" }; }
+      }
+    }
+    this._scan = s;
+    this._checking = false;
+    this._render();
+  }
+
+  async _install(key) {
+    const hass = this._hass;
+    const def = SETUP_REPOS[key];
+    if (!hass || !def || this._busy) return;
+    this._busy = key;
+    delete this._notes[key];
+    try {
+      let repos = (this._scan || {}).repos || [];
+      if (!findHacsRepo(repos, def.full_name)) {
+        this._progress(key, "Adding it to HACS…");
+        await hass.callWS(installStep(key, repos));
+        for (let i = 0; i < 3 && !findHacsRepo(repos, def.full_name); i++) {
+          if (i) await new Promise((res) => setTimeout(res, 1500));
+          repos = await hass.callWS(hacsListPayload());
+        }
+        if (!findHacsRepo(repos, def.full_name)) throw new Error("HACS didn't add it. Check HACS's notifications and log.");
+      }
+      this._progress(key, "Downloading with HACS…");
+      await hass.callWS(installStep(key, repos));
+      this._notes[key] = key === "app"
+        ? "Installed. Restart the AppDaemon add-on so it starts PowerEngine."
+        : "Installed. Reload this page for the card to load.";
+    } catch (err) {
+      this._notes[key] = "Failed: " + ((err && err.message) || err);
+    }
+    this._busy = null;
+    this._progressNote = null;
+    await this._check();               // once, after the install finishes
+  }
+
+  _progress(key, text) { this._progressNote = { key, text }; this._render(); }
+
+  _facts() {
+    const hass = this._hass;
+    const s = this._scan || {};
+    const cardsLoaded = {};
+    Object.values(SETUP_REPOS).forEach((d) => {
+      if (d.element) cardsLoaded[d.element] = typeof customElements !== "undefined" && !!customElements.get(d.element);
+    });
+    return { isAdmin: this._isAdmin(), hacs: s.hacs === undefined ? null : s.hacs, hacsReason: s.hacsReason, categories: s.categories,
+      addon: s.addon, repos: s.repos, cardsLoaded, components: (hass.config && hass.config.components) || [],
+      peVersion: peRunning(hass.states) };
+  }
+
+  _render() {
+    if (!this.shadowRoot || !this._hass) return;
+    const facts = this._facts();
+    const sig = JSON.stringify([facts, this._busy, this._checking, this._notes, this._open, this._progressNote]);
+    if (sig === this._sig) return;      // hass updates come often; only redraw when something we show changed
+    this._sig = sig;
+    const rows = setupRows(facts);
+    const sum = setupSummary(facts);
+    const root = this.shadowRoot;
+    root.innerHTML = `
+      <style>
+        ha-card { padding: 12px 16px; display: block; }
+        .head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .head h2 { flex: 1 1 auto; margin: 0; font-size: 1.1em; font-weight: 500; }
+        .btns { display: flex; gap: 8px; flex: 0 0 auto; }
+        .sub { color: var(--secondary-text-color); font-size: 0.9em; margin: 4px 0 8px; }
+        .row { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; padding: 8px 0; border-top: 1px solid var(--divider-color); }
+        .dot { flex: 0 0 22px; height: 22px; border-radius: 50%; color: #fff; text-align: center; line-height: 22px; font-size: 13px; font-weight: 600; }
+        .ok .dot { background: var(--success-color, #43a047); }
+        .missing .dot { background: var(--error-color, #db4437); }
+        .missing.optional .dot { background: var(--warning-color, #f9a825); }
+        .unknown .dot { background: var(--disabled-text-color, #9e9e9e); }
+        .text { flex: 1 1 200px; min-width: 0; }
+        .title { font-weight: 500; }
+        .why, .detail { color: var(--secondary-text-color); font-size: 0.9em; overflow-wrap: anywhere; }
+        .detail.note { color: var(--primary-text-color); }
+        .act { flex: 0 0 auto; margin-left: 32px; }
+        @media (min-width: 600px) { .act { margin-left: 0; } }
+        button, a.btn { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--divider-color); text-decoration: none;
+                        background: var(--primary-color); color: var(--text-primary-color, #fff); cursor: pointer; display: inline-block; box-sizing: border-box; }
+        button.second, a.btn.second { background: none; color: var(--primary-text-color); }
+        button:disabled { opacity: .5; cursor: default; }
+      </style>
+      <ha-card><div class="head"><h2>PowerEngine setup</h2><div class="btns"></div></div><div class="sub"></div><div class="list"></div></ha-card>`;
+    const q = (s) => root.querySelector(s);
+    const head = q(".btns");
+    const mk = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
+    const busy = !!this._busy || this._checking;
+    const sub = q(".sub");
+    if (sum.allSet) {
+      sub.textContent = sum.line;
+      const t = mk("button", "second", this._open ? "Hide details" : "Show details");
+      t.addEventListener("click", () => { this._open = !this._open; this._render(); });
+      head.append(t);
+    } else if (!facts.isAdmin) {
+      sub.textContent = "You're not an admin. An admin needs to run the installs; you can see what's missing here.";
+    } else {
+      sub.textContent = sum.todo ? `${sum.todo} thing${sum.todo === 1 ? "" : "s"} still to do.` : "";
+    }
+    const again = mk("button", "second", this._checking ? "Checking…" : "Check again");
+    again.disabled = busy;
+    again.addEventListener("click", () => this._check());
+    if (facts.isAdmin) head.append(again);      // a non-admin's check would find nothing new
+    if (sum.allSet && !this._open) return;
+    const list = q(".list");
+    rows.forEach((r) => {
+      const row = mk("div", `row ${r.status}${r.needed ? "" : " optional"}`);
+      row.append(mk("div", "dot", r.status === "ok" ? "✓" : r.status === "missing" ? (r.needed ? "✕" : "!") : "?"));
+      const text = mk("div", "text");
+      text.append(mk("div", "title", r.title), mk("div", "why", r.why));
+      const prog = this._progressNote && this._progressNote.key === r.key ? this._progressNote.text : null;
+      const note = prog || this._notes[r.key];
+      if (r.detail) text.append(mk("div", "detail", r.detail));
+      if (note) text.append(mk("div", "detail note", note));
+      row.append(text);
+      const a = r.action;
+      if (a) {
+        const box = mk("div", "act");
+        if (a.kind === "link") {
+          const l = mk("a", "btn second", a.label);
+          l.href = a.href; l.target = "_blank"; l.rel = "noopener noreferrer";
+          box.append(l);
+        } else if (a.kind === "reload") {
+          const b = mk("button", "", a.label);
+          b.addEventListener("click", () => location.reload());
+          box.append(b);
+        } else {
+          const b = mk("button", "", this._busy === a.target ? "Installing…" : a.label);
+          b.disabled = busy;
+          b.addEventListener("click", () => this._install(a.target));
+          box.append(b);
+        }
+        row.append(box);
+      }
+      list.append(row);
+    });
+  }
+}
+
+if (typeof customElements !== "undefined" && !customElements.get("powerengine-setup-card")) {
+  customElements.define("powerengine-setup-card", PowerEngineSetupCard);
+  window.customCards = window.customCards || [];
+  window.customCards.push({ type: "powerengine-setup-card", name: "PowerEngine setup",
+    description: "Checks what PowerEngine needs and installs what HACS can install." });
+}
+
 // --- Health findings with Dismiss, and PowerEngine's log (Health tab) -------------------------------------------
 function escHtml(s) {
   return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -2629,5 +2969,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK };
+  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK };
 }
