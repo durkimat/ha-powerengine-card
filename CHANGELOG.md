@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.61
+
+- Supplier and device names on the Config page come from PowerEngine (identical text for EDF/Zappi/Solcast/Solis).
+
 ## 0.9.60
 
 - Config page: smart-charge request options (requests per day, time between requests, look-ahead, whole-house slots, skip when the car is full) in the car and smart-charge section.
