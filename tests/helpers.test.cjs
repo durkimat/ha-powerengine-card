@@ -674,3 +674,82 @@ test("non-admin with everything running still sees all set", () => {
   f.isAdmin = false; f.hacs = null; f.categories = null; f.repos = null; f.addon = { state: "unknown" };
   assert.strictEqual(h.setupSummary(f).allSet, true);
 });
+
+// --- demo card ----------------------------------------------------------------------------------------------
+const demoAttrs = (day) => ({ setup: "unconfigured", demo: { day, title: "Sunny day", note: "Recorded data from a real home. Nothing is controlled.",
+  days: [{ key: "sunny", title: "Sunny day" }, { key: "axle", title: "<<event>> event day" }] } });
+
+test("demo banner: title, note, current day, buttons for an admin", () => {
+  const v = h.demoView(demoAttrs("sunny"), true);
+  assert.strictEqual(v.mode, "banner");
+  assert.strictEqual(v.title, "Sunny day");
+  assert.match(v.note, /Nothing is controlled/);
+  assert.deepStrictEqual(v.days.map((d) => [d.key, d.current]), [["sunny", true], ["axle", false]]);
+  assert.strictEqual(v.canAct, true);
+});
+
+test("demo banner: a non-admin sees it but cannot act", () => {
+  const v = h.demoView(demoAttrs("sunny"), false);
+  assert.strictEqual(v.mode, "banner");
+  assert.strictEqual(v.canAct, false);
+});
+
+test("demo banner wins over unconfigured, fills the names map and capitalises", () => {
+  const a = demoAttrs("axle");
+  a.demo.title = "<<event>> event day";
+  a.names = { event: "Axle" };
+  const v = h.demoView(a, true);
+  assert.strictEqual(v.title, "Axle event day");
+  assert.strictEqual(v.days[1].title, "Axle event day");
+  a.names = null;
+  assert.strictEqual(h.demoView(a, true).title, "Grid-services event day");
+});
+
+test("demo banner without a note or a day list still works", () => {
+  const v = h.demoView({ demo: { day: "dull", title: "Dull day" } }, true);
+  assert.strictEqual(v.mode, "banner");
+  assert.match(v.note, /Recorded data from a real home/);
+  assert.deepStrictEqual(v.days, []);
+});
+
+test("welcome: unconfigured with no demo lists the four fixed days, first selected", () => {
+  const v = h.demoView({ setup: "unconfigured", demo: null }, true);
+  assert.strictEqual(v.mode, "welcome");
+  assert.deepStrictEqual(v.days.map((d) => d.key), ["sunny", "dull", "axle", "car"]);
+  assert.deepStrictEqual(v.days.map((d) => d.title), ["Sunny day", "Dull day", "Grid-services event day", "Car charging day"]);
+  assert.strictEqual(v.days[0].current, true);
+  assert.strictEqual(h.demoView({ setup: "unconfigured" }, false).canAct, false);
+  assert.strictEqual(h.demoView({ setup: "unconfigured", names: { event: "Axle" } }, true).days[2].title, "Axle event day");
+});
+
+test("demo card is hidden when configured, or when the attributes are missing", () => {
+  assert.strictEqual(h.demoView({ setup: "configured", demo: null }, true).mode, "hidden");
+  assert.strictEqual(h.demoView({}, true).mode, "hidden");
+  assert.strictEqual(h.demoView(null, false).mode, "hidden");
+  assert.strictEqual(h.demoView(undefined, true).mode, "hidden");
+  assert.strictEqual(h.demoView({ setup: "configured", demo: "junk" }, true).mode, "hidden");
+});
+
+test("demo event payloads", () => {
+  assert.deepStrictEqual(h.demoEventPayload("start", "sunny"),
+    { type: "fire_event", event_type: "pe_demo", event_data: { action: "start", day: "sunny" } });
+  assert.deepStrictEqual(h.demoEventPayload("day", "dull").event_data, { action: "day", day: "dull" });
+  assert.deepStrictEqual(h.demoEventPayload("exit"), { type: "fire_event", event_type: "pe_demo", event_data: { action: "exit" } });
+  assert.deepStrictEqual(h.demoEventPayload("exit", "sunny").event_data, { action: "exit" });
+  assert.strictEqual(h.demoEventPayload("start"), null);
+  assert.strictEqual(h.demoEventPayload("day", ""), null);
+  assert.strictEqual(h.demoEventPayload("explode", "sunny"), null);
+});
+
+test("configuration link follows the dashboard the visitor is on", () => {
+  assert.strictEqual(h.configPath("/energy-dash/monitoring"), "/energy-dash/config");
+  assert.strictEqual(h.configPath("/powerengine/"), "/powerengine/config");
+  assert.strictEqual(h.configPath(""), "/powerengine/config");
+});
+
+test("the setup card offers the demo only when PowerEngine runs unconfigured", () => {
+  assert.strictEqual(h.showDemoLink({ peVersion: "0.9.62", setup: "unconfigured" }), true);
+  assert.strictEqual(h.showDemoLink({ peVersion: "0.9.62", setup: "configured" }), false);
+  assert.strictEqual(h.showDemoLink({ peVersion: null, setup: "unconfigured" }), false);
+  assert.strictEqual(h.showDemoLink(null), false);
+});
