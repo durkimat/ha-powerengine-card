@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.59";
+const CARD_VERSION = "0.9.60";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -22,7 +22,9 @@ const MAIN_PLANT_SUGGEST = {
 const FEATURES = [
   ["auto_cheap_threshold", "Automatic cheap threshold", "Work out what counts as cheap from the prices ahead (the bottom fifth of the range, and only if storing it pays), capped by the Cheap import threshold setting."],
   ["fill_when_cheap", "Top up when cheap", "Charge to the grid-charge target in every cheap slot, not just what the forecast needs. A buffer in case the forecast is wrong."],
-  ["smart_charge_optimisation", "Smart-charge optimisation", "Ask EDF for extra smart-charge slots by changing the car's ready-by time when it's worth it, with back-off and at most 6 requests a day. Replaces the fixed daily triggers. Sends nothing in Passive mode."],
+  ["smart_charge_optimisation", "Smart-charge optimisation", "Ask EDF for extra smart-charge slots by changing the car's ready-by time when it's worth it, with back-off and within the limits below. Replaces the fixed daily triggers. Sends nothing in Passive mode."],
+  ["slots_whole_house", "Smart slots cover the whole house", "Tick if your supplier charges the whole house the slot rate during a smart-charge slot, even when the car isn't charging (EDF does). Off: PowerEngine plans slots at your normal rate for the house and battery, and doesn't ask for extra slots, since they'd only help the car."],
+  ["smart_skip_full_car", "Don't ask when the car is full", "Skip requests while the charger says the charge is complete, or the car drew nothing in the last smart slot. Leave off if your supplier gives slots even when the car is full: the Config page's success rate shows whether requests for a full car work."],
   ["arbitrage", "Energy arbitrage", "Sell stored energy just before a cheap refill when it pays after losses and wear, keeping enough for the house. In Passive mode this only plans and simulates it, so you can see what it would earn.",
     "Check your export tariff terms first: some only pay for exported solar, not energy bought from the grid."],
   ["deep_overnight", "Deeper selling overnight", "Inside the fixed overnight window, where the cheap refill is guaranteed, arbitrage may sell below the band's bottom (down to the reserve plus 10%): one deeper sale and one refill instead of many shallow cycles, for the same money. Off: the band's bottom holds overnight too."],
@@ -53,7 +55,7 @@ const NOTIFY_EVENTS = [
 const FEATURE_DEFAULTS = { auto_cheap_threshold: true, fill_when_cheap: true, smart_charge_optimisation: true, arbitrage: false, axle: true, free_power_days: true, tariff_simulator: true, optimised_plan: true,
   learn_taper: true, learn_conversion: true, learn_reserve: true, learn_export: true, learn_car: true, cold_caution: true, cold_learning: true,
   damp_restart: true, damp_bursts: false, deep_overnight: true,
-  use_check_meter: true, axle_plus_export: true };
+  use_check_meter: true, axle_plus_export: true, slots_whole_house: true, smart_skip_full_car: false };
 
 /* ------------------------------------------------------------------ helpers
  * Pure functions (no DOM), exported for tests at the bottom of the file.
@@ -189,7 +191,9 @@ const TOPICS = [
   { key: "car", title: "Car and EDF smart charge",
     roles: ["ev_plug_status", "ev_charger_status", "ev_charge_power", "ev_energy_today", "ev_charge_mode",
       "ev_session_energy", "smart_dispatches", "smart_state", "smart_target_soc", "smart_target_time"],
-    features: ["smart_charge_optimisation"], settings: ["ev_charger_kw"], learning: ["learn_car"] },
+    features: ["smart_charge_optimisation", "slots_whole_house", "smart_skip_full_car"],
+    settings: ["ev_charger_kw", "smart_max_requests_per_day", "smart_min_gap_min", "smart_lookahead_h"],
+    learning: ["learn_car"] },
   { key: "selling", title: "Selling (arbitrage and export)", features: ["arbitrage", "deep_overnight"],
     settings: ["export_limit_kw", "battery_wear_p", "arbitrage_min_margin_p", "arbitrage_min_soc", "arbitrage_max_soc",
       "arbitrage_band_penalty_p", "overnight_switch_cost_p"],

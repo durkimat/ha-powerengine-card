@@ -295,6 +295,24 @@ test("topicPlan puts everything somewhere, clocks together, leftovers in Other",
   assert.deepEqual(plan.find((t) => t.key === "cold").system, ["battery_location"]);
 });
 
+test("smart-charge request options are in the car topic, not Other", () => {
+  const settings = ["ev_charger_kw", "smart_max_requests_per_day", "smart_min_gap_min", "smart_lookahead_h"];
+  const features = ["smart_charge_optimisation", "slots_whole_house", "smart_skip_full_car"];
+  const plan = h.topicPlan([], settings, features, []);
+  const car = plan.find((t) => t.key === "car");
+  for (const k of settings) assert.ok(car.settings.includes(k), k);
+  for (const k of features) assert.ok(car.features.includes(k), k);
+  assert.equal(plan.find((t) => t.key === "other"), undefined);
+});
+
+test("smart-charge feature defaults and help", () => {
+  assert.equal(h.FEATURE_DEFAULTS.slots_whole_house, true);
+  assert.equal(h.FEATURE_DEFAULTS.smart_skip_full_car, false);
+  const help = Object.fromEntries(h.FEATURES.map((f) => [f[0], f[2]]));
+  assert.ok(!/at most 6/.test(help.smart_charge_optimisation));
+  assert.ok(/within the limits below/.test(help.smart_charge_optimisation));
+});
+
 test("roleNeed", () => {
   const d = (mode, f) => ({ operation: { mode }, features: f || {} });
   assert.equal(h.roleNeed({ key: "battery_soc", required: "yes" }, d("passive")).level, "req");
