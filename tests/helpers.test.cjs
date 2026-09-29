@@ -473,3 +473,53 @@ test("compact £ values: whole pounds from £10, one decimal below, minus sign f
   assert.equal(h.compactGbp(0.41), "£0.4");
   assert.equal(h.compactGbp(0.02), "£0.0");
 });
+
+// --- supplier and device names (step 6): identical text for EDF / Zappi / Solcast / Solis / Axle ---
+
+const HIS_NAMES = { supplier: "EDF", tariff: "EDF tariff", dispatch: "EDF smart slot", dispatch_short: "EDF slot",
+  smart_charge: "EDF smart charge", ev_charger: "Zappi", forecast: "Solcast", inverter: "Solis", event: "Axle" };
+const before = require("./card_texts_before_names.json");   // the card's texts as they were, frozen from before names
+
+test("fillNames replaces known terms, falls back to neutral words, leaves unknown ones alone", () => {
+  assert.equal(h.fillNames("Ask <<supplier>> about the <<ev_charger>>", HIS_NAMES), "Ask EDF about the Zappi");
+  assert.equal(h.fillNames("Ask <<supplier>> about the <<ev_charger>>", null), "Ask your supplier about the car charger");
+  assert.equal(h.fillNames("<<supplier>>", {}), "your supplier");
+  assert.equal(h.fillNames("<<supplier>>", { supplier: "Octopus" }), "Octopus");
+  assert.equal(h.fillNames("<<nonsense>> and << spaced >>", HIS_NAMES), "<<nonsense>> and << spaced >>");
+  assert.equal(h.fillNames("no placeholders", HIS_NAMES), "no placeholders");
+});
+
+test("with his names every feature, topic and notification text is exactly what it was", () => {
+  assert.deepStrictEqual(h.FEATURES.map((f) => f.map((x) => (typeof x === "string" ? h.fillNames(x, HIS_NAMES) : x))),
+    before.FEATURES);
+  assert.deepStrictEqual(h.NOTIFY_EVENTS.map((f) => f.map((x) => (typeof x === "string" ? h.fillNames(x, HIS_NAMES) : x))),
+    before.NOTIFY_EVENTS);
+  assert.deepStrictEqual(h.TOPICS.map((t) => ({ key: t.key, title: h.fillNames(t.title, HIS_NAMES),
+    note: t.note ? h.fillNames(t.note, HIS_NAMES) : null })), before.TOPICS);
+  assert.equal(h.fillNames(h.SCREEN, HIS_NAMES), before.SCREEN);
+});
+
+test("with another supplier's names no card text names EDF, Zappi or Axle (bar the simulator's comparison)", () => {
+  const names = { ...HIS_NAMES, supplier: "Octopus", tariff: "Octopus tariff", smart_charge: "Octopus intelligent charging",
+    event: "Flux", ev_charger: "Hypervolt" };
+  const texts = [...h.FEATURES.flat(), ...h.NOTIFY_EVENTS.flat(), ...h.TOPICS.flatMap((t) => [t.title, t.note])]
+    .filter((x) => typeof x === "string").map((x) => h.fillNames(x, names));
+  texts.filter((x) => !x.startsWith("Each night at 01:30")).forEach((x) => assert.doesNotMatch(x, /EDF|Axle|Zappi/, x));
+});
+
+test("no card text has a placeholder the names map doesn't know, and none is left after filling", () => {
+  const texts = [...h.FEATURES.flat(), ...h.NOTIFY_EVENTS.flat(), ...h.TOPICS.flatMap((t) => [t.title, t.note]), h.SCREEN]
+    .filter((x) => typeof x === "string");
+  texts.forEach((x) => {
+    for (const m of x.matchAll(/<<([a-z_]+)>>/g)) assert.ok(m[1] in h.NAME_FALLBACK, `unknown placeholder ${m[0]} in ${x}`);
+    assert.doesNotMatch(h.fillNames(x, null), /<<[a-z_]+>>/);
+  });
+});
+
+test("any label ending in ' tariff' is the waterfall's Tariff column, and the event step keeps its source's name", () => {
+  ["EDF tariff", "Octopus tariff", "tariff", "Agile tariff"].forEach((l) => assert.equal(h.waterfallShortLabel(l), "Tariff"));
+  assert.equal(h.waterfallShortLabel("Axle & free power"), "Axle");
+  assert.equal(h.waterfallShortLabel("Flux & free power"), "Flux");
+  assert.equal(h.waterfallShortLabel("You paid (after Flux payments)"), "You paid");
+  assert.equal(h.waterfallShortLabel("Tariffs explained"), "Tariffs explained");
+});

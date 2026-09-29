@@ -15,6 +15,26 @@ const MAPPING_SENSOR = "sensor.pe_map_config";
 const SAVE_EVENT = "pe_config_save";
 const RESULT_EVENT = "pe_config_result";
 
+// What this user's supplier and devices are called comes from the app (sensor.pe_diag_version, attribute "names").
+// Texts here never hard-code one: they carry <<term>> placeholders, filled by fillNames.
+const NAME_FALLBACK = {
+  supplier: "your supplier", tariff: "tariff", dispatch: "smart-charge slot", dispatch_short: "smart slot",
+  smart_charge: "smart charge", ev_charger: "car charger", forecast: "forecast", inverter: "inverter",
+  event: "grid-services",
+};
+let currentNames = null;
+
+/** Replaces <<term>> with the name from `names`, or a neutral word if the app doesn't say (or isn't reachable). */
+function fillNames(text, names) {
+  const n = names || {};
+  return String(text).replace(/<<([a-z_]+)>>/g, (m, term) => n[term] || NAME_FALLBACK[term] || m);
+}
+function setNames(hass) {
+  const a = (((hass || {}).states || {})[VERSION_SENSOR] || {}).attributes;
+  currentNames = a && a.names && typeof a.names === "object" ? a.names : null;
+}
+function T(text) { return fillNames(text, currentNames); }
+
 const MAIN_PLANT_SUGGEST = {
   power: [/^sensor\.solis_pv_total_power$/],
   energy_today: [/^sensor\.solis_power_generation_today$/],
@@ -22,16 +42,16 @@ const MAIN_PLANT_SUGGEST = {
 const FEATURES = [
   ["auto_cheap_threshold", "Automatic cheap threshold", "Work out what counts as cheap from the prices ahead (the bottom fifth of the range, and only if storing it pays), capped by the Cheap import threshold setting."],
   ["fill_when_cheap", "Top up when cheap", "Charge to the grid-charge target in every cheap slot, not just what the forecast needs. A buffer in case the forecast is wrong."],
-  ["smart_charge_optimisation", "Smart-charge optimisation", "Ask EDF for extra smart-charge slots by changing the car's ready-by time when it's worth it, with back-off and within the limits below. Replaces the fixed daily triggers. Sends nothing in Passive mode."],
-  ["slots_whole_house", "Smart slots cover the whole house", "Tick if your supplier charges the whole house the slot rate during a smart-charge slot, even when the car isn't charging (EDF does). Off: PowerEngine plans slots at your normal rate for the house and battery, and doesn't ask for extra slots, since they'd only help the car."],
+  ["smart_charge_optimisation", "Smart-charge optimisation", "Ask <<supplier>> for extra smart-charge slots by changing the car's ready-by time when it's worth it, with back-off and within the limits below. Replaces the fixed daily triggers. Sends nothing in Passive mode."],
+  ["slots_whole_house", "Smart slots cover the whole house", "Tick if your supplier charges the whole house the slot rate during a smart-charge slot, even when the car isn't charging (<<supplier>> does). Off: PowerEngine plans slots at your normal rate for the house and battery, and doesn't ask for extra slots, since they'd only help the car."],
   ["smart_skip_full_car", "Don't ask when the car is full", "Skip requests while the charger says the charge is complete, or the car drew nothing in the last smart slot. Leave off if your supplier gives slots even when the car is full: the Config page's success rate shows whether requests for a full car work."],
   ["arbitrage", "Energy arbitrage", "Sell stored energy just before a cheap refill when it pays after losses and wear, keeping enough for the house. In Passive mode this only plans and simulates it, so you can see what it would earn.",
     "Check your export tariff terms first: some only pay for exported solar, not energy bought from the grid."],
   ["deep_overnight", "Deeper selling overnight", "Inside the fixed overnight window, where the cheap refill is guaranteed, arbitrage may sell below the band's bottom (down to the reserve plus 10%): one deeper sale and one refill instead of many shallow cycles, for the same money. Off: the band's bottom holds overnight too."],
   ["use_check_meter", "Use the check meter", "When a check meter is set and reporting, use it for grid power instead of the inverter's meter, and correct the inverter's house load by the difference (also in the learned usage history). If it stops reporting for 3 minutes, the inverter's meter is used again. Off: the check meter is only compared."],
-  ["axle", "Axle VPP events", "Force-discharge during Axle events and hold charge beforehand."],
-  ["axle_plus_export", "Axle also earns the export rate", "Your supplier pays its normal export rate on Axle exports as well as Axle's £1/kWh (EDF: £1 + 15p). Planning and the event figures count both. Off: Axle's £1 only."],
-  ["free_power_days", "Free-power sessions", "Make full use of EDF free-electricity sessions."],
+  ["axle", "<<event>> VPP events", "Force-discharge during <<event>> events and hold charge beforehand."],
+  ["axle_plus_export", "<<event>> also earns the export rate", "Your supplier pays its normal export rate on <<event>> exports as well as <<event>>'s £1/kWh (<<supplier>>: £1 + 15p). Planning and the event figures count both. Off: <<event>>'s £1 only."],
+  ["free_power_days", "Free-power sessions", "Make full use of <<supplier>> free-electricity sessions."],
   ["optimised_plan", "Optimised planning", "The optimiser chooses each half-hour's action for the lowest cost (arbitrage band and safety rules included), with plain-English reasons. Off: the simpler rule-based planner."],
   ["learn_taper", "Learn: charge and discharge slow-down", "Plan with how much charging slows from 90% and 95%, and how much discharging slows below 40%, 30% and 20%, as seen: the overnight charge starts early enough to finish, and deep sales are planned at the speed they really run. Health tab, Learned from use, shows each learned figure and how many half-hours it's based on."],
   ["learn_conversion", "Learn: inverter conversion losses", "Measure how much grid energy reaches the battery when charging, and how much of the battery's output reaches the house and grid when selling (no solar, full rate). Plans then use the real grid-to-grid round trip, so arbitrage is only planned where it pays after all losses. Works for any inverter and battery, and re-learns if either changes."],
@@ -40,14 +60,14 @@ const FEATURES = [
   ["learn_car", "Learn: car charge rate", "Plan the car's share of smart-charge slots with its real charging kW instead of Car charger power."],
   ["cold_caution", "Cold battery caution", "Plan a slower charge when the battery is likely to be cold, estimated from the outside temperature (Open-Meteo forecast for your home's location) with a lag, so a cold spell is expected to chill it gradually and it stays cautious until the weather has been milder for a while. Settings under Cold battery."],
   ["cold_learning", "Learn cold behaviour", "Adjust the cold threshold and rate from what's seen: charging slowed at 5°C raises the threshold; charging normally at 3°C lowers it to 3°C."],
-  ["damp_restart", "Restart hold-off", "After PowerEngine starts, or control resumes or goes live, write nothing for a few minutes (Restart hold-off setting) while the plan and its inputs settle. The inverter keeps running the windows already set. Safety changes (Axle, free power, the car charging, the reserve) never wait."],
+  ["damp_restart", "Restart hold-off", "After PowerEngine starts, or control resumes or goes live, write nothing for a few minutes (Restart hold-off setting) while the plan and its inputs settle. The inverter keeps running the windows already set. Safety changes (<<event>>, free power, the car charging, the reserve) never wait."],
   ["damp_bursts", "Burst damping", "The first change to a window slot, current or the mode goes straight through; another change to the same thing within the Burst window waits until the plan has been steady for the Burst settle time, so several quick changes become one write. Off by default while its effect is evaluated. Safety changes never wait."],
   ["tariff_simulator", "Tariff simulator", "Each night at 01:30, compare your recorded days on current Octopus and EDF tariffs (fetched from their public tariff lists) and notify you if one would save noticeably. Reads only; changes nothing."],
 ];
 const NOTIFY_EVENTS = [
   ["health", "Health problems", "When the Health tab finds a problem (checked after start-up and each night).", true],
   ["inputs", "Inputs not working", "When a required input has been unavailable or stale for 15 minutes.", true],
-  ["axle", "Axle events", "When an Axle event is scheduled, with its time.", true],
+  ["axle", "<<event>> events", "When an <<event>> event is scheduled, with its time.", true],
   ["free_power", "Free-power sessions", "When a free-electricity session is announced.", true],
   ["daily", "Daily summary", "Each morning at 08:00: yesterday's cost and savings.", false],
   ["simulator", "Tariff opportunities", "When the overnight Simulator finds a tariff that would have cost noticeably less (at least £5 and 5% a month), or new tariffs appear.", true],
@@ -188,7 +208,7 @@ const TOPICS = [
     roles: ["import_rate_now", "import_rates_today", "import_rates_tomorrow", "export_rate", "standing_charge", "offpeak_now"],
     features: ["optimised_plan", "auto_cheap_threshold", "fill_when_cheap"],
     settings: ["cheap_threshold_p", "window_switch_cost_p"] },
-  { key: "car", title: "Car and EDF smart charge",
+  { key: "car", title: "Car and <<smart_charge>>",
     roles: ["ev_plug_status", "ev_charger_status", "ev_charge_power", "ev_energy_today", "ev_charge_mode",
       "ev_session_energy", "smart_dispatches", "smart_state", "smart_target_soc", "smart_target_time"],
     features: ["smart_charge_optimisation", "slots_whole_house", "smart_skip_full_car"],
@@ -198,7 +218,7 @@ const TOPICS = [
     settings: ["export_limit_kw", "battery_wear_p", "arbitrage_min_margin_p", "arbitrage_min_soc", "arbitrage_max_soc",
       "arbitrage_band_penalty_p", "overnight_switch_cost_p"],
     roles: ["inverter_export_limit"], learning: ["learn_export"] },
-  { key: "axle", title: "Axle events", main: "axle", features: ["axle", "axle_plus_export"],
+  { key: "axle", title: "<<event>> events", main: "axle", features: ["axle", "axle_plus_export"],
     roles: ["axle_event_active", "axle_event_start", "axle_event_end", "axle_direction"],
     settings: ["pre_axle_lookahead_h", "axle_margin_soc"] },
   { key: "free", title: "Free-power sessions", main: "free_power_days", features: ["free_power_days"],
@@ -255,7 +275,7 @@ function roleNeed(role, draft, pairMapped) {
   if (r.required === "yes") return { level: "req", badge: "Required" };
   const f = NEEDED_FOR[r.required] || ROLE_FEATURE[r.key];
   if (f) {
-    const label = (FEATURES.find((x) => x[0] === f) || [0, f])[1];
+    const label = T((FEATURES.find((x) => x[0] === f) || [0, f])[1]);
     return features[f] ? { level: "req", badge: `Required for ${label}` } : { level: "cond", badge: `Needed for ${label}` };
   }
   if (GO_LIVE.includes(r.key)) return live ? { level: "req", badge: "Required to go live" } : { level: "cond", badge: "Needed to go live" };
@@ -439,6 +459,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
 
   set hass(hass) {
     this._hass = hass;
+    setNames(hass);
     (this._pickers || []).forEach((p) => { p.hass = hass; });
     if (!this._built) this._maybeBuild();
     else this._refresh();
@@ -642,7 +663,8 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const featureRow = (key) => {
       const f = FEATURES.find((x) => x[0] === key);
       if (!f) return null;
-      const [, label, desc, warning] = f;
+      const [, rawLabel, rawDesc, rawWarning] = f;
+      const [label, desc, warning] = [T(rawLabel), T(rawDesc), rawWarning && T(rawWarning)];
       const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.features[key] = ev.target.checked; this._refresh(); } });
       cb.checked = !!this._draft.features[key];
       return track(el("div", { class: "row feature" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, label),
@@ -662,7 +684,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
 
     // operation
     let body = section("operation", "Operation");
-    const activeWarn = el("div", { class: "warning" }, "⚠ Live: PowerEngine writes the inverter's timed charge and discharge settings (and, with smart-charge optimisation on, asks EDF for slots). It only goes live when every handover guard is safe. Normally set by the Battery controller panel above; pause any time from the Monitoring tab.");
+    const activeWarn = el("div", { class: "warning" }, T("⚠ Live: PowerEngine writes the inverter's timed charge and discharge settings (and, with smart-charge optimisation on, asks <<supplier>> for slots). It only goes live when every handover guard is safe. Normally set by the Battery controller panel above; pause any time from the Monitoring tab."));
     const modeSel = el("select", { onchange: (ev) => {
       this._draft.operation.mode = ev.target.value;
       activeWarn.style.display = ev.target.value === "active" ? "" : "none";
@@ -684,7 +706,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const plan = topicPlan(roles.map((r) => r.key), allSettings.map((x) => x.key), FEATURES.map((f) => f[0]),
       (this._settings.system || []).map((x) => x.key));
     plan.forEach((t) => {
-      const body = section(`topic_${t.key}`, t.title, t.note);
+      const body = section(`topic_${t.key}`, T(t.title), t.note && T(t.note));
       this._sections[`topic_${t.key}`].main = t.main;
       t.features.forEach((k) => { const r = featureRow(k); if (r) body.append(r); });
       if (t.key === "damping") body.append(el("div", { class: "note" }, dampingNote(this._hass && this._hass.states)));
@@ -735,7 +757,8 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     nb.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Send to")),
       el("div", { class: "desc" }, "Notification area: nothing to set up; each one clears itself when the problem is over. Phone: your notify service, usually notify.mobile_app_<phone name>."), el("div", { class: "ctl" }, svcSel)),
       "setting", "notifications send to notify service phone notification area bell"));
-    NOTIFY_EVENTS.forEach(([key, label, desc]) => {
+    NOTIFY_EVENTS.forEach(([key, rawLabel, rawDesc]) => {
+      const [label, desc] = [T(rawLabel), T(rawDesc)];
       const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.notifications.events[key] = ev.target.checked; this._refresh(); } });
       cb.checked = !!this._draft.notifications.events[key];
       nb.append(track(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc)),
@@ -833,7 +856,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     if (role.required === "yes") return el("span", { class: "badge req" }, "Required");
     if (role.required === "no") return el("span", { class: "badge" }, "Optional");
     const f = { axle: "axle", free_power: "free_power_days" }[role.required];
-    const label = (FEATURES.find((x) => x[0] === f) || [0, role.required])[1];
+    const label = T((FEATURES.find((x) => x[0] === f) || [0, role.required])[1]);
     return el("span", { class: "badge" }, `Needed for ${label}`);
   }
 
@@ -1394,7 +1417,7 @@ const RC_TAILS = {
   rc_discharge_power: ["number.", "battery_control_override_discharge_power"],
 };
 const SCREEN = "On the inverter screen watch the battery reading (power or current, and whether it is charging or " +
-  "discharging) and the grid reading. If the screen is slow to update, the Solis app's live view or the readings " +
+  "discharging) and the grid reading. If the screen is slow to update, the <<inverter>> app's live view or the readings " +
   "below show the same thing.";
 const TESTS = [
   { key: "hold", group: "timed", label: "Hold (0 A charge window)", minutes: 5, power: false,
@@ -1516,6 +1539,7 @@ class PowerEngineTestCard extends (typeof HTMLElement !== "undefined" ? HTMLElem
 
   set hass(hass) {
     this._hass = hass;
+    setNames(hass);
     this._render();
   }
 
@@ -1586,7 +1610,7 @@ class PowerEngineTestCard extends (typeof HTMLElement !== "undefined" ? HTMLElem
                 <b>Pause control</b> on the Monitoring page. Tests are refused while PowerEngine is in control.</li>
             <li>Best in the evening or at night: no solar, the car not charging, battery between about 30% and 90%
                 so it can both charge and discharge.</li>
-            <li>Stand where you can see the inverter screen, or have the Solis app's live view open.</li>
+            <li>Stand where you can see the inverter screen, or have the ${escHtml(T("<<inverter>>"))} app's live view open.</li>
             <li>When you've finished, turn Pause control off again.</li>
           </ol>
           <div class="row"><span>Now:</span><span class="live"></span></div>
@@ -1620,7 +1644,7 @@ class PowerEngineTestCard extends (typeof HTMLElement !== "undefined" ? HTMLElem
           <p class="rc"></p>
         </ha-card>`;
       const q = (sel) => this.shadowRoot.querySelector(sel);
-      q(".screen").textContent = SCREEN;
+      q(".screen").textContent = T(SCREEN);
       q(".action").addEventListener("change", () => { this._describe(); this._render(); });
       q(".start").addEventListener("click", () => {
         const t = TEST_BY_KEY[q(".action").value];
@@ -2015,18 +2039,18 @@ function pct(v, scale) {
 
 const WATERFALL_SHORT = {
   "No solar or battery": "No solar/ battery",
-  "EDF tariff": "Tariff",
   "Battery on self-use": "Self-use battery",
   "Day-to-day cost": "Day-to-day",
   "Battery carry-over": "Carry-over",
-  "Axle & free power": "Axle",
 };
 
 function waterfallShortLabel(label) {
-  // A label that fits a narrow column on a phone ("You paid (after Axle payments)" -> "You paid").
+  // A label that fits a narrow column on a phone ("You paid (after <event> payments)" -> "You paid").
   const l = String(label || "");
   if (WATERFALL_SHORT[l]) return WATERFALL_SHORT[l];
   if (l.startsWith("You paid")) return "You paid";
+  if (/(^| )tariff$/.test(l)) return "Tariff";                       // "EDF tariff", "Octopus tariff", plain "tariff"
+  if (l.endsWith(" & free power")) return l.slice(0, -" & free power".length);   // the event source: "Axle"
   return l;
 }
 
@@ -2605,5 +2629,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp };
+  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK };
 }
