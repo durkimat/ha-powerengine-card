@@ -753,3 +753,63 @@ test("the setup card offers the demo only when PowerEngine runs unconfigured", (
   assert.strictEqual(h.showDemoLink({ peVersion: null, setup: "unconfigured" }), false);
   assert.strictEqual(h.showDemoLink(null), false);
 });
+
+// --- "Your system" block (step 8b) ---
+const SITE_OPTS = {
+  inverter: [
+    { id: "solis", name: "Inv A", status: "verified", firmware_variants: ["420044"], verified_firmware: ["420044"] },
+    { id: "other", name: "Inv B", status: "community", firmware_variants: ["1", "2"], verified_firmware: [] },
+    { id: "bare", name: "Inv C", status: "draft", firmware_variants: [], verified_firmware: [] },
+  ],
+  tariff: [{ id: "auto", name: "Detect automatically", status: "verified", firmware_variants: [] }],
+};
+const SITE_NOW = { inverter: "solis", inverter_firmware: "420044", ev_charger: "zappi", car: "none", tariff: "auto", forecast: "solcast", events: "axle" };
+
+test("site section is hidden when the app publishes no site_options, and no site is sent", () => {
+  assert.equal(h.siteInfo({ names: {}, site: SITE_NOW }), null);
+  assert.equal(h.siteInfo(undefined), null);
+  assert.equal(h.siteInfo({ site_options: {} }), null);
+  const info = h.siteInfo({ site: SITE_NOW, site_options: SITE_OPTS, firmware_detected: null, retest_required: true });
+  assert.equal(info.retest, true);
+  assert.equal(info.detected, null);
+  assert.equal("site" in h.buildConfig({ inputs: {}, features: {}, operation: {} }), false);
+  assert.deepStrictEqual(h.buildConfig({ inputs: {}, features: {}, operation: {}, site: SITE_NOW }).site, SITE_NOW);
+});
+
+test("site is built from the selections, unknown firmware is null", () => {
+  assert.deepStrictEqual(h.siteFromSelection({ inverter_firmware: "" }, SITE_NOW), { ...SITE_NOW, inverter_firmware: null });
+  assert.deepStrictEqual(h.siteFromSelection({ tariff: "edf" }, SITE_NOW), { ...SITE_NOW, tariff: "edf" });
+  assert.deepStrictEqual(Object.keys(h.siteFromSelection({})).sort(), Object.keys(SITE_NOW).sort());
+});
+
+test("firmware options follow the chosen inverter, and changing inverter resets an unlisted firmware", () => {
+  assert.deepStrictEqual(h.siteFirmwareOptions(SITE_OPTS, "other"), ["1", "2"]);
+  assert.deepStrictEqual(h.siteFirmwareOptions(SITE_OPTS, "bare"), []);
+  assert.deepStrictEqual(h.siteFirmwareOptions(SITE_OPTS, "nope"), []);
+  assert.equal(h.siteChooseInverter(SITE_OPTS, SITE_NOW, "other").inverter_firmware, null);
+  assert.equal(h.siteChooseInverter(SITE_OPTS, { ...SITE_NOW, inverter: "other", inverter_firmware: "2" }, "other").inverter_firmware, "2");
+});
+
+test("warn when the inverter or the firmware variant changes, not for the same variant or other kinds", () => {
+  const w = (next) => h.siteNeedsWarning(SITE_OPTS, SITE_NOW, { ...SITE_NOW, ...next });
+  assert.equal(w({}), false);
+  assert.equal(w({ inverter_firmware: null }), false);                    // null <-> 420044 is the same variant
+  assert.equal(h.siteNeedsWarning(SITE_OPTS, { ...SITE_NOW, inverter_firmware: null }, SITE_NOW), false);
+  assert.equal(w({ inverter_firmware: "999" }), true);                    // not listed = a different variant
+  assert.equal(w({ inverter: "other", inverter_firmware: null }), true);
+  assert.equal(w({ tariff: "edf" }), false);
+  assert.equal(w({ car: "x", ev_charger: null, forecast: null, events: null }), false);
+  const two = { ...SITE_NOW, inverter: "other", inverter_firmware: "1" };
+  assert.equal(h.siteNeedsWarning(SITE_OPTS, two, { ...two, inverter_firmware: "2" }), true);
+  assert.equal(h.siteNeedsWarning(SITE_OPTS, two, { ...two, inverter_firmware: null }), false);   // null = default, the first variant
+});
+
+test("detected firmware line, and site texts name no supplier", () => {
+  assert.match(h.siteDetectedLine(null, null), /not readable from the inverter; pick it from the list/);
+  assert.match(h.siteDetectedLine("420044", "420044"), /Detected: 420044.*matches/);
+  assert.match(h.siteDetectedLine("420044", "1"), /differs/);
+  assert.equal(h.siteOptionLabel({ name: "X", status: "community" }), "X (community)");
+  assert.equal(h.siteOptionLabel({ name: "X", status: "verified" }), "X");
+  [h.SITE_WARNING, h.SITE_RETEST, ...h.SITE_KINDS.map((k) => h.fillNames(k[1], { event: "Flux" }))].forEach((t) => assert.doesNotMatch(t, /EDF|Axle|Zappi|Solis|Solcast|Octopus/));
+  assert.equal(h.fillNames(h.SITE_KINDS.find((k) => k[0] === "events")[1], null), "grid-services events");
+});

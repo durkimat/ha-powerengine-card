@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.65";
+const CARD_VERSION = "0.9.66";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -418,9 +418,78 @@ function buildConfig(draft) {
   if (draft.notifications && draft.notifications.service) {
     out.notifications = { service: draft.notifications.service, events: Object.assign({}, draft.notifications.events) };
   }
+  if (draft.site) out.site = draft.site;      // only set when the app publishes site_options
   if (draft.remove_entities) out.remove_entities = true;
   return out;
 }
+
+/* ------------------------------------------------------------ "Your system" block (step 8b)
+ * The app publishes sensor.pe_diag_version attributes site, site_options, firmware_detected and retest_required.
+ * Option names are data from site_options; labels here are neutral words or <<term>> placeholders. */
+const SITE_KINDS = [
+  ["inverter", "Inverter"], ["inverter_firmware", "Firmware"], ["ev_charger", "EV charger"], ["car", "Car"],
+  ["tariff", "Tariff"], ["forecast", "Forecast"], ["events", "<<event>> events"],
+];
+const SITE_WARNING = "Changing the inverter switches PowerEngine to Passive. Run the supervised tests on the Tests page before going Active again.";
+const SITE_RETEST = "Inverter changed: run the supervised tests on the Tests page before going Active.";
+const SITE_UNKNOWN_FW = "Not listed / unknown";
+const SITE_NOT_TESTED = "Not fully tested";
+
+/** The site attributes the section works from, or null when the app is too old to publish site_options (section hidden). */
+function siteInfo(attrs) {
+  const a = attrs || {};
+  const opts = a.site_options;
+  if (!opts || typeof opts !== "object" || Array.isArray(opts) || !Object.keys(opts).length) return null;
+  const site = a.site && typeof a.site === "object" ? a.site : {};
+  return { options: opts, site, detected: a.firmware_detected || null, retest: a.retest_required === true };
+}
+
+function siteRows(options, kind) { return Array.isArray((options || {})[kind]) ? options[kind] : []; }
+function siteRow(options, kind, id) { return siteRows(options, kind).find((r) => r.id === id) || null; }
+
+/** Firmware ids offered for an inverter (the "Not listed / unknown" choice, null, is added by the card). */
+function siteFirmwareOptions(options, inverterId) {
+  const row = siteRow(options, "inverter", inverterId);
+  return row && Array.isArray(row.firmware_variants) ? row.firmware_variants.slice() : [];
+}
+
+/** Which variant a firmware value means: null is the inverter's default (first listed); a value not listed is its own variant. */
+function siteVariant(options, inverterId, fw) {
+  const list = siteFirmwareOptions(options, inverterId);
+  if (fw === null || fw === undefined || fw === "") return list.length ? list[0] : null;
+  return list.includes(fw) ? fw : `other:${fw}`;
+}
+
+/** The site to save, from the selections. Missing kinds keep the saved value. */
+function siteFromSelection(sel, fallback) {
+  const s = Object.assign({}, fallback || {}, sel || {});
+  const out = {};
+  SITE_KINDS.forEach(([k]) => { out[k] = s[k] === undefined || s[k] === "" ? null : s[k]; });
+  return out;
+}
+
+/** Selection after the inverter dropdown changes: keep the firmware only if the new inverter lists it, else unknown. */
+function siteChooseInverter(options, sel, id) {
+  const fw = sel.inverter_firmware;
+  return Object.assign({}, sel, { inverter: id, inverter_firmware: fw && siteFirmwareOptions(options, id).includes(fw) ? fw : null });
+}
+
+/** Warn when the inverter changes, or the firmware's variant changes (app rule: it switches to Passive and needs a retest). */
+function siteNeedsWarning(options, saved, next) {
+  const a = saved || {}, b = next || {};
+  if ((a.inverter || null) !== (b.inverter || null)) return true;
+  return siteVariant(options, a.inverter, a.inverter_firmware) !== siteVariant(options, b.inverter, b.inverter_firmware);
+}
+
+/** The "Detected: X" line: a match note, or the pick-from-the-list hint when the inverter can't say. */
+function siteDetectedLine(detected, chosen) {
+  if (!detected) return "Firmware not readable from the inverter; pick it from the list";
+  if (!chosen) return `Detected: ${detected} (no firmware chosen below)`;
+  return chosen === detected ? `Detected: ${detected} (matches your choice)` : `Detected: ${detected} (differs from your choice, ${chosen})`;
+}
+
+/** Option label: name, plus the status when it is not verified. */
+function siteOptionLabel(row) { return row.status && row.status !== "verified" ? `${row.name} (${row.status})` : row.name; }
 
 /* --------------------------------------------------------------------- card */
 
@@ -486,6 +555,9 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     this._settings = this._catalogue.settings || (settingsSensor && settingsSensor.attributes) || {};
     this._readOnly = !(this._hass.user && this._hass.user.is_admin);
     const { draft, fresh } = initialDraft(this._saved, this._catalogue.roles, Object.keys(s).sort(), this._settings);
+    this._site = siteInfo(ver.attributes);
+    this._siteSaved = this._site ? siteFromSelection(this._site.site) : null;
+    if (this._site) draft.site = Object.assign({}, this._siteSaved); else delete draft.site;
     this._draft = draft;
     this._prefilled = fresh;
     this._build();
@@ -585,6 +657,13 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       details.section.off > summary .title { color: var(--secondary-text-color); }
       .offnote { color: var(--secondary-text-color); font-style: italic; font-size: .9em; margin: 6px 0; }
       details.section.off .row:not(.feature) { opacity: .55; }
+      .yoursystem { border: 1px solid var(--divider-color); border-radius: 8px; padding: 4px 12px 10px; margin: 8px 0; }
+      .yoursystem h3 { margin: 8px 0 4px; }
+      .sysgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 4px 16px; }
+      .sysgrid .field { padding: 6px 0; }
+      .sysgrid select { width: 100%; box-sizing: border-box; min-height: 40px; }
+      .badge.status-verified { border: 1px solid var(--success-color, #43a047); color: var(--success-color, #43a047); background: none; }
+      .badge.status-community, .badge.status-draft { background: rgba(255, 160, 0, .18); color: var(--warning-color, #b26a00); }
     `);
   }
 
@@ -639,6 +718,9 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const tools = el("div", { class: "tools" },
       el("button", { class: "link", onclick: () => this._toggleAll(true) }, "Expand all"),
       el("button", { class: "link", onclick: () => this._toggleAll(false) }, "Collapse all"));
+    this._siteBox = el("div", { class: "yoursystem" });
+    this._renderSite();
+    content.append(this._siteBox);
     content.append(el("div", { class: "toolbar" }, search, chips, el("div", { class: "toolrow" }, this._summary, tools)), this._noMatch);
 
     // collapsible sections (open state kept across rebuilds and page loads)
@@ -996,6 +1078,14 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const checks = ((mapping && mapping.attributes) || {}).checks || {};
     const saved = ((mapping && mapping.attributes) || {}).config || {};
     const savedInputs = saved.inputs || {};
+    if (this._site) {                                       // the app's published site moves after a save; redraw only if it did
+      const info = siteInfo(((states[VERSION_SENSOR] || {}).attributes));
+      if (info && JSON.stringify(info) !== JSON.stringify(this._site)) {
+        this._site = info;
+        this._siteSaved = siteFromSelection(info.site);
+        this._renderSite();
+      }
+    }
     let blocking = 0;
     const secs = this._sections || {};
     Object.values(secs).forEach((s) => { s.problems = 0; s.unsaved = 0; s.req = 0; s.reqOk = 0; s.opt = 0; s.cond = 0; s.condOk = 0; });
@@ -1079,12 +1169,56 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       this._summary.className = reqBad ? "summary bad" : "summary good";
     }
     if (this._filter === "attention" || this._query) this._applyFilter();
-    const dirty = JSON.stringify(buildConfig(this._draft)) !== JSON.stringify(buildConfig(initialDraft(saved, [], [], this._settings).draft));
+    const base = initialDraft(saved, [], [], this._settings).draft;
+    if (this._siteSaved) base.site = this._siteSaved; else delete base.site;
+    const dirty = JSON.stringify(buildConfig(this._draft)) !== JSON.stringify(buildConfig(base));
     if (this._saveBtn) {
       this._saveBtn.disabled = this._readOnly || blocking > 0 || this._saving || !dirty;
       this._saveBtn.textContent = this._saving ? "Saving…" : "Save";
     }
     if (this._resetBtn) this._resetBtn.disabled = this._readOnly || !dirty || this._saving;
+  }
+
+  _siteWarns() { return !!this._site && siteNeedsWarning(this._site.options, this._siteSaved, this._draft.site); }
+
+  /** The "Your system" block: hidden when the app doesn't publish site_options. Redrawn on each change. */
+  _renderSite() {
+    const box = this._siteBox;
+    if (!box) return;
+    box.style.display = this._site ? "" : "none";
+    if (!this._site) { box.replaceChildren(); return; }
+    const { options, detected, retest } = this._site;
+    const cur = this._draft.site;
+    const set = (next) => { this._draft.site = siteFromSelection(next, cur); this._renderSite(); this._refresh(); };
+    const kids = [el("h3", {}, "Your system")];
+    if (retest) kids.push(el("div", { class: "banner error" }, SITE_RETEST));
+    const grid = el("div", { class: "sysgrid" });
+    SITE_KINDS.forEach(([kind, rawLabel]) => {
+      let rows, value, sel;
+      if (kind === "inverter_firmware") {
+        rows = siteFirmwareOptions(options, cur.inverter).map((id) => ({ id, name: id }));
+        rows.push({ id: "", name: SITE_UNKNOWN_FW });
+        value = cur.inverter_firmware || "";
+        sel = el("select", { onchange: (ev) => set(Object.assign({}, cur, { inverter_firmware: ev.target.value || null })) });
+      } else {
+        rows = siteRows(options, kind);
+        value = cur[kind] === null || cur[kind] === undefined ? "" : cur[kind];
+        sel = el("select", { onchange: (ev) => set(kind === "inverter" ? siteChooseInverter(options, cur, ev.target.value)
+          : Object.assign({}, cur, { [kind]: ev.target.value || null })) });
+      }
+      rows.forEach((r) => sel.append(el("option", { value: r.id }, kind === "inverter_firmware" ? r.name : siteOptionLabel(r))));
+      sel.disabled = this._readOnly;
+      sel.value = value;
+      const chosen = kind === "inverter_firmware" ? null : siteRow(options, kind, cur[kind]);
+      const field = el("div", { class: "field" }, el("div", { class: "head" }, el("span", { class: "label" }, T(rawLabel)),
+        chosen && chosen.status ? el("span", { class: `badge status-${chosen.status}`, title: chosen.status === "verified" ? "" : SITE_NOT_TESTED },
+          chosen.status === "verified" ? "verified" : `${chosen.status}: ${SITE_NOT_TESTED.toLowerCase()}`) : null), el("div", { class: "ctl" }, sel));
+      if (kind === "inverter_firmware") field.append(el("div", { class: "muted" }, siteDetectedLine(detected, cur.inverter_firmware)));
+      grid.append(field);
+    });
+    kids.push(grid);
+    if (this._siteWarns()) kids.push(el("div", { class: "warning" }, `⚠ ${SITE_WARNING}`));
+    box.replaceChildren(...kids);
   }
 
   _setBanner(kind, text) {
@@ -1094,6 +1228,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
   }
 
   async _save() {
+    if (this._siteWarns() && typeof confirm === "function" && !confirm(SITE_WARNING)) return;
     this._saving = true;
     this._refresh();
     try {
@@ -3247,5 +3382,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK };
+  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel };
 }
