@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.64
+
+- No card changes; version kept in step.
+
 ## 0.9.63
 
 - New `powerengine-demo-card`: a welcome card with a day picker on an unconfigured PowerEngine, and a demo banner with day switching and exit. It hides itself on a set-up system. The setup card gains a "Try the demo" link.
