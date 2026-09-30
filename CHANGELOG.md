@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.69
+
+- The demo welcome card uses the demo's own day titles (the same as the banner). Health says "Not set up yet" before setup. true/false settings that arrive as text are read as booleans in the config form.
+
 ## 0.9.68
 
 - No card changes; version kept in step.
