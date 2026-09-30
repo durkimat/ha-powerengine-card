@@ -9,7 +9,7 @@ the release routine, guardrails and current plan for both repos.
   testing.
 - The card is released only when it changes, taking the app version it ships with (one sequence; numbers can skip,
   e.g. 0.9.70 to 0.9.74). `tools/release.sh` in the app repo does it with `--card-notes`.
-- `MIN_APP_VERSION` is the oldest app the card works with (0.9.69: `demo_days`). The app publishes
+- `MIN_APP_VERSION` is the oldest app the card works with (0.9.72: the `custom` waterfall period). The app publishes
   `min_card_version` on `sensor.pe_diag_version`. Each side warns only when the other is older than its minimum
   (`versionWarnings`), not when the versions differ. Raise `MIN_APP_VERSION` when the card starts to need something
   a newer app publishes.
