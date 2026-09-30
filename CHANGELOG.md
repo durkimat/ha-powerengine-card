@@ -3,6 +3,11 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.75
+
+- The savings chart's **Custom** button is gone, along with the date-range line under the chart. The other buttons (Yesterday, Last 7 days, This month, Last 30 days) work as before.
+- The card works with app 0.9.69 or newer again.
+
 ## 0.9.74
 
 - The savings chart has a new Custom button, shown when the app offers a chosen date range. It brings back the range you picked with From and To, so you can switch away and return to it.

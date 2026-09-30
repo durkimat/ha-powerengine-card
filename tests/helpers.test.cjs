@@ -865,21 +865,21 @@ test("versionOlder compares numbers, not text, and says nothing when it can't re
   }
 });
 
-test("MIN_APP_VERSION is a real version", () => {
-  // (Not compared with CARD_VERSION: release.sh runs the tests before it moves CARD_VERSION to the release's version.)
-  assert.equal(h.MIN_APP_VERSION, "0.9.72");
-  assert.deepEqual(h.parseVersion(h.MIN_APP_VERSION), [0, 9, 72]);
+test("MIN_APP_VERSION is a real version no newer than the card", () => {
+  assert.equal(h.MIN_APP_VERSION, "0.9.69");
+  assert.deepEqual(h.parseVersion(h.MIN_APP_VERSION), [0, 9, 69]);
+  assert.equal(h.versionOlder(h.CARD_VERSION, h.MIN_APP_VERSION), false);
 });
 
 test("versionWarnings warns only when the other side is older than its minimum", () => {
   const st = (state, attrs) => ({ "sensor.pe_diag_version": { state, attributes: attrs || {} } });
   // a different but supported app: no warning, whichever way round
-  assert.deepEqual(h.versionWarnings(st("0.9.72", { min_card_version: "0.9.70" })), []);
+  assert.deepEqual(h.versionWarnings(st("0.9.69", { min_card_version: "0.9.70" })), []);
   assert.deepEqual(h.versionWarnings(st("0.9.99", { min_card_version: "0.9.70" })), []);
   // an app older than the card's minimum
-  const old = h.versionWarnings(st("0.9.71"));
+  const old = h.versionWarnings(st("0.9.68"));
   assert.equal(old.length, 1);
-  assert.match(old[0], /0\.9\.72 or newer.*0\.9\.71/);
+  assert.match(old[0], /0\.9\.69 or newer.*0\.9\.68/);
   // a card older than the app's minimum
   const oldCard = h.versionWarnings(st("0.9.99", { min_card_version: "99.0.0" }));
   assert.equal(oldCard.length, 1);
@@ -887,29 +887,5 @@ test("versionWarnings warns only when the other side is older than its minimum",
   // nothing to compare: no sensor, unavailable, no attribute (an older app)
   assert.deepEqual(h.versionWarnings({}), []);
   assert.deepEqual(h.versionWarnings(st("unavailable")), []);
-  assert.deepEqual(h.versionWarnings(st("0.9.72", {})), []);
-});
-
-test("waterfall buttons: Custom appears only when the app publishes periods.custom", () => {
-  const std = ["yesterday", "week", "month", "days30"];
-  assert.deepEqual(h.waterfallButtons({ week: {} }).map((b) => b.key), std);
-  assert.deepEqual(h.waterfallButtons(undefined).map((b) => b.key), std);
-  assert.deepEqual(h.waterfallButtons({ week: {}, custom: { days: 0 } }).map((b) => b.key), [...std, "custom"]);
-  assert.equal(h.waterfallButtons({ custom: {} }).pop().label, "Custom");
-});
-
-test("waterfall caption: dates and days for every period, the app's note for the custom range", () => {
-  const colour = "Green steps saved money; orange ones cost money.";
-  assert.equal(h.waterfallCaption({ days: 7, from: "2026-09-01", to: "2026-09-07" }, "week"), `2026-09-01–2026-09-07, 7 days. ${colour}`);
-  assert.equal(h.waterfallCaption({ days: 1, from: "2026-09-01", to: "2026-09-01" }, "yesterday"), `2026-09-01, 1 day. ${colour}`);
-  assert.equal(h.waterfallCaption({ days: 3, from: "2026-09-01", to: "2026-09-03", note: "Only 3 of the 5 days asked for have costs recorded." }, "custom"),
-    `2026-09-01–2026-09-03, 3 days. Only 3 of the 5 days asked for have costs recorded. ${colour}`);
-  assert.equal(h.waterfallCaption({ days: 3, from: "2026-09-01", to: "2026-09-03", note: "x" }, "week"), `2026-09-01–2026-09-03, 3 days. ${colour}`);
-});
-
-test("waterfall caption: nothing to show", () => {
-  assert.equal(h.waterfallCaption(undefined, "week"), "Costs appear after the first full day.");
-  assert.equal(h.waterfallCaption({ days: 0, note: "No complete day with costs in that range." }, "custom"), "No complete day with costs in that range.");
-  assert.equal(h.waterfallCaption({ days: 0, note: "" }, "custom"), "Choose a From and a To day.");
-  assert.equal(h.waterfallCaption(undefined, "custom"), "Choose a From and a To day.");
+  assert.deepEqual(h.versionWarnings(st("0.9.70", {})), []);
 });
