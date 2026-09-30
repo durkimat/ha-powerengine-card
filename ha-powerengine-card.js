@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.69";
+const CARD_VERSION = "0.9.70";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
@@ -2350,7 +2350,15 @@ const DEMO_DAYS = [
   { key: "sunny", title: "Sunny day" }, { key: "dull", title: "Dull day" },
   { key: "axle", title: "<<event>> event day" }, { key: "car", title: "Car charging day" },
 ];
-const DEMO_WAIT = "Starting the demo… (about a minute)";
+const DEMO_WAIT = "Working on it… (about a minute; the page reloads when it's done)";
+// The demo switches the dashboard file (the demo view, the flow card's plants), which HA only reads when the page loads.
+const DEMO_RELOAD_DELAY_MS = 3000;    // the app writes the dashboard just after it publishes the change
+
+/** Should the page reload? Only when this card sent a start, day change or exit (`pending`) and the app's answer has
+ *  since changed the demo state. A page that was just reloaded has no pending, so it can't loop. */
+function demoNeedsReload(pending, stateBefore, stateNow) {
+  return !!pending && pending.from !== undefined && pending.from !== stateNow && stateBefore !== undefined;
+}
 
 function capFirst(text) { const s = String(text); return s.charAt(0).toUpperCase() + s.slice(1); }
 
@@ -2470,6 +2478,13 @@ class PowerEngineDemoCard extends (typeof HTMLElement !== "undefined" ? HTMLElem
 
   _isAdmin() { return !!(this._hass && this._hass.user && this._hass.user.is_admin); }
 
+  _reloadOnce() {
+    if (this._reloading) return;
+    this._reloading = true;
+    this._msg = { ok: true, text: "Done. Reloading the page…" };
+    setTimeout(() => { try { location.reload(); } catch (e) { /* not in a page */ } }, DEMO_RELOAD_DELAY_MS);
+  }
+
   _attrs() {
     const s = ((this._hass || {}).states || {})[VERSION_SENSOR];
     return (s && s.attributes) || {};
@@ -2482,8 +2497,10 @@ class PowerEngineDemoCard extends (typeof HTMLElement !== "undefined" ? HTMLElem
     this._mode = view.mode;
     const state0 = JSON.stringify([attrs.setup, attrs.demo && attrs.demo.day, !!attrs.demo]);
     if (this._pending && this._pending.from !== undefined && this._pending.from !== state0) {
+      const reload = demoNeedsReload(this._pending, this._pending.from, state0);
       this._pending = null;                        // the sensor moved on: the start, day change or exit happened
       this._msg = null;
+      if (reload) this._reloadOnce();
     }
     this._sig0 = state0;
     const editing = !!this.editMode;
@@ -3403,5 +3420,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel };
+  module.exports = { demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel };
 }
