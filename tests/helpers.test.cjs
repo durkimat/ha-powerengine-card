@@ -842,3 +842,13 @@ test("detected firmware line, and site texts name no supplier", () => {
   [h.SITE_WARNING, h.SITE_RETEST, ...h.SITE_KINDS.map((k) => h.fillNames(k[1], { event: "Flux" }))].forEach((t) => assert.doesNotMatch(t, /EDF|Axle|Zappi|Solis|Solcast|Octopus/));
   assert.equal(h.fillNames(h.SITE_KINDS.find((k) => k[0] === "events")[1], null), "grid-services events");
 });
+
+test("the page reloads once after a demo start, day change or exit, and never on its own", () => {
+  const before = JSON.stringify(["unconfigured", undefined, false]);
+  const after = JSON.stringify(["unconfigured", "sunny", true]);
+  assert.strictEqual(h.demoNeedsReload({ text: "x", from: before }, before, after), true);
+  assert.strictEqual(h.demoNeedsReload({ text: "x", from: before }, before, before), false);   // nothing changed yet
+  assert.strictEqual(h.demoNeedsReload(null, before, after), false);                          // a freshly loaded page
+  assert.strictEqual(h.demoNeedsReload({ text: "x" }, before, after), false);
+  assert.match(h.DEMO_WAIT, /reloads/);
+});
