@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.71";
+const CARD_VERSION = "0.9.74";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.72 added the `custom` period to sensor.pe_cost_waterfall that the savings
 // chart's Custom button reads; 0.9.69 added demo_days). Raise it only when the card starts to need something a newer
