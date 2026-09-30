@@ -7,5 +7,9 @@ the release routine, guardrails and current plan for both repos.
   diagnostics, update, health, log and sim cards.
 - Tests: `node --test tests/helpers.test.cjs`. Pure helpers are exported via `module.exports` at the bottom for
   testing.
-- `CARD_VERSION` moves in step with the app's version, even when the card doesn't change ("No card changes;
-  version kept in step with the app.").
+- The card is released only when it changes, taking the app version it ships with (one sequence; numbers can skip,
+  e.g. 0.9.70 to 0.9.74). `tools/release.sh` in the app repo does it with `--card-notes`.
+- `MIN_APP_VERSION` is the oldest app the card works with (0.9.69: `demo_days`). The app publishes
+  `min_card_version` on `sensor.pe_diag_version`. Each side warns only when the other is older than its minimum
+  (`versionWarnings`), not when the versions differ. Raise `MIN_APP_VERSION` when the card starts to need something
+  a newer app publishes.

@@ -13,4 +13,6 @@ This card is installed as part of PowerEngine. Follow the
 **[PowerEngine installation guide](https://github.com/durkimat/ha-powerengine-controller/blob/main/docs/INSTALL.md)**
 (Step 4 installs the card; Step 5 creates the admin-only config page).
 
-Keep the card and app on the same version: the card warns if they differ.
+The card and app don't need the same version. Each warns only if the other is older than the minimum it needs
+(the card needs app 0.9.69 or newer; the app publishes the oldest card it works with). The card is only released when
+it changes, so its version can be behind the app's.

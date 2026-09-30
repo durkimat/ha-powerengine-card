@@ -9,6 +9,37 @@
  */
 const CARD_VERSION = "0.9.70";
 const VERSION_SENSOR = "sensor.pe_diag_version";
+// The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
+// the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
+const MIN_APP_VERSION = "0.9.69";
+
+/** "0.9.70" -> [0, 9, 70]; null when it isn't a plain dotted number ("?", "unavailable", "0.9.70-beta"). */
+function parseVersion(v) {
+  const m = /^\s*v?(\d+(?:\.\d+)*)\s*$/.exec(String(v == null ? "" : v));
+  return m ? m[1].split(".").map(Number) : null;
+}
+/** True if version a is older than version b; false if equal or newer; null if either can't be read (so: no warning). */
+function versionOlder(a, b) {
+  const x = parseVersion(a), y = parseVersion(b);
+  if (!x || !y) return null;
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] || 0) - (y[i] || 0);
+    if (d) return d < 0;
+  }
+  return false;
+}
+/** Plain-words warnings when one side is older than the other's minimum. Differing versions are fine. */
+function versionWarnings(states) {
+  const s = (states || {})[VERSION_SENSOR];
+  if (!s) return [];
+  const out = [];
+  if (versionOlder(s.state, MIN_APP_VERSION) === true)
+    out.push(`This card needs PowerEngine app ${MIN_APP_VERSION} or newer; the app is running ${s.state}. Update the app.`);
+  const minCard = (s.attributes || {}).min_card_version;
+  if (versionOlder(CARD_VERSION, minCard) === true)
+    out.push(`The app needs card ${minCard} or newer; this page has ${CARD_VERSION}. Update the card, then reload the page.`);
+  return out;
+}
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
 const MAPPING_SENSOR = "sensor.pe_map_config";
@@ -1828,7 +1859,7 @@ class PowerEngineTestCard extends (typeof HTMLElement !== "undefined" ? HTMLElem
       : "Remote-control entities: " + need.map((r) => `${rc[r]} (${(states[rc[r]] || {}).state})`).join(", ");
     q(".start").disabled = running || !q(".confirm").checked || gone.length > 0;
     q(".stop").disabled = !running;
-    q(".msg").textContent = this._msg || "";
+    q(".msg").textContent = this._msg || versionWarnings(this._hass.states).join(" ");
   }
 }
 
@@ -2656,7 +2687,8 @@ class PowerEngineHealthCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
   set hass(hass) {
     this._hass = hass;
     const st = hass.states["sensor.pe_diag_health"];
-    const sig = st ? st.last_updated + st.state : "";
+    const vs = hass.states[VERSION_SENSOR];
+    const sig = (st ? st.last_updated + st.state : "") + (vs ? vs.state + ((vs.attributes || {}).min_card_version || "") : "");
     if (sig !== this._sig) {
       this._sig = sig;
       this._render();
@@ -2697,6 +2729,7 @@ class PowerEngineHealthCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     }
     const gone = (a.dismissed || []).length
       ? `<p class="small">Dismissed recently: ${a.dismissed.map((d) => escHtml(d.title)).join("; ")}. A new or changed finding shows again.</p>` : "";
+    const vw = versionWarnings(this._hass.states).map((w) => `<p><span class="lvl p">Problem</span> ${escHtml(w)}</p>`).join("");
     this.shadowRoot.innerHTML = `
       <style>
         ha-card { padding: 12px 16px; }
@@ -2710,7 +2743,7 @@ class PowerEngineHealthCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
         .small, .err { color: var(--secondary-text-color); font-size: 0.85em; }
         .err { color: var(--error-color, #db4437); }
       </style>
-      <ha-card>${body}${gone}${this._err ? `<p class="err">${escHtml(this._err)}</p>` : ""}</ha-card>`;
+      <ha-card>${vw}${body}${gone}${this._err ? `<p class="err">${escHtml(this._err)}</p>` : ""}</ha-card>`;
     this.shadowRoot.querySelectorAll("button[data-key]").forEach((b) =>
       b.addEventListener("click", () => this._dismiss(b.dataset.key)));
   }
@@ -3420,5 +3453,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel };
+  module.exports = { demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel };
 }
