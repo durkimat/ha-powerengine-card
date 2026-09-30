@@ -7,11 +7,12 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.71";
+const CARD_VERSION = "0.9.74";
 const VERSION_SENSOR = "sensor.pe_diag_version";
-// The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
-// the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
-const MIN_APP_VERSION = "0.9.69";
+// The oldest app this card works with (0.9.72 added the `custom` period to sensor.pe_cost_waterfall that the savings
+// chart's Custom button reads; 0.9.69 added demo_days). Raise it only when the card starts to need something a newer
+// app publishes. The app publishes its own minimum as min_card_version.
+const MIN_APP_VERSION = "0.9.72";
 
 /** "0.9.70" -> [0, 9, 70]; null when it isn't a plain dotted number ("?", "unavailable", "0.9.70-beta"). */
 function parseVersion(v) {
@@ -2814,7 +2815,8 @@ if (typeof customElements !== "undefined") {
  * `periods` attribute, built by pe_core.costs.waterfall).
  *   type: custom:powerengine-waterfall-card
  *   entity: sensor.pe_cost_waterfall
- *   period: week            (yesterday | week | month | days30; a button row also switches it)
+ *   period: week            (yesterday | week | month | days30 | custom; a button row also switches it. `custom` is the
+ *                            From/To range the app publishes from 0.9.72; its button shows only when the app sends it)
  */
 
 function waterfallRows(steps) {
@@ -2852,6 +2854,22 @@ const WATERFALL_PERIODS = [
   { key: "month", label: "This month" },
   { key: "days30", label: "30 days" },
 ];
+
+function waterfallButtons(periods) {
+  // The button row: the four standard periods, plus Custom only when the app publishes periods.custom (0.9.72 on).
+  const out = WATERFALL_PERIODS.slice();
+  if (periods && periods.custom) out.push({ key: "custom", label: "Custom" });
+  return out;
+}
+
+function waterfallCaption(p, key) {
+  // The caption under the chart: the dates and day count; for the custom range also the app's plain-words note
+  // (swapped dates, fewer days than asked for). The colour key follows for every period.
+  if (!p || !p.days) return key === "custom" ? ((p && p.note) || "Choose a From and a To day.") : "Costs appear after the first full day.";
+  const dates = p.from === p.to ? `${p.from}` : `${p.from}–${p.to}`;
+  const note = key === "custom" && p.note ? ` ${p.note}` : "";
+  return `${dates}, ${p.days} day${p.days === 1 ? "" : "s"}.${note} Green steps saved money; orange ones cost money.`;
+}
 
 function pct(v, scale) {
   // Maps a value to a 0-100 position given a {min, max} scale (from waterfallScale). Pure; used to place bars,
@@ -2925,13 +2943,13 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
     const st = this._hass.states[this._config.entity];
     const periods = (st && st.attributes && st.attributes.periods) || {};
     const p = periods[this._period];
-    const buttons = WATERFALL_PERIODS.map((w) =>
+    const buttons = waterfallButtons(periods).map((w) =>
       `<button data-period="${w.key}" class="${w.key === this._period ? "on" : ""}">${escHtml(w.label)}</button>`).join("");
 
     if (!st || !p || !p.days) {
       this.shadowRoot.innerHTML = `
         <style>${this._css()}</style>
-        <ha-card class="wf"><div class="top">${buttons}</div><p class="none">Costs appear after the first full day.</p></ha-card>`;
+        <ha-card class="wf"><div class="top">${buttons}</div><p class="none">${escHtml(waterfallCaption(p, this._period))}</p></ha-card>`;
       this._wire();
       return;
     }
@@ -2973,7 +2991,7 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
           ${cols}
         </div>
         <div class="labels" style="grid-template-columns: repeat(${n}, 1fr)">${labels}</div>
-        <p class="caption">${escHtml(p.from)}–${escHtml(p.to)}, ${p.days} day${p.days === 1 ? "" : "s"}. Green steps saved money; orange ones cost money.</p>
+        <p class="caption">${escHtml(waterfallCaption(p, this._period))}</p>
       </ha-card>`;
     this._wire();
   }
@@ -3453,5 +3471,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel };
+  module.exports = { demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, waterfallButtons, waterfallCaption, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel };
 }

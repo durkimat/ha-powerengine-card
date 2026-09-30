@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.74
+
+- The savings chart has a new Custom button, shown when the app offers a chosen date range. It brings back the range you picked with From and To, so you can switch away and return to it.
+- The chart's caption shows the dates of the chosen range and how many days it covers, with a short note if some of the days asked for had no costs recorded.
+- The card now asks for app 0.9.72 or newer (the version that added the date range).
+
 ## 0.9.71
 
 - Checks versions against a minimum instead of requiring an exact match: this card needs app 0.9.69 or later, and it
