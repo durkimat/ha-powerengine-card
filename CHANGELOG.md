@@ -2,6 +2,10 @@
 
 Released in step with the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller); versions match.
 
+## 0.9.67
+
+- No card changes; version kept in step.
+
 ## 0.9.66
 
 - New **Your system** block at the top of the configuration card: choose the inverter (and its firmware), car charger, car, tariff, forecast and grid events, with each option's test status. It warns before an inverter change switches PowerEngine to Passive, and shows a banner until the supervised tests are run again. It is hidden with an older app.
