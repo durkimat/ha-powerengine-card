@@ -13,6 +13,7 @@ const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
 const MAPPING_SENSOR = "sensor.pe_map_config";
 const SAVE_EVENT = "pe_config_save";
+const NOT_SET_UP = "Not set up yet";      // what the app's Mode and Health say before there is a config
 const RESULT_EVENT = "pe_config_result";
 
 // What this user's supplier and devices are called comes from the app (sensor.pe_diag_version, attribute "names").
@@ -332,17 +333,31 @@ function settingDefaults(list) {
   return out;
 }
 
+/** A true/false that reached us as the text "true"/"false" (or 1/0) is the boolean it means; anything else is left alone. */
+function asBool(v) {
+  if (typeof v === "string") { const t = v.trim().toLowerCase(); if (t === "true") return true; if (t === "false") return false; }
+  else if (v === 1 || v === 0) return v === 1;
+  return v;
+}
+function asBools(obj) {
+  const out = {};
+  Object.entries(obj || {}).forEach(([k, v]) => { out[k] = asBool(v); });
+  return out;
+}
+
 function initialDraft(saved, roles, entityIds, settings) {
   const draft = JSON.parse(JSON.stringify(saved || {}));
   settings = settings || {};
   draft.inputs = draft.inputs || {};
-  draft.features = Object.assign({}, FEATURE_DEFAULTS, draft.features || {});
+  draft.features = Object.assign({}, FEATURE_DEFAULTS, asBools(draft.features));
   draft.operation = Object.assign({ mode: "passive" }, draft.operation || {});
   draft.safety = Object.assign(settingDefaults(settings.safety), draft.safety || {});
-  draft.system = Object.assign(settingDefaults(settings.system), draft.system || {});
+  const system = Object.assign({}, draft.system || {});
+  Object.keys(system).forEach((k) => { if (typeof system[k] === "string" || typeof system[k] === "number") system[k] = system[k] === "true" || system[k] === "false" ? asBool(system[k]) : system[k]; });
+  draft.system = Object.assign(settingDefaults(settings.system), system);
   const n = draft.notifications || {};
   const events = {};
-  NOTIFY_EVENTS.forEach(([k, , , d]) => { events[k] = (n.events || {})[k] !== undefined ? !!n.events[k] : d; });
+  NOTIFY_EVENTS.forEach(([k, , , d]) => { events[k] = (n.events || {})[k] !== undefined ? !!asBool(n.events[k]) : d; });
   // no choice saved yet: HA's notification area (the app's default); "off" = none
   draft.notifications = { service: n.service === undefined ? "persistent_notification" : (n.service || "off"), events };
   const fresh = !saved || !saved.inputs || !Object.keys(saved.inputs).length;
@@ -2353,7 +2368,11 @@ function demoView(attrs, isAdmin) {
       days: list.filter((d) => d && d.key).map((d) => ({ key: d.key, title: title(d.title || d.key), current: d.key === demo.day })) };
   }
   if (a.setup === "unconfigured") {
-    return { mode: "welcome", canAct, days: DEMO_DAYS.map((d, i) => ({ key: d.key, title: title(d.title), current: i === 0 })) };
+    // the app lists the days titled as the demo will show them (its own names), so the welcome and the banner agree;
+    // an older app doesn't, and the fixed list is filled from the names map it does publish
+    const offered = Array.isArray(a.demo_days) ? a.demo_days.filter((d) => d && d.key) : [];
+    const days = offered.length ? offered : DEMO_DAYS;
+    return { mode: "welcome", canAct, days: days.map((d, i) => ({ key: d.key, title: title(d.title || d.key), current: i === 0 })) };
   }
   return { mode: "hidden", canAct, days: [] };
 }
@@ -2647,7 +2666,9 @@ class PowerEngineHealthCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const f = a.findings || [];
     const admin = !!(this._hass.user && this._hass.user.is_admin);
     let body;
-    if (!st || !["ok", "warnings", "problems"].includes(st.state)) {
+    if (st && st.state === NOT_SET_UP) {
+      body = `<p><b>${NOT_SET_UP}.</b> Health checks start once PowerEngine is set up.</p>`;
+    } else if (!st || !["ok", "warnings", "problems"].includes(st.state)) {
       body = "<p>Health checks run after start-up and each night.</p>";
     } else if (!f.length) {
       body = "<p><b>All clear.</b> Inputs look healthy and yesterday's data adds up.</p>";
@@ -3382,5 +3403,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel };
+  module.exports = { asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel };
 }

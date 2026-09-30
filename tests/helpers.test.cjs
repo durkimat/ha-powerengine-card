@@ -722,6 +722,35 @@ test("welcome: unconfigured with no demo lists the four fixed days, first select
   assert.strictEqual(h.demoView({ setup: "unconfigured", names: { event: "Axle" } }, true).days[2].title, "Axle event day");
 });
 
+test("welcome: the days the app offers carry the demo's own names, the same words as the banner", () => {
+  const demoDays = [{ key: "sunny", title: "Sunny day" }, { key: "dull", title: "Dull day" },
+    { key: "axle", title: "Axle event day" }, { key: "car", title: "Car charging day" }];
+  // the unconfigured app's names map is neutral ("grid-services"); the days it lists are what the demo will call them
+  const v = h.demoView({ setup: "unconfigured", demo: null, names: { event: "grid-services" }, demo_days: demoDays }, true);
+  assert.deepStrictEqual(v.days.map((d) => d.title), ["Sunny day", "Dull day", "Axle event day", "Car charging day"]);
+  const banner = h.demoView({ setup: "configured", names: { event: "Axle" },
+    demo: { day: "axle", title: "<<event>> event day", days: [{ key: "axle", title: "<<event>> event day" }] } }, true);
+  assert.strictEqual(banner.title, v.days[2].title);
+  assert.strictEqual(h.demoView({ setup: "unconfigured", demo_days: [] }, true).days.length, 4);      // older app: fixed list
+});
+
+test("a true/false that arrived as text is a boolean again in the form and in what is saved", () => {
+  const saved = { features: { auto_cheap_threshold: "true", arbitrage: "false", axle: 1, fill_when_cheap: true },
+    system: { house_load_includes_ev: "true", battery_location: "garage" },
+    notifications: { service: "notify.me", events: { health: "true", daily: "false" } } };
+  const { draft } = h.initialDraft(saved, [], [], { safety: [], system: [] });
+  assert.strictEqual(draft.features.auto_cheap_threshold, true);
+  assert.strictEqual(draft.features.arbitrage, false);
+  assert.strictEqual(draft.features.axle, true);
+  assert.strictEqual(draft.system.house_load_includes_ev, true);
+  assert.strictEqual(draft.system.battery_location, "garage");
+  assert.strictEqual(draft.notifications.events.health, true);
+  assert.strictEqual(draft.notifications.events.daily, false);
+  const out = h.buildConfig(draft);
+  assert.ok(Object.values(out.features).every((v) => typeof v === "boolean"));
+  assert.strictEqual(h.asBool("maybe"), "maybe");
+});
+
 test("demo card is hidden when configured, or when the attributes are missing", () => {
   assert.strictEqual(h.demoView({ setup: "configured", demo: null }, true).mode, "hidden");
   assert.strictEqual(h.demoView({}, true).mode, "hidden");
