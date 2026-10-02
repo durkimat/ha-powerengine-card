@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.77";
+const CARD_VERSION = "0.9.82";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -1859,7 +1859,7 @@ class PowerEngineTestCard extends (typeof HTMLElement !== "undefined" ? HTMLElem
       : "Remote-control entities: " + need.map((r) => `${rc[r]} (${(states[rc[r]] || {}).state})`).join(", ");
     q(".start").disabled = running || !q(".confirm").checked || gone.length > 0;
     q(".stop").disabled = !running;
-    q(".msg").textContent = this._msg || versionWarnings(this._hass.states).join(" ");
+    q(".msg").textContent = this._msg || versionWarnings(states).join(" ");
   }
 }
 
