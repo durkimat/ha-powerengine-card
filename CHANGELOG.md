@@ -3,6 +3,10 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.82
+
+- The Tests page no longer shows "Configuration error". (It broke in 0.9.71.)
+
 ## 0.9.77
 
 - Configuration page: the new "Inverter max output" setting appears under Inverter control.
