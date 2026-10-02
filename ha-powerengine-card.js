@@ -265,7 +265,7 @@ const TOPICS = [
       "timed_charge_current", "timed_discharge_start_hour", "timed_discharge_start_minute", "timed_discharge_end_hour",
       "timed_discharge_end_minute", "timed_discharge_current", "timed_update_button", "storage_mode",
       "inverter_clock", "inverter_clock_sync", "guard_read_only", "guard_off_1", "guard_off_2"],
-    system: ["control_method"], settings: ["max_writes_per_day", "ram_refresh_min", "ram_switch_cost_p", "ram_max_power_w"] },
+    system: ["control_method"], settings: ["max_writes_per_day", "ram_refresh_min", "ram_switch_cost_p", "ram_max_power_w", "inverter_max_output_w"] },
   { key: "damping", title: "Dampening tuning",
     note: "Holding inverter writes back briefly when the settings are likely to change again, to save writes. Health tab, Inverter writes today, shows how many changes were held back.",
     features: ["damp_restart", "damp_bursts"],
