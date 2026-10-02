@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.75";
+const CARD_VERSION = "0.9.77";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -265,7 +265,7 @@ const TOPICS = [
       "timed_charge_current", "timed_discharge_start_hour", "timed_discharge_start_minute", "timed_discharge_end_hour",
       "timed_discharge_end_minute", "timed_discharge_current", "timed_update_button", "storage_mode",
       "inverter_clock", "inverter_clock_sync", "guard_read_only", "guard_off_1", "guard_off_2"],
-    system: ["control_method"], settings: ["max_writes_per_day", "ram_refresh_min", "ram_switch_cost_p", "ram_max_power_w"] },
+    system: ["control_method"], settings: ["max_writes_per_day", "ram_refresh_min", "ram_switch_cost_p", "ram_max_power_w", "inverter_max_output_w"] },
   { key: "damping", title: "Dampening tuning",
     note: "Holding inverter writes back briefly when the settings are likely to change again, to save writes. Health tab, Inverter writes today, shows how many changes were held back.",
     features: ["damp_restart", "damp_bursts"],
@@ -1893,7 +1893,12 @@ function versionLine(states) {
   });
   const rel = (states || {})["sensor.pe_diag_update"];
   const released = rel && rel.state === "available" ? (rel.attributes || {}).latest : null;
-  return { running, parts, released, notes: released ? (rel.attributes || {}).notes || "" : "" };
+  const entities = updateEntities(states);
+  const hacsOn = entities.some((id) => (states[id] || {}).state === "on");
+  // Nothing to install when HACS and the release check both say we're current. With no HACS entities at all we can't
+  // tell, so the button stays usable.
+  const known = hacsOn || !!released || !entities.length;
+  return { running, parts, released, known, notes: released ? (rel.attributes || {}).notes || "" : "" };
 }
 
 class PowerEngineUpdateCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
@@ -1917,6 +1922,32 @@ class PowerEngineUpdateCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
 
   getGridOptions() { return { columns: "full", rows: "auto" }; }
 
+  async _refresh() {
+    const hass = this._hass;
+    const repos = peRepos(await hass.callWS({ type: "hacs/repositories/list" }));
+    for (const r of repos) {
+      await hass.callWS({ type: "hacs/repository/refresh", repository: String(r.id) });
+    }
+    await new Promise((res) => setTimeout(res, 3000));      // let the update entities catch up
+  }
+
+  async _checkNow() {
+    const hass = this._hass;
+    if (!hass || this._busy || this._checkingNow) return;
+    this._checkingNow = true;
+    this._status("Asking HACS to check GitHub for new releases…");
+    try {
+      await this._refresh();
+      this._checkingNow = false;
+      const v = versionLine(this._hass.states);
+      this._status(v.known && v.parts.some((p) => p.includes("available")) || v.released
+        ? "A new version is available." : "You're up to date.");
+    } catch (err) {
+      this._checkingNow = false;
+      this._status("Couldn't check: " + ((err && err.message) || err));
+    }
+  }
+
   async _update() {
     const hass = this._hass;
     if (!hass || this._busy) return;
@@ -1926,11 +1957,7 @@ class PowerEngineUpdateCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     try {
       if (hass.user && hass.user.is_admin) {
         this._status("Asking HACS to check GitHub for new releases…");
-        const repos = peRepos(await hass.callWS({ type: "hacs/repositories/list" }));
-        for (const r of repos) {
-          await hass.callWS({ type: "hacs/repository/refresh", repository: String(r.id) });
-        }
-        await new Promise((res) => setTimeout(res, 3000));      // let the update entities catch up
+        await this._refresh();
       }
       if (!hass.states[UPDATE_SCRIPT]) {
         this._busy = false;
@@ -1976,10 +2003,12 @@ class PowerEngineUpdateCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
                    background: var(--primary-color); color: var(--text-primary-color, #fff); cursor: pointer; }
           button.second { background: none; color: var(--primary-text-color); }
           button:disabled { opacity: .5; cursor: default; }
+          button.go:disabled { background: none; color: var(--disabled-text-color, var(--secondary-text-color)); }
         </style>
         <ha-card>
           <div class="text"><div class="line"></div><div class="msg"></div></div>
           <button class="reload second">Reload page</button>
+          <button class="chk second">Check for updates</button>
           <button class="go">Update</button>
           <div class="notes"></div>
         </ha-card>`;
@@ -1987,10 +2016,11 @@ class PowerEngineUpdateCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
         if (confirm("Install the latest PowerEngine app and card, then restart AppDaemon? Control pauses for " +
             "about a minute while it restarts.")) this._update();
       });
+      this.shadowRoot.querySelector(".chk").addEventListener("click", () => this._checkNow());
       this.shadowRoot.querySelector(".reload").addEventListener("click", () => location.reload());
       this._built = true;
     }
-    const { running, parts, released, notes } = versionLine(this._hass.states);
+    const { running, parts, released, known, notes } = versionLine(this._hass.states);
     const q = (s) => this.shadowRoot.querySelector(s);
     q(".line").innerHTML = `<b>PowerEngine ${running}</b> running` + (parts.length
       ? " · " + parts.join(" · ") : " · HACS update entities not found")
@@ -2007,7 +2037,12 @@ class PowerEngineUpdateCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       }
     }
     q(".msg").textContent = this._msg || "";
-    q(".go").disabled = !!this._busy;
+    const admin = !!(this._hass.user && this._hass.user.is_admin);
+    q(".go").disabled = !!this._busy || !known;
+    q(".go").title = known ? "" : "No update is known. Press Check for updates.";
+    q(".chk").style.display = admin ? "" : "none";
+    q(".chk").disabled = !!this._busy || !!this._checkingNow;
+    q(".chk").textContent = this._checkingNow ? "Checking…" : "Check for updates";
     q(".go").textContent = this._busy ? "Updating…" : "Update";
     q(".reload").style.display = this._reload ? "" : "none";
   }
@@ -2021,7 +2056,7 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-up
 }
 
 // --- Setup checklist ---------------------------------------------------------------------------------------
-// Checks each prerequisite once (on load, on "Check again", and after an install) and installs what HACS can
+// Checks each prerequisite once (on load and after an install) and installs what HACS can
 // install with one button. Admins only: every HACS and Supervisor call below is admin-only on HA's side.
 //
 // Commands (verified against the sources, see the notes in tests/helpers.test.cjs):
@@ -2116,7 +2151,7 @@ function setupRows(facts) {
   if (f.hacs !== true || !cats) rows.push(unknownFor({ ...disc, status: "unknown", detail: "Check HACS first.", action: null }));
   else if (cats.includes("appdaemon")) rows.push(unknownFor({ ...disc, status: "ok", detail: "On.", action: null }));
   else rows.push(unknownFor({ ...disc, status: "missing",
-    detail: "Switch it on: Settings, Devices & services, HACS, Configure, then tick \"Enable AppDaemon apps discovery & tracking\" and submit. Then press Check again.",
+    detail: "Switch it on: Settings, Devices & services, HACS, Configure, then tick \"Enable AppDaemon apps discovery & tracking\" and submit. Then reload the page.",
     action: link(SETUP_LINKS.hacsOptions, "Open HACS") }));
 
   // 3. AppDaemon add-on
@@ -2320,10 +2355,6 @@ class PowerEngineSetupCard extends (typeof HTMLElement !== "undefined" ? HTMLEle
       tryIt.addEventListener("click", () => { if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" }); });
       head.append(tryIt);
     }
-    const again = mk("button", "second", this._checking ? "Checking…" : "Check again");
-    again.disabled = busy;
-    again.addEventListener("click", () => this._check());
-    if (facts.isAdmin) head.append(again);      // a non-admin's check would find nothing new
     if (sum.allSet && !this._open) return;
     const list = q(".list");
     rows.forEach((r) => {
