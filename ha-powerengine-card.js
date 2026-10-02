@@ -1859,7 +1859,7 @@ class PowerEngineTestCard extends (typeof HTMLElement !== "undefined" ? HTMLElem
       : "Remote-control entities: " + need.map((r) => `${rc[r]} (${(states[rc[r]] || {}).state})`).join(", ");
     q(".start").disabled = running || !q(".confirm").checked || gone.length > 0;
     q(".stop").disabled = !running;
-    q(".msg").textContent = this._msg || versionWarnings(this._hass.states).join(" ");
+    q(".msg").textContent = this._msg || versionWarnings(states).join(" ");
   }
 }
 
