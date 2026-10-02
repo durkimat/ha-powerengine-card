@@ -1,7 +1,9 @@
 # PowerEngine card: notes for Claude
 
 This is the Lovelace card for the PowerEngine app. **Read `../ha-powerengine-controller/CLAUDE.md` first**: it has
-the release routine, guardrails and current plan for both repos.
+the release routine, guardrails and current plan for both repos. It is `durkimat/ha-powerengine-controller`; clone it
+beside this repo (`../ha-powerengine-controller`). If it isn't there, say so and stop rather than guess. Releases run
+on the owner's machine, not in a cloud session.
 
 - One file: `ha-powerengine-card.js`. It holds several custom elements: config, toggle, handover, test,
   diagnostics, update, health, log and sim cards.
