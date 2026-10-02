@@ -2056,7 +2056,7 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-up
 }
 
 // --- Setup checklist ---------------------------------------------------------------------------------------
-// Checks each prerequisite once (on load, on "Check again", and after an install) and installs what HACS can
+// Checks each prerequisite once (on load and after an install) and installs what HACS can
 // install with one button. Admins only: every HACS and Supervisor call below is admin-only on HA's side.
 //
 // Commands (verified against the sources, see the notes in tests/helpers.test.cjs):
@@ -2151,7 +2151,7 @@ function setupRows(facts) {
   if (f.hacs !== true || !cats) rows.push(unknownFor({ ...disc, status: "unknown", detail: "Check HACS first.", action: null }));
   else if (cats.includes("appdaemon")) rows.push(unknownFor({ ...disc, status: "ok", detail: "On.", action: null }));
   else rows.push(unknownFor({ ...disc, status: "missing",
-    detail: "Switch it on: Settings, Devices & services, HACS, Configure, then tick \"Enable AppDaemon apps discovery & tracking\" and submit. Then press Check again.",
+    detail: "Switch it on: Settings, Devices & services, HACS, Configure, then tick \"Enable AppDaemon apps discovery & tracking\" and submit. Then reload the page.",
     action: link(SETUP_LINKS.hacsOptions, "Open HACS") }));
 
   // 3. AppDaemon add-on
@@ -2355,10 +2355,6 @@ class PowerEngineSetupCard extends (typeof HTMLElement !== "undefined" ? HTMLEle
       tryIt.addEventListener("click", () => { if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" }); });
       head.append(tryIt);
     }
-    const again = mk("button", "second", this._checking ? "Checking…" : "Check again");
-    again.disabled = busy;
-    again.addEventListener("click", () => this._check());
-    if (facts.isAdmin) head.append(again);      // a non-admin's check would find nothing new
     if (sum.allSet && !this._open) return;
     const list = q(".list");
     rows.forEach((r) => {
