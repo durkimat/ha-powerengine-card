@@ -840,7 +840,7 @@ test("detected firmware line, and site texts name no supplier", () => {
   assert.equal(h.siteOptionLabel({ name: "X", status: "community" }), "X (community)");
   assert.equal(h.siteOptionLabel({ name: "X", status: "verified" }), "X");
   [h.SITE_WARNING, h.SITE_RETEST, ...h.SITE_KINDS.map((k) => h.fillNames(k[1], { event: "Flux" }))].forEach((t) => assert.doesNotMatch(t, /EDF|Axle|Zappi|Solis|Solcast|Octopus/));
-  assert.equal(h.fillNames(h.SITE_KINDS.find((k) => k[0] === "events")[1], null), "grid-services events");
+  assert.equal(h.fillNames(h.SITE_KINDS.find((k) => k[0] === "events")[1], null), "Grid events");
 });
 
 test("the page reloads once after a demo start, day change or exit, and never on its own", () => {

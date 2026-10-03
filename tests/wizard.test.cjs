@@ -230,19 +230,97 @@ test("states longer than the limit are cut, and energy-looking devices are the o
   assert.ok(!names.includes("Kitchen"));
 });
 
-test("two options that find the same device give one candidate, and one 'found' line per integration", () => {
+test("two options that find the same device give one candidate, and each row says what it owns", () => {
   const h = hass();
   const octopus = { id: "octopus", integration: PARTS[1].options[0].integration, domains: ["octopus_energy"], entities: ["^sensor\\.octopus_energy_electricity_"] };
   const part = Object.assign({}, PARTS[1], { options: [Object.assign({ }, PARTS[1].options[0], { domains: ["edf_energy", "octopus_energy"] }), octopus] });
   const facts = m.wizardFacts(h);
-  const c = m.wizardCandidates(part, facts);
+  const nameOf = (id) => ({ edf: "EDF", octopus: "Octopus" }[id]);
+  const c = m.wizardCandidates(part, facts, nameOf);
   assert.equal(c.length, 1);
   assert.equal(c[0].option, "edf");                                    // its name patterns match the entity
-  assert.equal(m.wizardNeed(part, facts, null).rows.length, 1);
+  assert.match(c[0].label, /Electricity meter · EDF/);
+  const need = m.wizardNeed(part, facts, null, nameOf);
+  assert.deepEqual(need.rows.map((r) => [r.name, r.found]), [["EDF", true], ["Octopus", false]]);   // the Octopus integration is there but owns nothing
   // an Octopus home: the octopus option's names match, so it wins
   const o = hass();
   o.states["sensor.octopus_energy_electricity_99_current_rate"] = { state: "0.2", attributes: {} };
   o.entities["sensor.octopus_energy_electricity_99_current_rate"] = { device_id: "d_meter", platform: "octopus_energy" };
   delete o.states["sensor.edf_energy_electricity_1234567890_current_rate"]; delete o.entities["sensor.edf_energy_electricity_1234567890_current_rate"];
-  assert.equal(m.wizardCandidates(part, m.wizardFacts(o))[0].option, "octopus");
+  assert.equal(m.wizardCandidates(part, m.wizardFacts(o), nameOf)[0].option, "octopus");
+});
+
+test("with EDF and Octopus both set up, the one in the saved config is the one in use", () => {
+  const h = hass();
+  h.states["sensor.octopus_energy_electricity_99_current_rate"] = { state: "0.2", attributes: {} };
+  h.entities["sensor.octopus_energy_electricity_99_current_rate"] = { device_id: "d_octo", platform: "octopus_energy" };
+  h.devices.d_octo = { name: "Octopus meter", manufacturer: "Octopus Energy" };
+  const octopus = { id: "octopus", integration: PARTS[1].options[0].integration, domains: ["octopus_energy"], manufacturers: ["octopus"], entities: ["^sensor\\.octopus_energy_electricity_"] };
+  const part = Object.assign({}, PARTS[1], { options: [PARTS[1].options[0], octopus] });
+  const facts = m.wizardFacts(h);
+  const nameOf = (id) => ({ edf: "EDF", octopus: "Octopus" }[id]);
+  const cands = m.wizardCandidates(part, facts, nameOf);
+  assert.deepEqual(cands.map((c) => c.option).sort(), ["edf", "octopus"]);
+  const saved = { import_rate_now: { entity: "sensor.edf_energy_electricity_1234567890_current_rate" } };
+  const inUse = m.wizardInUse(part, cands, saved, { tariff: "auto" });
+  assert.equal(inUse.option, "edf");
+  assert.deepEqual(m.wizardAlso(part, cands, inUse).map((x) => x.label), ["Octopus meter · Octopus"]);
+  // no saved mapping: the site names the option (the tariff's "auto" and "none" name none)
+  assert.equal(m.wizardInUse(part, cands, {}, { tariff: "octopus" }).option, "octopus");
+  assert.equal(m.wizardInUse(part, cands, {}, { tariff: "auto" }), null);
+  assert.equal(m.wizardInUse(part, cands, {}, { tariff: "none" }), null);
+});
+
+test("another energy device (battery, power and energy sensors) that no adapter owns is reported; a phone is not", () => {
+  const h = hass();
+  const st = (state, attributes) => ({ state, attributes });
+  Object.assign(h.states, {
+    "sensor.fox_battery_soc": st("60", { unit_of_measurement: "%", device_class: "battery" }),
+    "sensor.fox_load_power": st("500", { unit_of_measurement: "W", device_class: "power" }),
+    "sensor.fox_total_yield": st("1200", { unit_of_measurement: "kWh", device_class: "energy" }),
+    "sensor.phone_battery": st("80", { unit_of_measurement: "%", device_class: "battery" }),
+  });
+  Object.assign(h.entities, {
+    "sensor.fox_battery_soc": { device_id: "d_fox", platform: "foxess" }, "sensor.fox_load_power": { device_id: "d_fox", platform: "foxess" },
+    "sensor.fox_total_yield": { device_id: "d_fox", platform: "foxess" }, "sensor.phone_battery": { device_id: "d_phone", platform: "mobile_app" },
+  });
+  h.devices.d_fox = { name: "Fox H1", manufacturer: "Fox ESS", model: "H1" };
+  h.devices.d_phone = { name: "Matthew's phone", manufacturer: "Apple" };
+  const others = m.wizardOthers(PARTS, m.wizardFacts(h), h.states);
+  assert.deepEqual(others.map((d) => d.name), ["Fox H1"]);       // the Solis device is owned by an option, the phone has no power
+});
+
+test("a solar-only inverter already set up as a plant is not 'also found'; an unconfigured one is offered as a solar plant", () => {
+  const h = hass();
+  const st = (state, attributes) => ({ state, attributes });
+  Object.assign(h.states, {
+    "sensor.fox_pv_power": st("900", { unit_of_measurement: "W", device_class: "power" }),
+    "sensor.fox_yield_today": st("4.2", { unit_of_measurement: "kWh", device_class: "energy" }),
+    "sensor.plug_power": st("60", { unit_of_measurement: "W", device_class: "power" }),
+    "sensor.plug_energy": st("3", { unit_of_measurement: "kWh", device_class: "energy" }),
+    "sensor.balcony_panels_power": st("200", { unit_of_measurement: "W", device_class: "power" }),
+    "sensor.balcony_panels_energy_today": st("1.1", { unit_of_measurement: "kWh", device_class: "energy" }),
+  });
+  Object.assign(h.entities, {
+    "sensor.fox_pv_power": { device_id: "d_fox", platform: "foxess" }, "sensor.fox_yield_today": { device_id: "d_fox", platform: "foxess" },
+    "sensor.plug_power": { device_id: "d_plug", platform: "shelly" }, "sensor.plug_energy": { device_id: "d_plug", platform: "shelly" },
+    "sensor.balcony_panels_power": { device_id: "d_bal", platform: "zendure" }, "sensor.balcony_panels_energy_today": { device_id: "d_bal", platform: "zendure" },
+  });
+  Object.assign(h.devices, { d_fox: { name: "Fox solar inverter", manufacturer: "Fox ESS" }, d_plug: { name: "Kettle plug", manufacturer: "Shelly" }, d_bal: { name: "Balcony panels", manufacturer: "Zendure" } });
+  const facts = m.wizardFacts(h);
+  const saved = { inputs: { battery_soc: { entity: "sensor.solis_battery_soc" } },
+    solar_plants: [{ id: "main", name: "Main", power: { entity: "sensor.solis_pv_total_power" }, energy_today: { entity: "sensor.solis_power_generation_today" } },
+      { id: "fox", name: "Fox", power: { entity: "sensor.fox_pv_power" }, energy_today: { entity: "sensor.fox_yield_today" } }] };
+  const used = m.wizardUsedEntities(saved);
+  assert.ok(used.has("sensor.fox_pv_power") && used.has("sensor.solis_battery_soc") && used.has("sensor.solis_pv_total_power"));
+  const others = m.wizardOthers(PARTS, facts, h.states, used);
+  assert.deepEqual(others.map((d) => [d.name, d.kind]), [["Balcony panels", "solar"]]);        // Fox is in use, the kettle plug is not solar
+  const plant = m.wizardPlantFromDevice(others[0], facts, h.states);
+  assert.equal(plant.power.entity, "sensor.balcony_panels_power");
+  assert.equal(plant.energy_today.entity, "sensor.balcony_panels_energy_today");
+  assert.deepEqual([plant.forecast, plant.enabled, plant.name], ["none", true, "Balcony panels"]);
+  assert.equal(m.wizardPlantId("Balcony panels", ["main", "balcony_panels"]), "balcony_panels_2");
+  assert.equal(m.wizardDeviceName({ name: "Fox H1", manufacturer: "Fox ESS", model: "H1" }), "Fox H1 (Fox ESS H1)");
+  // without the plant in the config, the Fox inverter is offered
+  assert.deepEqual(m.wizardOthers(PARTS, facts, h.states, new Set()).map((d) => d.name).sort(), ["Balcony panels", "Fox solar inverter"]);
 });

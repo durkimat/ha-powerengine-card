@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.88";
+const CARD_VERSION = "0.9.89";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -81,8 +81,8 @@ const FEATURES = [
     "Check your export tariff terms first: some only pay for exported solar, not energy bought from the grid."],
   ["deep_overnight", "Deeper selling overnight", "Inside the fixed overnight window, where the cheap refill is guaranteed, arbitrage may sell below the band's bottom (down to the reserve plus 10%): one deeper sale and one refill instead of many shallow cycles, for the same money. Off: the band's bottom holds overnight too."],
   ["use_check_meter", "Use the check meter", "When a check meter is set and reporting, use it for grid power instead of the inverter's meter, and correct the inverter's house load by the difference (also in the learned usage history). If it stops reporting for 3 minutes, the inverter's meter is used again. Off: the check meter is only compared."],
-  ["axle", "<<event>> VPP events", "Force-discharge during <<event>> events and hold charge beforehand."],
-  ["axle_plus_export", "<<event>> also earns the export rate", "Your supplier pays its normal export rate on <<event>> exports as well as <<event>>'s £1/kWh (<<supplier>>: £1 + 15p). Planning and the event figures count both. Off: <<event>>'s £1 only."],
+  ["axle", "Take part in grid events", "Force-discharge during grid events (run by <<event>>) and hold charge beforehand, so the battery is full when one starts."],
+  ["axle_plus_export", "Grid events also earn the export rate", "Your supplier pays its normal export rate on grid-event exports as well as the event payment (<<event>>: £1/kWh; <<supplier>>: £1 + 15p). Planning and the event figures count both. Off: the event payment only."],
   ["free_power_days", "Free-power sessions", "Make full use of <<supplier>> free-electricity sessions."],
   ["optimised_plan", "Optimised planning", "The optimiser chooses each half-hour's action for the lowest cost (arbitrage band and safety rules included), with plain-English reasons. Off: the simpler rule-based planner."],
   ["learn_taper", "Learn: charge and discharge slow-down", "Plan with how much charging slows from 90% and 95%, and how much discharging slows below 40%, 30% and 20%, as seen: the overnight charge starts early enough to finish, and deep sales are planned at the speed they really run. Health tab, Learned from use, shows each learned figure and how many half-hours it's based on."],
@@ -92,14 +92,14 @@ const FEATURES = [
   ["learn_car", "Learn: car charge rate", "Plan the car's share of smart-charge slots with its real charging kW instead of Car charger power."],
   ["cold_caution", "Cold battery caution", "Plan a slower charge when the battery is likely to be cold, estimated from the outside temperature (Open-Meteo forecast for your home's location) with a lag, so a cold spell is expected to chill it gradually and it stays cautious until the weather has been milder for a while. Settings under Cold battery."],
   ["cold_learning", "Learn cold behaviour", "Adjust the cold threshold and rate from what's seen: charging slowed at 5°C raises the threshold; charging normally at 3°C lowers it to 3°C."],
-  ["damp_restart", "Restart hold-off", "After PowerEngine starts, or control resumes or goes live, write nothing for a few minutes (Restart hold-off setting) while the plan and its inputs settle. The inverter keeps running the windows already set. Safety changes (<<event>>, free power, the car charging, the reserve) never wait."],
+  ["damp_restart", "Restart hold-off", "After PowerEngine starts, or control resumes or goes live, write nothing for a few minutes (Restart hold-off setting) while the plan and its inputs settle. The inverter keeps running the windows already set. Safety changes (grid events, free power, the car charging, the reserve) never wait."],
   ["damp_bursts", "Burst damping", "The first change to a window slot, current or the mode goes straight through; another change to the same thing within the Burst window waits until the plan has been steady for the Burst settle time, so several quick changes become one write. Off by default while its effect is evaluated. Safety changes never wait."],
   ["tariff_simulator", "Tariff simulator", "Each night at 01:30, compare your recorded days on current Octopus and EDF tariffs (fetched from their public tariff lists) and notify you if one would save noticeably. Reads only; changes nothing."],
 ];
 const NOTIFY_EVENTS = [
   ["health", "Health problems", "When the Health tab finds a problem (checked after start-up and each night).", true],
   ["inputs", "Inputs not working", "When a required input has been unavailable or stale for 15 minutes.", true],
-  ["axle", "<<event>> events", "When an <<event>> event is scheduled, with its time.", true],
+  ["axle", "Grid events", "When a grid event (<<event>>) is scheduled, with its time.", true],
   ["free_power", "Free-power sessions", "When a free-electricity session is announced.", true],
   ["daily", "Daily summary", "Each morning at 08:00: yesterday's cost and savings.", false],
   ["simulator", "Tariff opportunities", "When the overnight Simulator finds a tariff that would have cost noticeably less (at least £5 and 5% a month), or new tariffs appear.", true],
@@ -250,7 +250,7 @@ const TOPICS = [
     settings: ["export_limit_kw", "battery_wear_p", "arbitrage_min_margin_p", "arbitrage_min_soc", "arbitrage_max_soc",
       "arbitrage_band_penalty_p", "overnight_switch_cost_p"],
     roles: ["inverter_export_limit"], learning: ["learn_export"] },
-  { key: "axle", title: "<<event>> events", main: "axle", features: ["axle", "axle_plus_export"],
+  { key: "axle", title: "Grid events", main: "axle", features: ["axle", "axle_plus_export"],
     roles: ["axle_event_active", "axle_event_start", "axle_event_end", "axle_direction"],
     settings: ["pre_axle_lookahead_h", "axle_margin_soc"] },
   { key: "free", title: "Free-power sessions", main: "free_power_days", features: ["free_power_days"],
@@ -473,8 +473,8 @@ function buildConfig(draft) {
  * The app publishes sensor.pe_diag_version attributes site, site_options, firmware_detected and retest_required.
  * Option names are data from site_options; labels here are neutral words or <<term>> placeholders. */
 const SITE_KINDS = [
-  ["inverter", "Inverter"], ["inverter_firmware", "Firmware"], ["ev_charger", "EV charger"], ["car", "Car"],
-  ["tariff", "Tariff"], ["forecast", "Forecast"], ["events", "<<event>> events"],
+  ["inverter", "Inverter"], ["inverter_firmware", "Firmware"], ["ev_charger", "Car charger"], ["car", "Car"],
+  ["tariff", "Electricity tariff"], ["forecast", "Solar forecast"], ["events", "Grid events"],
 ];
 const SITE_WARNING = "Changing the inverter switches PowerEngine to Passive. Run the supervised tests on the Tests page before going Active again.";
 const SITE_RETEST = "Inverter changed: run the supervised tests on the Tests page before going Active.";
@@ -602,6 +602,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     this._readOnly = !(this._hass.user && this._hass.user.is_admin);
     const { draft, fresh } = initialDraft(this._saved, this._catalogue.roles, Object.keys(s).sort(), this._settings);
     this._site = siteInfo(ver.attributes);
+    this._wizard = wizardInfo(ver.attributes);
     this._siteSaved = this._site ? siteFromSelection(this._site.site) : null;
     if (this._site) draft.site = Object.assign({}, this._siteSaved); else delete draft.site;
     this._draft = draft;
@@ -705,6 +706,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       details.section.off .row:not(.feature) { opacity: .55; }
       .yoursystem { border: 1px solid var(--divider-color); border-radius: 8px; padding: 4px 12px 10px; margin: 8px 0; }
       .yoursystem h3 { margin: 8px 0 4px; }
+      .yoursystem .alsolist { margin: 2px 0; padding-left: 20px; }
       .sysgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 4px 16px; }
       .sysgrid .field { padding: 6px 0; }
       .sysgrid select { width: 100%; box-sizing: border-box; min-height: 40px; }
@@ -1225,6 +1227,22 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     if (this._resetBtn) this._resetBtn.disabled = this._readOnly || !dirty || this._saving;
   }
 
+  /** Devices Home Assistant has for each part that PowerEngine isn't using: [{title, labels}]. */
+  _alsoFound() {
+    const w = this._wizard;
+    if (!w || !this._hass) return [];
+    const facts = wizardFacts(this._hass);
+    const out = [];
+    w.parts.forEach((p) => {
+      const nameOf = (id) => { const r = siteRow(this._site.options, p.part, id); return r ? r.name : id; };
+      const cands = wizardCandidates(p, facts, nameOf);
+      const labels = wizardAlso(p, cands, wizardInUse(p, cands, this._saved.inputs, this._siteSaved)).map((x) => x.label);
+      if (p.part === "inverter") wizardOthers(w.parts, facts, this._hass.states, wizardUsedEntities(this._saved)).forEach((d) => labels.push(`${wizardDeviceName(d)}, ${d.kind === "solar" ? "could be added as a solar plant in the Setup wizard" : "not supported yet"}`));
+      if (labels.length) out.push({ title: p.title, labels });
+    });
+    return out;
+  }
+
   _siteWarns() { return !!this._site && siteNeedsWarning(this._site.options, this._siteSaved, this._draft.site); }
 
   /** The "Your system" block: hidden when the app doesn't publish site_options. Redrawn on each change. */
@@ -1263,6 +1281,14 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       grid.append(field);
     });
     kids.push(grid);
+    const plants = ((this._saved || {}).solar_plants || []).filter((pl) => pl.enabled !== false);
+    if (plants.length) kids.push(el("div", { class: "muted" }, `Solar plants counted: ${plants.map((pl) => pl.name || pl.id).join(", ")}. Each is read only; the inverter selected above is the one PowerEngine controls.`));
+    const also = this._alsoFound();
+    if (also.length) {
+      kids.push(el("div", { class: "muted" }, "Also found in Home Assistant, not used by PowerEngine:"),
+        el("ul", { class: "alsolist" }, also.map((x) => el("li", {}, `${x.title}: ${x.labels.join("; ")}`))),
+        el("div", { class: "muted" }, "PowerEngine uses one device of each kind for now. To switch to another, or to send an unsupported device's entity list, open the Setup wizard."));
+    }
     if (this._siteWarns()) kids.push(el("div", { class: "warning" }, `⚠ ${SITE_WARNING}`));
     box.replaceChildren(...kids);
   }
@@ -2209,7 +2235,6 @@ class PowerEngineSetupCard extends (typeof HTMLElement !== "undefined" ? HTMLEle
     this._config = config || {};
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     this._notes = this._notes || {};
-    this._open = this._open || false;
   }
 
   set hass(hass) {
@@ -2303,12 +2328,15 @@ class PowerEngineSetupCard extends (typeof HTMLElement !== "undefined" ? HTMLEle
   _render() {
     if (!this.shadowRoot || !this._hass) return;
     const facts = this._facts();
-    const sig = JSON.stringify([facts, this._busy, this._checking, this._notes, this._open, this._progressNote]);
+    const sig = JSON.stringify([facts, this._busy, this._checking, this._notes, this._progressNote]);
     if (sig === this._sig) return;      // hass updates come often; only redraw when something we show changed
     this._sig = sig;
     const rows = setupRows(facts);
     const sum = setupSummary(facts);
     const root = this.shadowRoot;
+    // all set: nothing to do here, so the card takes no room (the update card shows the version)
+    this.style.display = sum.allSet && !this._busy && !this._checking ? "none" : "";
+    if (this.style.display === "none") { root.innerHTML = ""; return; }
     root.innerHTML = `
       <style>
         ha-card { padding: 12px 16px; display: block; }
@@ -2339,12 +2367,7 @@ class PowerEngineSetupCard extends (typeof HTMLElement !== "undefined" ? HTMLEle
     const mk = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
     const busy = !!this._busy || this._checking;
     const sub = q(".sub");
-    if (sum.allSet) {
-      sub.textContent = sum.line;
-      const t = mk("button", "second", this._open ? "Hide details" : "Show details");
-      t.addEventListener("click", () => { this._open = !this._open; this._render(); });
-      head.append(t);
-    } else if (!facts.isAdmin) {
+    if (!facts.isAdmin) {
       sub.textContent = "You're not an admin. An admin needs to run the installs; you can see what's missing here.";
     } else {
       sub.textContent = sum.todo ? `${sum.todo} thing${sum.todo === 1 ? "" : "s"} still to do.` : "";
@@ -2355,7 +2378,6 @@ class PowerEngineSetupCard extends (typeof HTMLElement !== "undefined" ? HTMLEle
       tryIt.addEventListener("click", () => { if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" }); });
       head.append(tryIt);
     }
-    if (sum.allSet && !this._open) return;
     const list = q(".list");
     rows.forEach((r) => {
       const row = mk("div", `row ${r.status}${r.needed ? "" : " optional"}`);
@@ -3562,12 +3584,12 @@ function wizardMatch(option, facts) {
 
 /** The things the user can pick for a part: each matching device, and the entities found by name. Two options that
  *  find the same device (the Octopus Energy integration serves EDF and Octopus alike) give one candidate: the option
- *  whose entity-name patterns match it, else the first. */
-function wizardCandidates(part, facts) {
+ *  whose entity-name patterns match it, else the first. `nameOf(optionId)` is the adapter's display name ("EDF"). */
+function wizardCandidates(part, facts, nameOf) {
   const found = [];
   (part.options || []).forEach((o) => {
     const m = wizardMatch(o, facts);
-    const name = (o.integration && o.integration.name) || o.id;
+    const name = (nameOf && nameOf(o.id)) || (o.integration && o.integration.name) || o.id;
     const pats = wizardRegex(o.entities, "");
     const named = (ids) => ids.some((id) => pats.some((r) => r.test(id)));
     m.devices.forEach((d) => found.push({ ident: d.id, option: o.id, named: named(d.entities), device: d, entityIds: d.entities,
@@ -3586,26 +3608,90 @@ function wizardCandidates(part, facts) {
   return out.map((c) => Object.assign({ key: `${c.option}:${c.device ? c.device.id : "names"}` }, c));
 }
 
-/** How a part stands for the "What you'll need" list: found (with what), installed in HACS but not added to Home
- *  Assistant yet, or missing. `hacsRepos` is HACS's list (or null: not asked / not available). */
-function wizardNeed(part, facts, hacsRepos) {
-  const all = (part.options || []).map((o) => {
+/** Which candidate PowerEngine already uses for a part: the one holding an entity mapped in the saved config, else
+ *  the one the saved site names (the tariff's "auto" and "none" name none). null when nothing is set up. */
+function wizardInUse(part, cands, savedInputs, savedSite) {
+  const mapped = new Set();
+  (part.roles || []).forEach((k) => { const sp = (savedInputs || {})[k]; if (sp && sp.entity) mapped.add(sp.entity); });
+  const byEntity = cands.find((c) => c.entityIds.some((id) => mapped.has(id)));
+  if (byEntity) return byEntity;
+  const named = savedSite && savedSite[part.part];
+  return named && named !== "none" && named !== "auto" ? cands.find((c) => c.option === named) || null : null;
+}
+
+/** Every entity a config already uses: mapped inputs and the solar plants' power and energy. */
+function wizardUsedEntities(cfg) {
+  const used = new Set();
+  Object.values((cfg || {}).inputs || {}).forEach((sp) => { if (sp && sp.entity) used.add(sp.entity); });
+  ((cfg || {}).solar_plants || []).forEach((pl) => ["power", "energy_today"].forEach((k) => { if (pl && pl[k] && pl[k].entity) used.add(pl[k].entity); }));
+  return used;
+}
+
+/** Energy equipment in Home Assistant that no adapter owns and the config doesn't use yet: a device with a power and an
+ *  energy sensor that looks like an inverter, as {..device, kind: "battery" | "solar"}. "battery" has a battery
+ *  percentage too (a hybrid inverter PowerEngine can't use yet); "solar" is named like a solar source (a solar-only
+ *  inverter or plug-in panels: it can be added as a solar plant). A phone, a smart plug or a heat pump is neither. */
+function wizardOthers(parts, facts, states, used) {
+  const owned = new Set();
+  parts.forEach((p) => wizardCandidates(p, facts).forEach((c) => { if (c.device) owned.add(c.device.id); }));
+  const attr = (id) => ((states || {})[id] || {}).attributes || {};
+  const solarName = /pv|solar|inverter|generation|yield|micro|balcony/i;
+  const out = [];
+  Object.values(facts.devices).forEach((d) => {
+    if (owned.has(d.id) || d.entities.some((id) => used && used.has(id))) return;
+    const power = d.entities.some((id) => ["W", "kW"].includes(attr(id).unit_of_measurement));
+    const energy = d.entities.some((id) => ["kWh", "Wh"].includes(attr(id).unit_of_measurement));
+    if (!power || !energy) return;
+    const battery = d.entities.some((id) => id.startsWith("sensor.") && attr(id).device_class === "battery" && attr(id).unit_of_measurement === "%");
+    if (battery) out.push(Object.assign({ kind: "battery" }, d));
+    else if (solarName.test(`${d.name} ${d.model} ${d.entities.join(" ")}`)) out.push(Object.assign({ kind: "solar" }, d));
+  });
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** "Fox H1 (Fox ESS H1)": a device's name with its make and model. */
+function wizardDeviceName(d) { return `${d.name}${d.manufacturer ? ` (${d.manufacturer}${d.model ? ` ${d.model}` : ""})` : ""}`; }
+
+/** A solar plant for a device: its power and today's-energy entities guessed by name and unit (empty when unsure). */
+function wizardPlantFromDevice(device, facts, states) {
+  const cand = { entityIds: device.entities };
+  const attr = (id) => ((states || {})[id] || {}).attributes || {};
+  let power = wizardPlantGuess("power", cand, facts, states).entity;
+  if (!power) {                                          // a single power sensor on the device is the one
+    const only = device.entities.filter((id) => id.startsWith("sensor.") && ["W", "kW"].includes(attr(id).unit_of_measurement));
+    if (only.length === 1) power = only[0];
+  }
+  let energy = wizardPlantGuess("energy_today", cand, facts, states).entity;
+  if (!energy) {                                         // else the one energy sensor that resets daily
+    const today = device.entities.filter((id) => id.startsWith("sensor.") && ["kWh", "Wh"].includes(attr(id).unit_of_measurement) && /today|daily/i.test(id));
+    if (today.length === 1) energy = today[0];
+  }
+  return { id: "", name: device.name, forecast: "none", enabled: true, power: power ? { entity: power } : {}, energy_today: energy ? { entity: energy } : {} };
+}
+
+/** A plant id not in `taken` (letters, digits, underscore: the app's rule). */
+function wizardPlantId(name, taken) { return slugify(name, taken); }
+
+/** "Also found" for a part: candidates PowerEngine isn't using, as [{label}] (the in-use one is left out). */
+function wizardAlso(part, cands, inUse) {
+  return cands.filter((c) => !inUse || c.key !== inUse.key).map((c) => ({ key: c.key, label: c.label }));
+}
+
+/** How a part stands for the "What you'll need" list: one row per adapter, found (it owns a device or entities),
+ *  installed in HACS but not added yet, or missing. `hacsRepos` is HACS's list (or null: not asked / not available). */
+function wizardNeed(part, facts, hacsRepos, nameOf) {
+  const cands = wizardCandidates(part, facts, nameOf);
+  const rows = (part.options || []).map((o) => {
     const m = wizardMatch(o, facts);
     const url = (o.integration || {}).url || "";
     const m2 = /github\.com\/([^/]+\/[^/]+)/.exec(url);
     const repo = m2 && hacsRepos ? findHacsRepo(hacsRepos, m2[1]) : null;
-    return { id: o.id, name: (o.integration || {}).name || o.id, url, found: m.found, count: m.devices.length + m.entities.length,
-      inHacs: !!(repo && repo.installed) };
+    const own = cands.filter((c) => c.option === o.id);
+    return { id: o.id, name: (nameOf && nameOf(o.id)) || o.id, integration: (o.integration || {}).name || o.id, url,
+      found: own.length > 0 || (!cands.length && m.found), count: own.length, inHacs: !!(repo && repo.installed) };
   });
-  const rows = [];                                                    // one line per integration name (EDF and Octopus share one)
-  all.forEach((r) => {
-    const same = rows.find((x) => x.name === r.name);
-    if (!same) rows.push(r);
-    else { same.found = same.found || r.found; same.inHacs = same.inHacs || r.inHacs; same.count += r.count; }
-  });
-  const found = rows.filter((r) => r.found);
-  const status = found.length ? "found" : rows.some((r) => r.inHacs) ? "installed" : "missing";
-  return { part: part.part, title: part.title, why: part.why, required: !!part.required, status, rows };
+  const status = rows.some((r) => r.found) ? "found" : rows.some((r) => r.inHacs) ? "installed" : "missing";
+  return { part: part.part, title: part.title, why: part.why, required: !!part.required, status, rows, candidates: cands };
 }
 
 /** The role keys of a part the wizard shows, split into the ones that matter now and the rest, from the catalogue. */
@@ -3798,8 +3884,9 @@ class PowerEngineWizardCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     this._site0 = siteFromSelection(this._info.site);
     this._auto = {};
     const facts = wizardFacts(this._hass);
-    const needs = this._info.parts.map((p) => wizardNeed(p, facts, null));
-    this._st = { step: 0, skip: {}, change: {}, pick: {}, showAll: {}, says: {}, note: "", open: {} };
+    const needs = this._info.parts.map((p) => wizardNeed(p, facts, null, this._nameOf(p.part)));
+    // a system that is already set up starts with the wizard folded away; a new one starts with it open
+    this._st = { step: 0, skip: {}, change: {}, pick: {}, showAll: {}, says: {}, note: "", open: {}, wizOpen: !this._configured };
     this._info.parts.forEach((p) => {
       const n = needs.find((x) => x.part === p.part);
       this._st.skip[p.part] = this._configured ? this._site0[p.part] === "none" : (!p.required && n.status !== "found");
@@ -3834,10 +3921,16 @@ class PowerEngineWizardCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
 
   // ---- state helpers
   _facts() { return wizardFacts(this._hass); }
+  /** An adapter's display name ("EDF") for a part, from the app's site_options. */
+  _nameOf(part) { return (id) => { const r = siteRow(this._info.options, part, id); return r ? r.name : id; }; }
+  /** Entities the config (with the wizard's changes so far) already uses. */
+  _used() { return wizardUsedEntities(this._draft); }
+  /** The candidate PowerEngine already uses for a part (saved config), or null. */
+  _inUse(part) { return wizardInUse(part, this._cands(part), this._saved.inputs, this._site0); }
   _parts() { return this._info.parts; }
   _active() { return this._parts().filter((p) => !this._st.skip[p.part] && (this._st.change[p.part] || !this._configured)).map((p) => p.part); }
   _part(k) { return this._parts().find((p) => p.part === k); }
-  _cands(part) { return wizardCandidates(part, this._facts()); }
+  _cands(part) { return wizardCandidates(part, this._facts(), this._nameOf(part.part)); }
   _cand(part) {
     const pk = this._st.pick[part.part];
     return pk && pk.cand ? this._cands(part).find((c) => c.key === pk.cand) || null : null;
@@ -3846,12 +3939,11 @@ class PowerEngineWizardCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     this._st.skip, this._site0, this._firmware); }
   _optionRow(part, id) { return siteRow(this._info.options, part, id); }
 
-  /** The first time a part is shown: pick the only (or first) candidate, and when it has the saved option, that one. */
+  /** The first time a part is shown: what PowerEngine already uses, else the first candidate found. */
   _autoPick(part) {
     if (this._st.pick[part.part]) return;
     const cands = this._cands(part);
-    const saved = this._site0[part.part];
-    const c = cands.find((x) => x.option === saved) || cands[0];
+    const c = this._inUse(part) || cands[0];
     if (c) this._st.pick[part.part] = { cand: c.key, option: c.option };
   }
 
@@ -3921,6 +4013,10 @@ class PowerEngineWizardCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       button.link { background: none; border: none; color: var(--primary-color); padding: 0; min-height: 0; text-decoration: underline; }
       a { color: var(--primary-color); }
       details { margin: 6px 0; } summary { cursor: pointer; }
+      details.wizwrap { margin: 0; padding: 12px 16px; }
+      details.wizwrap > summary { font-size: 1.1em; padding: 4px 0; }
+      details.wizwrap > summary .title { font-weight: 600; }
+      details.wizwrap > .content { padding: 8px 0 0; }
       textarea { width: 100%; box-sizing: border-box; }
       ul { margin: 4px 0; padding-left: 20px; }
     `);
@@ -3939,7 +4035,13 @@ class PowerEngineWizardCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     this._next = next;
     const nav = el("div", { class: "nav" },
       el("button", { onclick: () => this._go(st.step - 1), disabled: st.step === 0 }, "Back"), next);
-    root.replaceChildren(this._style(), el("ha-card", { header: "PowerEngine setup wizard" }, el("div", { class: "content" }, bar, body, nav)));
+    const inner = el("div", { class: "content" }, bar, body, nav);
+    // already set up: the wizard is folded away until it is wanted
+    const wrap = el("details", { class: "wizwrap" }, el("summary", {}, el("span", { class: "title" }, "Setup wizard"),
+      el("span", { class: "muted" }, this._configured ? "  PowerEngine is set up. Open this to change a device or add a part." : "  Gets PowerEngine to a working Passive install.")), inner);
+    wrap.open = !!st.wizOpen;
+    wrap.addEventListener("toggle", () => { st.wizOpen = wrap.open; });
+    root.replaceChildren(this._style(), el("ha-card", {}, wrap));
     this._tick();
   }
 
@@ -3971,10 +4073,23 @@ class PowerEngineWizardCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     }
     if (step === 2) {
       const miss = wizardMissing(this._eff(), this._parts(), this._roles, this._active());
+      const bad = this._planGaps();
+      if (bad) return bad;
       if (miss.length) return `${miss.length} required input${miss.length === 1 ? " is" : "s are"} still empty: ${miss.slice(0, 4).map((m) => m.role.label).join(", ")}${miss.length > 4 ? " and more" : ""}.`;
     }
     return "";
   }
+
+  /** Extra solar plants (after the main one) that have only one of power and today's energy, in words, or "". */
+  _planGaps() {
+    if (!this._plantsShown()) return "";
+    const gap = (this._draft.solar_plants || []).slice(1).find((pl) => pl.enabled !== false && !(pl.power && pl.power.entity) !== !(pl.energy_today && pl.energy_today.entity));
+    const none = (this._draft.solar_plants || []).slice(1).find((pl) => pl.enabled !== false && !(pl.power && pl.power.entity) && !(pl.energy_today && pl.energy_today.entity));
+    const bad = gap || none;
+    return bad ? `Solar plant "${bad.name || bad.id}" needs both its power and its energy today, or remove it.` : "";
+  }
+
+  _plantsShown() { return this._active().includes("inverter") || !!this._st.change.plants; }
 
   _notes() { return this._notice ? el("div", { class: "banner warn" }, this._notice) : null; }
 
@@ -3989,23 +4104,46 @@ class PowerEngineWizardCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       : "This wizard gets PowerEngine to a working Passive install: it watches and plans, and never controls your inverter until you say so. First, what each part needs. Parts marked required must already be set up in Home Assistant; the others can be skipped."));
     kids.push(el("h3", {}, "What you'll need to hand"), el("ul", {}, WIZARD_HAVE_TO_HAND.map((t) => el("li", {}, t))));
     kids.push(el("h3", {}, "Parts of your home"));
+    const others = wizardOthers(this._parts(), facts, this._hass.states, this._used());
     this._parts().forEach((p) => {
-      const n = wizardNeed(p, facts, this._hacs || null);
+      const n = wizardNeed(p, facts, this._hacs || null, this._nameOf(p.part));
       const skipped = !!st.skip[p.part];
+      const inUse = this._configured ? this._inUse(p) : null;
       const status = n.status === "found" ? el("span", { class: "badge ok" }, "✓ found in Home Assistant")
         : n.status === "installed" ? el("span", { class: "badge warn" }, "installed in HACS, not added yet") : el("span", { class: "badge warn" }, "not found");
       const box = el("div", { class: `part${skipped ? " skipped" : ""}` });
       box.append(el("div", { class: "head" }, el("span", { class: "label" }, p.title),
         el("span", { class: `badge ${p.required ? "req" : ""}` }, p.required ? "Required" : "Optional"), skipped ? null : status));
       box.append(el("div", { class: "muted" }, p.why));
+      if (this._configured) {
+        const now = this._site0[p.part] === "none" ? "left out of your setup"
+          : inUse ? `${this._nameOf(p.part)(inUse.option)}${inUse.device ? ` on ${inUse.device.name}` : ""}` : (this._nameOf(p.part)(this._site0[p.part]) || "set up");
+        box.append(el("div", {}, "In use now: ", el("strong", {}, now)));
+      }
+      const foundRows = n.rows.filter((r) => r.found);
       if (!skipped && n.status !== "found") {
-        const how = n.rows.map((r) => (r.url ? el("a", { href: r.url, target: "_blank", rel: "noopener" }, r.name) : r.name));
+        const seen = new Set();
+        const how = n.rows.filter((r) => !seen.has(r.integration) && seen.add(r.integration))
+          .map((r) => (r.url ? el("a", { href: r.url, target: "_blank", rel: "noopener" }, r.integration) : r.integration));
         const line = el("div", { class: "muted" }, n.status === "installed"
           ? "Add it under Settings, Devices & services, Add integration: " : "Install and set up one of these in Home Assistant, then press Check again: ");
         how.forEach((h, i) => { if (i) line.append(", "); line.append(h); });
         box.append(line);
       } else if (!skipped) {
-        box.append(el("div", { class: "muted" }, `Found: ${n.rows.filter((r) => r.found).map((r) => r.name).join(", ")}`));
+        const also = wizardAlso(p, n.candidates, inUse);
+        if (inUse) {
+          if (also.length) box.append(el("div", { class: "muted" }, `Also found, not used by PowerEngine: ${also.map((x) => x.label).join("; ")}.`));
+        } else {
+          box.append(el("div", { class: "muted" }, `Found: ${foundRows.map((r) => r.name).join(", ")}${n.candidates.length > 1 ? `. ${n.candidates.length} devices found: you'll choose in the next step.` : ""}`));
+        }
+      }
+      const batteryOthers = others.filter((d) => d.kind === "battery"), solarOthers = others.filter((d) => d.kind === "solar");
+      if (p.part === "inverter" && !skipped && batteryOthers.length) {
+        box.append(el("div", { class: "muted" }, `Also found, not supported yet: ${batteryOthers.map(wizardDeviceName).join("; ")}. `
+          + "PowerEngine plans and controls one inverter with its battery for now, so this is not used. You can send its entity list in the next step so support can be added."));
+      }
+      if (p.part === "inverter" && !skipped && solarOthers.length) {
+        box.append(el("div", { class: "muted" }, `Possible solar sources not counted yet: ${solarOthers.map(wizardDeviceName).join("; ")}. Add them under Solar plants below.`));
       }
       const ctl = el("div", { class: "ctl" });
       if (!p.required) {
@@ -4021,6 +4159,17 @@ class PowerEngineWizardCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       if (ctl.children.length) box.append(ctl);
       kids.push(box);
     });
+    const plants = (this._draft.solar_plants || []).filter((pl) => pl.enabled !== false);
+    const pbox = el("div", { class: "part" }, el("div", { class: "head" }, el("span", { class: "label" }, "Solar plants"), el("span", { class: "badge" }, "Optional")),
+      el("div", { class: "muted" }, "Every source of solar power PowerEngine counts in total solar: the main plant on your hybrid inverter, plus any solar-only inverter or plug-in panels. They are read only."));
+    if (plants.length) pbox.append(el("div", {}, "Counted now: ", el("strong", {}, plants.map((pl) => pl.name || pl.id).join(", "))));
+    else pbox.append(el("div", { class: "muted" }, "None set up yet."));
+    if (this._configured) {
+      const cb = el("input", { type: "checkbox", onchange: (ev) => { st.change.plants = ev.target.checked; this._render(); } });
+      cb.checked = !!st.change.plants;
+      pbox.append(el("div", { class: "ctl" }, el("label", {}, cb, " Change solar plants")));
+    } else pbox.append(el("div", { class: "muted" }, "You can add more in step 3, under the inverter's inputs."));
+    kids.push(pbox);
     kids.push(el("div", { class: "ctl" }, el("button", { onclick: () => { this._hacs = null; this._loadHacs(); this._render(); } }, "Check again"),
       el("span", { class: "muted" }, "Looks at Home Assistant's devices and entities; nothing is changed.")));
     kids.push(this._notes());
@@ -4033,7 +4182,7 @@ class PowerEngineWizardCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const facts = this._facts();
     const kids = [el("p", {}, "Pick the device for each part. Only that device's entities are used in the next step.")];
     const parts = this._parts().filter((p) => this._active().includes(p.part));
-    if (!parts.length) kids.push(el("div", { class: "banner" }, "Nothing to set up: every part is skipped or unchanged."));
+    if (!parts.length) kids.push(el("div", { class: "banner" }, st.change.plants ? "No device to choose here. Go on to the next step to change your solar plants." : "Nothing to set up: every part is skipped or unchanged."));
     parts.forEach((p) => {
       this._autoPick(p);
       const cands = this._cands(p);
@@ -4047,7 +4196,8 @@ class PowerEngineWizardCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
         this._notice = "";
         this._render();
       } });
-      cands.forEach((c) => sel.append(el("option", { value: c.key }, c.label)));
+      const using = this._configured ? this._inUse(p) : null;
+      cands.forEach((c) => sel.append(el("option", { value: c.key }, using && using.key === c.key ? `${c.label} (in use now)` : c.label)));
       sel.append(el("option", { value: "__unlisted" }, cands.length ? "My device isn't listed" : "Nothing found: my device isn't listed"));
       sel.value = pk.unlisted ? "__unlisted" : pk.cand || "__unlisted";
       box.append(el("div", { class: "ctl" }, sel));
@@ -4057,6 +4207,7 @@ class PowerEngineWizardCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
         box.append(el("div", { class: "ctl" }, el("span", {}, row.name), badge));
         if (row.status !== "verified") box.append(el("div", { class: "muted" }, "PowerEngine will only run Passive on this until it has been tested on real hardware."));
       }
+      if (cands.length > 1) box.append(el("div", { class: "muted" }, `${cands.length} devices found. PowerEngine uses one ${p.title.toLowerCase()} at a time: pick the one to use.`));
       if (p.part === "inverter" && row) box.append(this._firmwareBox(row));
       if (pk.unlisted || !cands.length) box.append(this._exportBox(p, facts));
       else box.append(el("details", {}, el("summary", {}, "Send this device's entity list (for support)"), this._exportBox(p, facts, true)));
@@ -4083,7 +4234,8 @@ class PowerEngineWizardCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const box = el("div", { class: "exportbox" });
     if (!compact) box.append(el("div", { class: "banner" }, `${part.required ? "We don't have a definition for your " : "We can't find your "}${part.title.toLowerCase()} yet. Send us a list of its entities and we can write one. The list holds entity names, units and current values only; long numbers (meter and account numbers, serials) are removed first, and you can read the file before you send it.`));
     let devId = pk.exportDevice || (this._cand(part) && this._cand(part).device ? this._cand(part).device.id : "");
-    const devs = wizardEnergyDevices(facts, this._hass.states);
+    const other = new Set(wizardOthers(this._parts(), facts, this._hass.states, this._used()).map((d) => d.id));
+    const devs = wizardEnergyDevices(facts, this._hass.states).sort((a, b) => (other.has(b.id) ? 1 : 0) - (other.has(a.id) ? 1 : 0));
     const sel = el("select", { onchange: (ev) => { pk.exportDevice = ev.target.value; st.pick[part.part] = pk; } },
       el("option", { value: "" }, "Choose the device…"), devs.map((d) => el("option", { value: d.id }, `${d.name}${d.manufacturer || d.model ? ` (${[d.manufacturer, d.model].filter(Boolean).join(" ")})` : ""}`)));
     sel.value = devId || "";
@@ -4161,8 +4313,74 @@ class PowerEngineWizardCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       }
       kids.push(box);
     });
+    if (this._plantsShown()) kids.push(this._plantsBox());
     kids.push(this._notes());
     return el("div", {}, kids);
+  }
+
+  /** An entity picker narrowed to `ids` (all when empty), or a text box with a list when the picker isn't available. */
+  _picker(value, domains, ids, onChange, label) {
+    if (this._usePicker) {
+      const pk = document.createElement("ha-entity-picker");
+      pk.hass = this._hass; pk.value = value || ""; pk.includeDomains = domains; pk.allowCustomEntity = true;
+      if (ids && ids.length) pk.includeEntities = ids;
+      pk.label = label;
+      pk.addEventListener("value-changed", (ev) => onChange(ev.detail.value || ""));
+      this._pickers.push(pk);
+      return pk;
+    }
+    const listId = `pe-w-${Math.random().toString(36).slice(2)}`;
+    const all = (ids && ids.length ? ids : this._facts().ids).filter((id) => domains.includes(id.split(".")[0])).sort();
+    return el("span", { style: "display:contents" }, el("input", { type: "text", value: value || "", list: listId, placeholder: label, onchange: (ev) => onChange(ev.target.value.trim()) }),
+      el("datalist", { id: listId }, all.map((id) => el("option", { value: id }))));
+  }
+
+  /** Solar plants after the main one: read-only sources of solar power (a second inverter, plug-in panels). */
+  _plantsBox() {
+    const d = this._draft;
+    this._plant();                                   // makes sure the main plant exists
+    const plants = d.solar_plants;
+    const facts = this._facts();
+    const box = el("div", { class: "part" }, el("div", { class: "head" }, el("span", { class: "label" }, "Solar plants")));
+    box.append(el("div", { class: "muted" }, "The main plant is your hybrid inverter's (above). Add any other source of solar power, such as a second solar-only inverter or plug-in panels: PowerEngine counts it in total solar and the energy-flow card. They are read only; PowerEngine controls only the inverter you chose."));
+    plants.slice(1).forEach((pl) => {
+      pl.power = pl.power || {}; pl.energy_today = pl.energy_today || {};
+      const row = el("div", { class: "row" });
+      const name = el("input", { type: "text", value: pl.name || "", placeholder: "Name", onchange: (ev) => { pl.name = ev.target.value; this._tick(); } });
+      const fc = el("select", { onchange: (ev) => { pl.forecast = ev.target.value; } },
+        el("option", { value: "none" }, "Forecast: none (actuals only)"), el("option", { value: "solcast_site" }, "Forecast: from the forecast service"),
+        el("option", { value: "scaled" }, "Forecast: scaled from the main plant"));
+      fc.value = pl.forecast || "none";
+      const rm = el("button", { onclick: () => { d.solar_plants = d.solar_plants.filter((x) => x !== pl); this._render(); } }, "Remove");
+      row.append(el("div", { class: "ctl" }, name, fc, rm));
+      row.append(el("div", { class: "desc" }, "Live solar power"), el("div", { class: "ctl" }, this._picker(pl.power.entity, ["sensor"], [], (v) => { pl.power = v ? { entity: v } : {}; this._tick(); }, "Power (W)")));
+      row.append(el("div", { class: "desc" }, "Solar energy today"), el("div", { class: "ctl" }, this._picker(pl.energy_today.entity, ["sensor"], [], (v) => { pl.energy_today = v ? { entity: v } : {}; this._tick(); }, "Energy today (kWh)")));
+      const live = el("div", { class: "live" });
+      row.append(live);
+      this._live.push(() => {
+        const f = (id) => { const st = id ? this._hass.states[id] : null; return st ? `${st.state} ${((st.attributes || {}).unit_of_measurement) || ""}`.trim() : "not set"; };
+        live.textContent = `Now: ${f(pl.power.entity)} · today ${f(pl.energy_today.entity)}`;
+      });
+      box.append(row);
+    });
+    const used = this._used();
+    const found = wizardOthers(this._parts(), facts, this._hass.states, used);
+    const foundIds = new Set(found.map((x) => x.id));
+    const rest = wizardEnergyDevices(facts, this._hass.states).filter((x) => !foundIds.has(x.id) && !x.entities.some((id) => used.has(id)));
+    const sel = el("select", {}, el("option", { value: "" }, "Add a solar plant from a device…"),
+      found.map((x) => el("option", { value: x.id }, `${wizardDeviceName(x)}${x.kind === "solar" ? " (looks like solar)" : ""}`)),
+      rest.map((x) => el("option", { value: x.id }, wizardDeviceName(x))));
+    const add = el("button", { onclick: () => {
+      const dev = facts.devices[sel.value];
+      if (!dev) return;
+      const pl = wizardPlantFromDevice(dev, facts, this._hass.states);
+      pl.id = wizardPlantId(dev.name, d.solar_plants.map((x) => x.id));
+      d.solar_plants.push(pl);
+      this._notice = "";
+      this._render();
+    } }, "Add");
+    box.append(el("div", { class: "ctl" }, sel, add));
+    return box;
   }
 
   _roleRow(role, part, cand, all) {
@@ -4286,6 +4504,8 @@ class PowerEngineWizardCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       const changed = this._active().includes(p.part);
       list.append(el("li", {}, `${p.title}: `, skipped ? "left out" : !changed ? "unchanged" : `${row ? row.name : p.part}, ${n} input${n === 1 ? "" : "s"} mapped`));
     });
+    const pls = (this._draft.solar_plants || []).filter((pl) => pl.enabled !== false && pl.power && pl.power.entity && pl.energy_today && pl.energy_today.entity);
+    list.append(el("li", {}, `Solar plants: ${pls.length ? pls.map((pl) => pl.name || pl.id).join(", ") : "none"}`));
     kids.push(list);
     const off = Object.keys(features).filter((k) => this._draft.features[k] && !features[k]).map((k) => (FEATURES.find((f) => f[0] === k) || [k, k])[1]);
     if (off.length) kids.push(el("div", { class: "banner" }, `Switched off because their inputs aren't set: ${off.map(T).join(", ")}. You can turn them on later on the configuration page.`));
@@ -4477,5 +4697,5 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-hi
 
 if (typeof module !== "undefined") {
   module.exports = { historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel,
-  WIZARD_STEPS, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardNeed, wizardRoles, wizardSuggest, wizardPlantGuess, wizardSite, wizardFeatures, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices };
+  WIZARD_STEPS, wizardDeviceName, wizardInUse, wizardOthers, wizardAlso, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardNeed, wizardRoles, wizardSuggest, wizardPlantGuess, wizardSite, wizardFeatures, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices };
 }
