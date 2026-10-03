@@ -3483,19 +3483,29 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
   console.info(`%c POWERENGINE-CARD %c v${CARD_VERSION} `, "background:#1f6feb;color:#fff", "");
 }
 
-// --- Plan history date picker ------------------------------------------------------------------------------------
-// The Plan history tab's Day select only reaches back 30 days; this picks any day the app still holds. It fires the
-// event pe_history_day {date: "YYYY-MM-DD"} (admins only: HA's fire_event needs admin). The app answers by showing
-// that day on the tab. It hides itself when the app doesn't publish `earliest` / `latest` on the plan history sensor.
+// --- Plan history day picker -------------------------------------------------------------------------------------
+// Picks the day the Plan history tab shows: a date box with previous / next arrows either side. It fires the event
+// pe_history_day {date: "YYYY-MM-DD"} (admins only: HA's fire_event needs admin). The app answers by showing that day
+// on the tab. It hides itself when the app doesn't publish `earliest` / `latest` on the plan history sensor.
 const HISTORY_DAY_EVENT = "pe_history_day";
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 /** The fire_event call for a picked day, or null if it isn't a date inside [earliest, latest] (all YYYY-MM-DD). */
 function historyDayPayload(value, earliest, latest) {
-  const iso = /^\d{4}-\d{2}-\d{2}$/;
-  if (typeof value !== "string" || !iso.test(value)) return null;
-  if (iso.test(earliest || "") && value < earliest) return null;
-  if (iso.test(latest || "") && value > latest) return null;
+  if (typeof value !== "string" || !ISO_DAY.test(value)) return null;
+  if (ISO_DAY.test(earliest || "") && value < earliest) return null;
+  if (ISO_DAY.test(latest || "") && value > latest) return null;
   return { type: "fire_event", event_type: HISTORY_DAY_EVENT, event_data: { date: value } };
+}
+
+/** The day `delta` days from `day` (YYYY-MM-DD), or null if that is outside [earliest, latest] or `day` isn't a date. */
+function shiftHistoryDay(day, delta, earliest, latest) {
+  if (typeof day !== "string" || !ISO_DAY.test(day)) return null;
+  const d = new Date(`${day}T12:00:00Z`);                 // noon UTC: adding days never lands on a DST edge
+  if (Number.isNaN(d.getTime())) return null;
+  d.setUTCDate(d.getUTCDate() + delta);
+  const out = d.toISOString().slice(0, 10);
+  return historyDayPayload(out, earliest, latest) ? out : null;
 }
 
 class PowerEngineHistoryDateCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
@@ -3517,22 +3527,40 @@ class PowerEngineHistoryDateCard extends (typeof HTMLElement !== "undefined" ? H
 
   _admin() { return !!(this._hass && this._hass.user && this._hass.user.is_admin); }
 
+  _attrs() {
+    const st = this._hass && this._config && this._hass.states[this._config.entity];
+    return (st && st.attributes) || {};
+  }
+
+  /** The day shown: one just asked for (until the app confirms it) so quick clicks add up, else the app's. */
+  _day() {
+    const a = this._attrs();
+    if (this._pending && Date.now() - this._pending.at < 8000 && a.date !== this._pending.day) return this._pending.day;
+    this._pending = null;
+    return a.date;
+  }
+
   async _pick(value) {
     const a = this._attrs();
     const payload = historyDayPayload(value, a.earliest, a.latest);
     const note = this.shadowRoot.querySelector(".note");
     if (!payload) { note.textContent = "That day isn't available."; return; }
+    this._pending = { day: value, at: Date.now() };
+    this._render();
     try {
       await this._hass.callWS(payload);
       note.textContent = "";
     } catch (err) {
+      this._pending = null;
       note.textContent = `Couldn't change the day (${err && err.message ? err.message : err}).`;
+      this._render();
     }
   }
 
-  _attrs() {
-    const st = this._hass && this._config && this._hass.states[this._config.entity];
-    return (st && st.attributes) || {};
+  _step(delta) {
+    const a = this._attrs();
+    const next = shiftHistoryDay(this._day(), delta, a.earliest, a.latest);
+    if (next) this._pick(next);
   }
 
   _render() {
@@ -3543,33 +3571,52 @@ class PowerEngineHistoryDateCard extends (typeof HTMLElement !== "undefined" ? H
       this.shadowRoot.innerHTML = `
         <style>
           :host { display: block; }
-          .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--primary-text-color); }
-          label { color: var(--secondary-text-color); }
-          input { font: inherit; padding: 6px 8px; color: var(--primary-text-color); background: var(--card-background-color);
-                  border: 1px solid var(--divider-color); border-radius: 6px; }
+          .row { display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;
+                 color: var(--primary-text-color); }
+          input, button { font: inherit; color: var(--primary-text-color); background: var(--card-background-color);
+                          border: 1px solid var(--divider-color); border-radius: 6px; }
+          input { padding: 6px 8px; }
+          button { min-width: 40px; padding: 6px 10px; font-size: 1.2em; line-height: 1; cursor: pointer; }
+          button:disabled, input:disabled { opacity: .45; cursor: default; }
           .note { color: var(--secondary-text-color); font-size: .9em; }
         </style>
-        <div class="row"><label>Pick any day <input type="date"></label><span class="note"></span></div>`;
-      this.shadowRoot.querySelector("input").addEventListener("change", (ev) => this._pick(ev.target.value));
+        <div class="row">
+          <button class="prev" type="button" aria-label="Previous day">&#8249;</button>
+          <input type="date" aria-label="Day">
+          <button class="next" type="button" aria-label="Next day">&#8250;</button>
+          <span class="note"></span>
+        </div>`;
+      const root = this.shadowRoot;
+      root.querySelector("input").addEventListener("change", (ev) => this._pick(ev.target.value));
+      root.querySelector(".prev").addEventListener("click", () => this._step(-1));
+      root.querySelector(".next").addEventListener("click", () => this._step(1));
       this._built = true;
     }
     this.style.display = usable ? "block" : "none";
-    const input = this.shadowRoot.querySelector("input");
+    const root = this.shadowRoot;
+    const input = root.querySelector("input");
+    const day = this._day();
     input.min = a.earliest || "";
     input.max = a.latest || "";
-    if (a.date && this.shadowRoot.activeElement !== input) input.value = a.date;
-    input.disabled = !this._admin();
-    input.title = this._admin() ? "Show this day's plan and what happened" : "Only an admin user can change the day here";
+    if (day && root.activeElement !== input) input.value = day;
+    const admin = this._admin();
+    const why = admin ? "" : "Only an admin user can change the day here";
+    input.disabled = !admin;
+    input.title = why || "Show this day's plan and what happened";
+    root.querySelector(".prev").disabled = !admin || !shiftHistoryDay(day, -1, a.earliest, a.latest);
+    root.querySelector(".next").disabled = !admin || !shiftHistoryDay(day, 1, a.earliest, a.latest);
+    root.querySelector(".prev").title = why || "Previous day";
+    root.querySelector(".next").title = why || "Next day";
   }
 }
 
 if (typeof customElements !== "undefined" && !customElements.get("powerengine-history-date-card")) {
   customElements.define("powerengine-history-date-card", PowerEngineHistoryDateCard);
   window.customCards = window.customCards || [];
-  window.customCards.push({ type: "powerengine-history-date-card", name: "PowerEngine history date",
-    description: "Pick any day for the Plan history tab." });
+  window.customCards.push({ type: "powerengine-history-date-card", name: "PowerEngine history day",
+    description: "Pick a day for the Plan history tab, with previous and next arrows." });
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { historyDayPayload, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel };
+  module.exports = { historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel };
 }
