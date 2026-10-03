@@ -43,13 +43,13 @@
   ],
   [
    "axle",
-   "Axle VPP events",
-   "Force-discharge during Axle events and hold charge beforehand."
+   "Take part in grid events",
+   "Force-discharge during grid events (run by Axle) and hold charge beforehand, so the battery is full when one starts."
   ],
   [
    "axle_plus_export",
-   "Axle also earns the export rate",
-   "Your supplier pays its normal export rate on Axle exports as well as Axle's £1/kWh (EDF: £1 + 15p). Planning and the event figures count both. Off: Axle's £1 only."
+   "Grid events also earn the export rate",
+   "Your supplier pays its normal export rate on grid-event exports as well as the event payment (Axle: £1/kWh; EDF: £1 + 15p). Planning and the event figures count both. Off: the event payment only."
   ],
   [
    "free_power_days",
@@ -99,7 +99,7 @@
   [
    "damp_restart",
    "Restart hold-off",
-   "After PowerEngine starts, or control resumes or goes live, write nothing for a few minutes (Restart hold-off setting) while the plan and its inputs settle. The inverter keeps running the windows already set. Safety changes (Axle, free power, the car charging, the reserve) never wait."
+   "After PowerEngine starts, or control resumes or goes live, write nothing for a few minutes (Restart hold-off setting) while the plan and its inputs settle. The inverter keeps running the windows already set. Safety changes (grid events, free power, the car charging, the reserve) never wait."
   ],
   [
    "damp_bursts",
@@ -145,7 +145,7 @@
   },
   {
    "key": "axle",
-   "title": "Axle events",
+   "title": "Grid events",
    "note": null
   },
   {
@@ -189,8 +189,8 @@
   ],
   [
    "axle",
-   "Axle events",
-   "When an Axle event is scheduled, with its time.",
+   "Grid events",
+   "When a grid event (Axle) is scheduled, with its time.",
    true
   ],
   [
