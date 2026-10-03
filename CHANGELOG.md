@@ -3,6 +3,13 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.93
+
+### Other devices
+
+- **Your system now has an "Other devices" list** (with PowerEngine app 0.9.93 or newer; older apps don't show it). Add a device, pick which of its battery level, battery power and solar power sensors to use, and see what PowerEngine reads from it. Devices are read only: nothing is controlled but the inverter chosen above.
+- Devices you already have in Home Assistant that PowerEngine doesn't use, other than solar-only ones, are now described as "could be added as a read-only device below" instead of "not supported yet" when the app supports it.
+
 ## 0.9.89
 
 ### Setup wizard and Config page
