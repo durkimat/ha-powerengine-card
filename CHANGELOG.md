@@ -3,6 +3,14 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.88
+
+### Setup wizard
+
+- New **Setup wizard** card (`custom:powerengine-wizard-card`). It lists what a home needs (required and optional parts, found or not found in Home Assistant, with install links), lets you pick each device, fills PowerEngine's inputs from that device's own entities with live values, checks battery and grid signs against what you see (with one-click Invert) and that house load adds up, and saves a Passive setup. Parts you don't have can be skipped; on an already configured system you can change one part at a time.
+- **Candidate entities export** for hardware PowerEngine doesn't support yet: download or copy a scrubbed list of a device's entities (units, options, limits, firmware) to send with a support request.
+- The card hides the wizard when the app is too old to tell it what to look for.
+
 ## 0.9.86
 
 - Plan history day picker card (`powerengine-history-date-card`): a date box with previous/next day arrows, used by the dashboard's Plan history page. It hides itself on an older app.
