@@ -23,4 +23,4 @@ on the owner's machine, not in a cloud session.
 - The wizard is folded away when the app is configured (`wizOpen`), reads what is in use (`wizardInUse`: the candidate holding a saved
   mapped entity), lists other candidates and unowned energy devices (`wizardAlso`, `wizardOthers`); "Your system" shows the same
   ("also found"). The setup card hides itself when `setupSummary().allSet`. Use "grid events" for the concept in texts; the provider
-  name comes from `<<event>>`.
+  name comes from `<<event>>`. Extra solar plants (`solar_plants[1..]`, read only) are added in the wizard's step 3 (`_plantsBox`, `wizardPlantFromDevice`); a device already used by the config (`wizardUsedEntities`) is not listed as "also found".

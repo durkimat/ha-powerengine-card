@@ -289,3 +289,38 @@ test("another energy device (battery, power and energy sensors) that no adapter 
   const others = m.wizardOthers(PARTS, m.wizardFacts(h), h.states);
   assert.deepEqual(others.map((d) => d.name), ["Fox H1"]);       // the Solis device is owned by an option, the phone has no power
 });
+
+test("a solar-only inverter already set up as a plant is not 'also found'; an unconfigured one is offered as a solar plant", () => {
+  const h = hass();
+  const st = (state, attributes) => ({ state, attributes });
+  Object.assign(h.states, {
+    "sensor.fox_pv_power": st("900", { unit_of_measurement: "W", device_class: "power" }),
+    "sensor.fox_yield_today": st("4.2", { unit_of_measurement: "kWh", device_class: "energy" }),
+    "sensor.plug_power": st("60", { unit_of_measurement: "W", device_class: "power" }),
+    "sensor.plug_energy": st("3", { unit_of_measurement: "kWh", device_class: "energy" }),
+    "sensor.balcony_panels_power": st("200", { unit_of_measurement: "W", device_class: "power" }),
+    "sensor.balcony_panels_energy_today": st("1.1", { unit_of_measurement: "kWh", device_class: "energy" }),
+  });
+  Object.assign(h.entities, {
+    "sensor.fox_pv_power": { device_id: "d_fox", platform: "foxess" }, "sensor.fox_yield_today": { device_id: "d_fox", platform: "foxess" },
+    "sensor.plug_power": { device_id: "d_plug", platform: "shelly" }, "sensor.plug_energy": { device_id: "d_plug", platform: "shelly" },
+    "sensor.balcony_panels_power": { device_id: "d_bal", platform: "zendure" }, "sensor.balcony_panels_energy_today": { device_id: "d_bal", platform: "zendure" },
+  });
+  Object.assign(h.devices, { d_fox: { name: "Fox solar inverter", manufacturer: "Fox ESS" }, d_plug: { name: "Kettle plug", manufacturer: "Shelly" }, d_bal: { name: "Balcony panels", manufacturer: "Zendure" } });
+  const facts = m.wizardFacts(h);
+  const saved = { inputs: { battery_soc: { entity: "sensor.solis_battery_soc" } },
+    solar_plants: [{ id: "main", name: "Main", power: { entity: "sensor.solis_pv_total_power" }, energy_today: { entity: "sensor.solis_power_generation_today" } },
+      { id: "fox", name: "Fox", power: { entity: "sensor.fox_pv_power" }, energy_today: { entity: "sensor.fox_yield_today" } }] };
+  const used = m.wizardUsedEntities(saved);
+  assert.ok(used.has("sensor.fox_pv_power") && used.has("sensor.solis_battery_soc") && used.has("sensor.solis_pv_total_power"));
+  const others = m.wizardOthers(PARTS, facts, h.states, used);
+  assert.deepEqual(others.map((d) => [d.name, d.kind]), [["Balcony panels", "solar"]]);        // Fox is in use, the kettle plug is not solar
+  const plant = m.wizardPlantFromDevice(others[0], facts, h.states);
+  assert.equal(plant.power.entity, "sensor.balcony_panels_power");
+  assert.equal(plant.energy_today.entity, "sensor.balcony_panels_energy_today");
+  assert.deepEqual([plant.forecast, plant.enabled, plant.name], ["none", true, "Balcony panels"]);
+  assert.equal(m.wizardPlantId("Balcony panels", ["main", "balcony_panels"]), "balcony_panels_2");
+  assert.equal(m.wizardDeviceName({ name: "Fox H1", manufacturer: "Fox ESS", model: "H1" }), "Fox H1 (Fox ESS H1)");
+  // without the plant in the config, the Fox inverter is offered
+  assert.deepEqual(m.wizardOthers(PARTS, facts, h.states, new Set()).map((d) => d.name).sort(), ["Balcony panels", "Fox solar inverter"]);
+});
