@@ -16,3 +16,9 @@ This card is installed as part of PowerEngine. Follow the
 The card and app don't need the same version. Each warns only if the other is older than the minimum it needs
 (the card needs app 0.9.69 or newer; the app publishes the oldest card it works with). The card is only released when
 it changes, so its version can be behind the app's.
+
+## Contributing and licence
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[app's contributing guide](https://github.com/durkimat/ha-powerengine-controller/blob/main/CONTRIBUTING.md).
+Licensed under [Apache-2.0](LICENSE). Copyright 2026 Matthew Durkin.
