@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.82";
+const CARD_VERSION = "0.9.84";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -3483,6 +3483,93 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
   console.info(`%c POWERENGINE-CARD %c v${CARD_VERSION} `, "background:#1f6feb;color:#fff", "");
 }
 
+// --- Plan history date picker ------------------------------------------------------------------------------------
+// The Plan history tab's Day select only reaches back 30 days; this picks any day the app still holds. It fires the
+// event pe_history_day {date: "YYYY-MM-DD"} (admins only: HA's fire_event needs admin). The app answers by showing
+// that day on the tab. It hides itself when the app doesn't publish `earliest` / `latest` on the plan history sensor.
+const HISTORY_DAY_EVENT = "pe_history_day";
+
+/** The fire_event call for a picked day, or null if it isn't a date inside [earliest, latest] (all YYYY-MM-DD). */
+function historyDayPayload(value, earliest, latest) {
+  const iso = /^\d{4}-\d{2}-\d{2}$/;
+  if (typeof value !== "string" || !iso.test(value)) return null;
+  if (iso.test(earliest || "") && value < earliest) return null;
+  if (iso.test(latest || "") && value > latest) return null;
+  return { type: "fire_event", event_type: HISTORY_DAY_EVENT, event_data: { date: value } };
+}
+
+class PowerEngineHistoryDateCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
+  setConfig(config) {
+    this._config = { entity: "sensor.pe_plan_history", ...(config || {}) };
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    this._built = false;
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+
+  getCardSize() { return 1; }
+
+  getGridOptions() { return { columns: "full", rows: 1, min_rows: 1 }; }
+
+  _admin() { return !!(this._hass && this._hass.user && this._hass.user.is_admin); }
+
+  async _pick(value) {
+    const a = this._attrs();
+    const payload = historyDayPayload(value, a.earliest, a.latest);
+    const note = this.shadowRoot.querySelector(".note");
+    if (!payload) { note.textContent = "That day isn't available."; return; }
+    try {
+      await this._hass.callWS(payload);
+      note.textContent = "";
+    } catch (err) {
+      note.textContent = `Couldn't change the day (${err && err.message ? err.message : err}).`;
+    }
+  }
+
+  _attrs() {
+    const st = this._hass && this._config && this._hass.states[this._config.entity];
+    return (st && st.attributes) || {};
+  }
+
+  _render() {
+    if (!this.shadowRoot || !this._config) return;
+    const a = this._attrs();
+    const usable = !!(a.earliest && a.latest);
+    if (!this._built) {
+      this.shadowRoot.innerHTML = `
+        <style>
+          :host { display: block; }
+          .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--primary-text-color); }
+          label { color: var(--secondary-text-color); }
+          input { font: inherit; padding: 6px 8px; color: var(--primary-text-color); background: var(--card-background-color);
+                  border: 1px solid var(--divider-color); border-radius: 6px; }
+          .note { color: var(--secondary-text-color); font-size: .9em; }
+        </style>
+        <div class="row"><label>Pick any day <input type="date"></label><span class="note"></span></div>`;
+      this.shadowRoot.querySelector("input").addEventListener("change", (ev) => this._pick(ev.target.value));
+      this._built = true;
+    }
+    this.style.display = usable ? "block" : "none";
+    const input = this.shadowRoot.querySelector("input");
+    input.min = a.earliest || "";
+    input.max = a.latest || "";
+    if (a.date && this.shadowRoot.activeElement !== input) input.value = a.date;
+    input.disabled = !this._admin();
+    input.title = this._admin() ? "Show this day's plan and what happened" : "Only an admin user can change the day here";
+  }
+}
+
+if (typeof customElements !== "undefined" && !customElements.get("powerengine-history-date-card")) {
+  customElements.define("powerengine-history-date-card", PowerEngineHistoryDateCard);
+  window.customCards = window.customCards || [];
+  window.customCards.push({ type: "powerengine-history-date-card", name: "PowerEngine history date",
+    description: "Pick any day for the Plan history tab." });
+}
+
 if (typeof module !== "undefined") {
-  module.exports = { demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel };
+  module.exports = { historyDayPayload, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel };
 }
