@@ -898,3 +898,12 @@ test("history day payload accepts a date inside the range and nothing else", () 
   assert.strictEqual(h.historyDayPayload("", "2025-09-01", "2026-10-03"), null);
   assert.strictEqual(h.historyDayPayload("04/03/2026", "2025-09-01", "2026-10-03"), null);
 });
+
+test("history day arrows step one day and stop at the ends", () => {
+  assert.strictEqual(h.shiftHistoryDay("2026-03-28", 1, "2025-09-01", "2026-10-03"), "2026-03-29");   // spring forward
+  assert.strictEqual(h.shiftHistoryDay("2026-10-25", 1, "2025-09-01", "2026-10-30"), "2026-10-26");   // autumn back
+  assert.strictEqual(h.shiftHistoryDay("2026-03-01", -1, "2025-09-01", "2026-10-03"), "2026-02-28");
+  assert.strictEqual(h.shiftHistoryDay("2026-10-03", 1, "2025-09-01", "2026-10-03"), null);
+  assert.strictEqual(h.shiftHistoryDay("2025-09-01", -1, "2025-09-01", "2026-10-03"), null);
+  assert.strictEqual(h.shiftHistoryDay(undefined, 1, "2025-09-01", "2026-10-03"), null);
+});
