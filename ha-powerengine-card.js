@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.86";
+const CARD_VERSION = "0.9.88";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -658,7 +658,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       .plant { border: 1px solid var(--divider-color); border-radius: 8px; padding: 8px; margin: 8px 0; }
       .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; position: sticky; bottom: 0; background: var(--card-background-color); padding: 8px 0; }
       button { padding: 8px 14px; border-radius: 6px; border: 1px solid var(--divider-color); background: var(--secondary-background-color); color: var(--primary-text-color); cursor: pointer; }
-      button.primary { background: var(--primary-color); color: var(--text-primary-color, #fff); border: none; }
+      button.primary { background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); border: none; }
       button:disabled { opacity: .5; cursor: default; }
       .muted { color: var(--secondary-text-color); font-size: .85em; }
       .suggest { font-size: .85em; color: var(--secondary-text-color); margin-top: 4px; }
@@ -3483,6 +3483,864 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-co
   console.info(`%c POWERENGINE-CARD %c v${CARD_VERSION} `, "background:#1f6feb;color:#fff", "");
 }
 
+/* ------------------------------------------------------------ setup wizard and candidate export
+ * The wizard asks what each part of the home is, searches Home Assistant for it (the entity registry's platform, the
+ * device's manufacturer and model, entity ids), maps each part's inputs from that device's entities only, checks
+ * the signs against what the user sees, and saves a Passive config with the site chosen. What to look for comes
+ * from the app (sensor.pe_diag_version attribute `wizard`, pe_core/wizard.py); the card holds none of it, so a new
+ * inverter definition shows up here by itself. The same search feeds the candidate export (docs/WIZARD.md): a
+ * scrubbed list of a device's entities for whoever writes the definition of an unsupported one.
+ * Pure helpers first (exported for tests), then the card. */
+const WIZARD_STEPS = [["needs", "What you'll need"], ["devices", "Your devices"], ["map", "Map inputs"],
+  ["check", "Live checks"], ["save", "Review and save"]];
+const EXPORT_FORMAT = "powerengine-candidates";
+const EXPORT_VERSION = 1;
+const EXPORT_STATE_MAX = 60;
+const WIZARD_ISSUES = "https://github.com/durkimat/ha-powerengine-controller/issues/new";
+const WIZARD_PART_ORDER = ["inverter", "tariff", "ev_charger", "forecast", "events"];
+const WIZARD_HAVE_TO_HAND = ["Your battery's usable size (kWh) and its fastest safe charge and discharge rate (W)",
+  "Your tariff: the import and export prices, and the standing charge", "An admin login to Home Assistant"];
+// the main solar plant is not a role: its power and today's energy are picked with the inverter's inputs
+const WIZARD_PLANT = [["power", "Solar power", "Live solar generation (W).", /pv.*power|solar.*power|power.*pv|pv_?total/i, ["W", "kW"]],
+  ["energy_today", "Solar energy today", "Energy generated today (kWh).", /(pv|solar|generation|yield).*(today|daily)|(today|daily).*(pv|solar|generation|yield)/i, ["kWh", "Wh"]]];
+
+/** What the wizard works from, or null when the app doesn't publish `wizard` (the card stays hidden: too old an app). */
+function wizardInfo(attrs) {
+  const a = attrs || {};
+  const w = a.wizard;
+  if (!w || typeof w !== "object" || w.v !== 1 || !Array.isArray(w.parts) || !w.parts.length) return null;
+  const parts = WIZARD_PART_ORDER.map((k) => w.parts.find((p) => p.part === k)).filter(Boolean);
+  w.parts.forEach((p) => { if (!parts.includes(p)) parts.push(p); });
+  return { parts, options: a.site_options || {}, site: a.site || {}, setup: a.setup || "configured", detected: a.firmware_detected || null };
+}
+
+/** Home Assistant's registries as the wizard uses them: each entity with its integration (platform) and device, and
+ *  each device with its manufacturer, model, firmware and entities. `registry` is false when the frontend gives no
+ *  registry (then only entity ids can be searched). */
+function wizardFacts(hass) {
+  const states = (hass && hass.states) || {};
+  const regE = (hass && hass.entities) || {};
+  const regD = (hass && hass.devices) || {};
+  const entities = Object.keys(states).map((id) => {
+    const r = regE[id] || {};
+    return { id, domain: id.split(".")[0], platform: r.platform || "", device: r.device_id || null };
+  });
+  const by = {};
+  entities.forEach((e) => { if (e.device) (by[e.device] = by[e.device] || []).push(e); });
+  const devices = {};
+  Object.keys(by).forEach((did) => {
+    const d = regD[did] || {};
+    devices[did] = { id: did, name: d.name_by_user || d.name || did, manufacturer: d.manufacturer || "", model: d.model || "",
+      sw_version: d.sw_version || "", entities: by[did].map((e) => e.id), platforms: [...new Set(by[did].map((e) => e.platform).filter(Boolean))] };
+  });
+  return { entities, devices, ids: entities.map((e) => e.id), registry: Object.keys(regE).length > 0 };
+}
+
+function wizardRegex(list, flags) {
+  return (list || []).map((p) => { try { return new RegExp(p, flags); } catch (e) { return null; } }).filter(Boolean);
+}
+
+/** What in Home Assistant matches an option's search data: devices (by integration, manufacturer or model), entities
+ *  that match by name and belong to no matched device, and whether the integration is present at all. */
+function wizardMatch(option, facts) {
+  const doms = option.domains || [];
+  const man = wizardRegex(option.manufacturers, "i");
+  const mod = wizardRegex(option.models, "i");
+  const ent = wizardRegex(option.entities, "");
+  const devices = [];
+  Object.values(facts.devices).forEach((d) => {
+    const reason = d.platforms.some((p) => doms.includes(p)) ? "integration"
+      : d.manufacturer && man.some((r) => r.test(d.manufacturer)) ? "manufacturer"
+      : d.model && mod.some((r) => r.test(d.model)) ? "model" : "";
+    if (reason) devices.push(Object.assign({ reason }, d));
+  });
+  const taken = new Set(devices.map((d) => d.id));
+  const entities = facts.entities.filter((e) => !taken.has(e.device) && (ent.some((r) => r.test(e.id)) || (!e.device && doms.includes(e.platform))));
+  const present = devices.length > 0 || entities.length > 0 || facts.entities.some((e) => doms.includes(e.platform));
+  return { devices, entities, found: present };
+}
+
+/** The things the user can pick for a part: each matching device, and the entities found by name. Two options that
+ *  find the same device (the Octopus Energy integration serves EDF and Octopus alike) give one candidate: the option
+ *  whose entity-name patterns match it, else the first. */
+function wizardCandidates(part, facts) {
+  const found = [];
+  (part.options || []).forEach((o) => {
+    const m = wizardMatch(o, facts);
+    const name = (o.integration && o.integration.name) || o.id;
+    const pats = wizardRegex(o.entities, "");
+    const named = (ids) => ids.some((id) => pats.some((r) => r.test(id)));
+    m.devices.forEach((d) => found.push({ ident: d.id, option: o.id, named: named(d.entities), device: d, entityIds: d.entities,
+      label: `${d.name}${d.model && !d.name.includes(d.model) ? ` (${d.model})` : ""} · ${name}` }));
+    if (m.entities.length) {
+      const ids = m.entities.map((e) => e.id);
+      found.push({ ident: ids.join(","), option: o.id, named: named(ids), device: null, entityIds: ids, label: `${name} entities (found by name)` });
+    }
+  });
+  const out = [];
+  found.forEach((c) => {
+    const i = out.findIndex((x) => x.ident === c.ident);
+    if (i < 0) out.push(c);
+    else if (c.named && !out[i].named) out[i] = c;
+  });
+  return out.map((c) => Object.assign({ key: `${c.option}:${c.device ? c.device.id : "names"}` }, c));
+}
+
+/** How a part stands for the "What you'll need" list: found (with what), installed in HACS but not added to Home
+ *  Assistant yet, or missing. `hacsRepos` is HACS's list (or null: not asked / not available). */
+function wizardNeed(part, facts, hacsRepos) {
+  const all = (part.options || []).map((o) => {
+    const m = wizardMatch(o, facts);
+    const url = (o.integration || {}).url || "";
+    const m2 = /github\.com\/([^/]+\/[^/]+)/.exec(url);
+    const repo = m2 && hacsRepos ? findHacsRepo(hacsRepos, m2[1]) : null;
+    return { id: o.id, name: (o.integration || {}).name || o.id, url, found: m.found, count: m.devices.length + m.entities.length,
+      inHacs: !!(repo && repo.installed) };
+  });
+  const rows = [];                                                    // one line per integration name (EDF and Octopus share one)
+  all.forEach((r) => {
+    const same = rows.find((x) => x.name === r.name);
+    if (!same) rows.push(r);
+    else { same.found = same.found || r.found; same.inHacs = same.inHacs || r.inHacs; same.count += r.count; }
+  });
+  const found = rows.filter((r) => r.found);
+  const status = found.length ? "found" : rows.some((r) => r.inHacs) ? "installed" : "missing";
+  return { part: part.part, title: part.title, why: part.why, required: !!part.required, status, rows };
+}
+
+/** The role keys of a part the wizard shows, split into the ones that matter now and the rest, from the catalogue. */
+function wizardRoles(part, catalogue) {
+  const by = Object.fromEntries((catalogue || []).map((r) => [r.key, r]));
+  return (part.roles || []).map((k) => by[k]).filter(Boolean);
+}
+
+/** A suggestion for a role: from the picked device's own entities first, else from anywhere (flagged "other"). */
+function wizardSuggest(role, cand, facts) {
+  const own = cand ? suggestEntity(role, cand.entityIds) : "";
+  if (own) return { entity: own, from: "device" };
+  const any = suggestEntity(role, facts.ids);
+  return any ? { entity: any, from: "other" } : { entity: "", from: "" };
+}
+
+/** A guess at the main solar plant's power and today's energy among a device's entities (or all, flagged), by name and unit. */
+function wizardPlantGuess(which, cand, facts, states) {
+  const spec = WIZARD_PLANT.find((p) => p[0] === which);
+  const pick = (ids) => ids.find((id) => id.startsWith("sensor.") && spec[3].test(id)
+    && spec[4].includes(((states[id] || {}).attributes || {}).unit_of_measurement)) || "";
+  const own = cand ? pick(cand.entityIds) : "";
+  return own ? { entity: own, from: "device" } : { entity: "", from: "" };
+}
+
+/** The site the wizard saves: a part the user skipped is "none"; the tariff stays "auto" (told apart by its sensors);
+ *  the others are the option picked. Unpicked parts keep the saved value. */
+function wizardSite(parts, picks, skips, saved, firmware) {
+  const site = Object.assign({}, saved || {});
+  parts.forEach((p) => {
+    if (skips[p.part]) site[p.part] = "none";
+    else if (p.part === "tariff") site.tariff = "auto";
+    else if (picks[p.part] && picks[p.part].option) site[p.part] = picks[p.part].option;
+  });
+  if (firmware !== undefined) site.inverter_firmware = firmware || null;
+  return siteFromSelection(site, saved);
+}
+
+/** Features that only make sense with a part: off when the part is left out or its inputs were not found. Never turns one on. */
+function wizardFeatures(features, site, draft) {
+  const f = Object.assign({}, features);
+  const mapped = (k) => !!((draft.inputs || {})[k] && ((draft.inputs[k].entity) || draft.inputs[k].value !== undefined));
+  if (site.ev_charger === "none") { f.smart_charge_optimisation = false; f.smart_skip_full_car = false; f.learn_car = false; }
+  if (site.events === "none") { f.axle = false; f.axle_plus_export = false; }
+  if (!mapped("free_power_active")) f.free_power_days = false;
+  if (!mapped("smart_target_soc") || !mapped("smart_target_time")) f.smart_charge_optimisation = false;   // can't ask for slots without them
+  return f;
+}
+
+/** Required inputs of the active parts that are still empty: [{part, role}] (battery pair and features respected). */
+function wizardMissing(draft, parts, roles, active) {
+  const pair = BATTERY_PAIR.every((k) => (draft.inputs[k] || {}).entity);
+  const out = [];
+  parts.filter((p) => active.includes(p.part)).forEach((p) => {
+    wizardRoles(p, roles).forEach((r) => {
+      if (roleNeed(r, draft, pair).level !== "req") return;
+      const s = draft.inputs[r.key];
+      if (!s || !(s.entity || (s.value !== undefined && s.value !== ""))) out.push({ part: p.part, role: r });
+    });
+    if (p.part === "inverter") WIZARD_PLANT.forEach((x) => {
+      const pl = (draft.solar_plants || [])[0];
+      if (!pl || !pl[x[0]] || !pl[x[0]].entity) out.push({ part: "inverter", role: { key: `plant_${x[0]}`, label: x[1] } });
+    });
+  });
+  return out;
+}
+
+/* ---- live checks */
+/** Watts from an entity state ("1.2" kW is 1200), or null. */
+function wizardWatts(stateObj) {
+  if (!stateObj) return null;
+  const n = toNumber(stateObj.state);
+  if (n === null) return null;
+  return ((stateObj.attributes || {}).unit_of_measurement) === "kW" ? n * 1000 : n;
+}
+
+/** The user says what the signed input is doing now ("pos": the first word of its sign note, "neg": the second,
+ *  "idle"); is the sign (after Invert) as PowerEngine expects? -> "ok" | "flip" | "idle" | "unknown". */
+function wizardSignCheck(says, watts, invert) {
+  if (says === "idle" || says === undefined || says === null) return "idle";
+  if (watts === null || Math.abs(watts) < 50) return "unknown";
+  const v = invert ? -watts : watts;
+  return (says === "pos") === (v > 0) ? "ok" : "flip";
+}
+
+/** House load should equal grid (+ in) + solar + battery (+ discharging), roughly. {ok, diff, expected} or null if a figure is missing. */
+function wizardBalance(v) {
+  if (["battery", "solar", "grid", "house"].some((k) => v[k] === null || v[k] === undefined)) return null;
+  const expected = v.grid + v.solar + v.battery;
+  const diff = Math.round(v.house - expected);
+  return { ok: Math.abs(diff) <= Math.max(400, 0.2 * Math.abs(v.house)), diff, expected: Math.round(expected) };
+}
+
+/* ---- candidate export (item 1): a scrubbed list of a device's entities for someone who writes the definition */
+/** Long digit runs (account and meter numbers, serials) become <n>; text that looks like an email or a postcode is
+ *  dropped. A device's manufacturer, model and firmware keep their digits (`keepDigits`): a firmware such as 420044 is
+ *  what a definition needs. */
+function scrubText(text, keepDigits) {
+  const t = String(text === null || text === undefined ? "" : text);
+  if (/[^\s@]+@[^\s@]+\.[^\s@]+/.test(t) || /\b[A-Z]{1,2}\d[A-Z\d]? ?\d[A-Z]{2}\b/i.test(t)) return "";
+  return keepDigits ? t : t.replace(/\d{6,}/g, "<n>");
+}
+
+const EXPORT_DOMAINS = ["sensor", "binary_sensor", "number", "select", "switch", "button", "text", "time", "event", "input_number", "input_boolean"];
+
+/** The export object. `deviceIds` are the devices to list in full; `looseIds` are single entities (matched by name). */
+function buildCandidateExport(opts) {
+  const { hass, facts, deviceIds, looseIds, chosen, note, now, appVersion } = opts;
+  const states = hass.states || {};
+  const devs = [];
+  const key = {};
+  [...new Set(deviceIds || [])].forEach((did) => {
+    const d = facts.devices[did];
+    if (!d) return;
+    key[did] = `d${devs.length + 1}`;
+    devs.push({ key: key[did], integration: d.platforms[0] || "", manufacturer: scrubText(d.manufacturer, true), model: scrubText(d.model, true), sw_version: scrubText(d.sw_version, true) });
+  });
+  const byId = Object.fromEntries(facts.entities.map((e) => [e.id, e]));
+  const ids = [...new Set([...(deviceIds || []).flatMap((did) => (facts.devices[did] || { entities: [] }).entities), ...(looseIds || [])])].sort();
+  const entities = [];
+  ids.forEach((id) => {
+    const e = byId[id], st = states[id];
+    if (!e || !st || !EXPORT_DOMAINS.includes(e.domain)) return;
+    const a = st.attributes || {};
+    const out = { id: scrubText(id), domain: e.domain, platform: e.platform || "", device: e.device && key[e.device] ? key[e.device] : null };
+    if (a.unit_of_measurement) out.unit = scrubText(a.unit_of_measurement);
+    if (a.device_class) out.device_class = String(a.device_class);
+    if (a.state_class) out.state_class = String(a.state_class);
+    out.state = scrubText(st.state).slice(0, EXPORT_STATE_MAX);
+    if (Array.isArray(a.options)) out.options = a.options.map(scrubText);
+    ["min", "max", "step"].forEach((k) => { if (typeof a[k] === "number") out[k] = a[k]; });
+    out.attributes = Object.keys(a).filter((k) => !["friendly_name", "icon", "unit_of_measurement", "device_class", "state_class", "options", "min", "max", "step"].includes(k)).sort();
+    entities.push(out);
+  });
+  return { format: EXPORT_FORMAT, version: EXPORT_VERSION, generated: (now || new Date()).toISOString(), card_version: CARD_VERSION,
+    app_version: appVersion || null, ha_version: (hass.config && hass.config.version) || null, chosen: chosen || {},
+    note: scrubText(note || "").slice(0, 300), devices: devs, entities };
+}
+
+function candidateFileName(now) { return `powerengine-candidates-${(now || new Date()).toISOString().slice(0, 10)}.json`; }
+
+/** Devices that look like energy equipment (a power, energy or battery sensor), for "my device isn't listed". */
+function wizardEnergyDevices(facts, states) {
+  return Object.values(facts.devices).filter((d) => d.entities.some((id) => {
+    const a = ((states || {})[id] || {}).attributes || {};
+    return ["power", "energy", "battery"].includes(a.device_class) || ["W", "kW", "kWh"].includes(a.unit_of_measurement);
+  })).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+class PowerEngineWizardCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
+  setConfig(config) {
+    this._config = config || {};
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    this._live = [];
+    this._pickers = [];
+  }
+
+  getCardSize() { return 10; }
+
+  getGridOptions() { return { columns: "full", rows: "auto" }; }
+
+  set hass(hass) {
+    this._hass = hass;
+    setNames(hass);
+    (this._pickers || []).forEach((p) => { p.hass = hass; });
+    if (!this._started) this._start();
+    else this._tick();
+  }
+
+  async _start() {
+    this._started = true;
+    const s = this._hass.states;
+    const ver = s[VERSION_SENSOR];
+    const cat = s[CATALOGUE_SENSOR];
+    this._info = ver && ver.state !== "unavailable" ? wizardInfo(ver.attributes) : null;
+    if (!this._info || !cat || !(cat.attributes || {}).roles) {      // an app too old to publish `wizard`, or not running: no wizard
+      this.style.display = "none";
+      this._started = false;
+      return;
+    }
+    this.style.display = "";
+    this._usePicker = await ensureEntityPicker();
+    this._roles = (cat.attributes.roles || []).map((r) => Object.assign({ required: "yes" }, r));
+    const settingsSensor = s["sensor.pe_map_settings"];
+    this._settings = cat.attributes.settings || (settingsSensor && settingsSensor.attributes) || {};
+    this._saved = (((s[MAPPING_SENSOR] || {}).attributes) || {}).config || {};
+    this._readOnly = !(this._hass.user && this._hass.user.is_admin);
+    this._configured = this._info.setup === "configured";
+    this._draft = initialDraft(this._saved, this._roles, [], this._settings).draft;
+    this._site0 = siteFromSelection(this._info.site);
+    this._auto = {};
+    const facts = wizardFacts(this._hass);
+    const needs = this._info.parts.map((p) => wizardNeed(p, facts, null));
+    this._st = { step: 0, skip: {}, change: {}, pick: {}, showAll: {}, says: {}, note: "", open: {} };
+    this._info.parts.forEach((p) => {
+      const n = needs.find((x) => x.part === p.part);
+      this._st.skip[p.part] = this._configured ? this._site0[p.part] === "none" : (!p.required && n.status !== "found");
+      this._st.change[p.part] = !this._configured;
+    });
+    this._render();
+    this._loadHacs();
+    this._subscribe();
+  }
+
+  async _loadHacs() {
+    const comps = (this._hass.config && this._hass.config.components) || [];
+    if (this._readOnly || !comps.includes("hacs")) return;
+    try {
+      this._hacs = await this._hass.callWS(hacsListPayload(["integration"]));
+      if (this._st.step === 0) this._render();
+    } catch (e) { /* HACS not reachable: the list just shows what Home Assistant has */ }
+  }
+
+  async _subscribe() {
+    try {
+      this._unsub = await this._hass.connection.subscribeEvents((ev) => {
+        const d = ev.data || {};
+        this._saving = false;
+        this._result = d.ok ? { ok: true, text: `Saved. PowerEngine is reloading. ${d.message || ""}` } : { ok: false, text: `Not saved: ${d.message}` };
+        if (this._st && this._st.step === 4) this._render();
+      }, RESULT_EVENT);
+    } catch (e) { /* non-admin users can't subscribe; saving is admin-only anyway */ }
+  }
+
+  disconnectedCallback() { if (this._unsub) { this._unsub(); this._unsub = null; } }
+
+  // ---- state helpers
+  _facts() { return wizardFacts(this._hass); }
+  _parts() { return this._info.parts; }
+  _active() { return this._parts().filter((p) => !this._st.skip[p.part] && (this._st.change[p.part] || !this._configured)).map((p) => p.part); }
+  _part(k) { return this._parts().find((p) => p.part === k); }
+  _cands(part) { return wizardCandidates(part, this._facts()); }
+  _cand(part) {
+    const pk = this._st.pick[part.part];
+    return pk && pk.cand ? this._cands(part).find((c) => c.key === pk.cand) || null : null;
+  }
+  _site() { return wizardSite(this._parts(), Object.fromEntries(Object.entries(this._st.pick).map(([k, v]) => [k, v && !v.unlisted ? v : null])),
+    this._st.skip, this._site0, this._firmware); }
+  _optionRow(part, id) { return siteRow(this._info.options, part, id); }
+
+  /** The first time a part is shown: pick the only (or first) candidate, and when it has the saved option, that one. */
+  _autoPick(part) {
+    if (this._st.pick[part.part]) return;
+    const cands = this._cands(part);
+    const saved = this._site0[part.part];
+    const c = cands.find((x) => x.option === saved) || cands[0];
+    if (c) this._st.pick[part.part] = { cand: c.key, option: c.option };
+  }
+
+  /** Fill a part's empty inputs from the picked device (never overwrites what the user chose). */
+  _suggestPart(part, force) {
+    const cand = this._cand(part);
+    const facts = this._facts();
+    wizardRoles(part, this._roles).forEach((r) => {
+      const cur = this._draft.inputs[r.key];
+      const have = cur && (cur.entity || cur.value !== undefined);
+      if (r.kind === "static" || (have && !(force || (cur.entity && this._auto[r.key] === cur.entity)))) return;
+      const sg = wizardSuggest(r, cand, facts);
+      if (sg.entity) { this._draft.inputs[r.key] = { entity: sg.entity }; this._auto[r.key] = sg.entity; }
+      else if (force && cur && cur.entity && this._auto[r.key] === cur.entity) delete this._draft.inputs[r.key];
+    });
+    if (part.part === "inverter") {
+      const pl = this._plant();
+      WIZARD_PLANT.forEach(([which]) => {
+        if (pl[which].entity) return;
+        const g = wizardPlantGuess(which, cand, facts, this._hass.states);
+        if (g.entity) pl[which] = { entity: g.entity };
+      });
+    }
+  }
+
+  _plant() {
+    const plants = (this._draft.solar_plants = this._draft.solar_plants || []);
+    if (!plants.length) plants.push({ id: "main", name: "Main", forecast: "none", enabled: true, power: {}, energy_today: {} });
+    const p = plants[0];
+    p.power = p.power || {}; p.energy_today = p.energy_today || {};
+    p.forecast = this._st.skip.forecast ? "none" : (p.forecast && p.forecast !== "none" ? p.forecast : "solcast_site");
+    return p;
+  }
+
+  // ---- drawing
+  _style() {
+    return el("style", {}, `
+      .content { padding: 0 16px 16px; }
+      .steps { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 4px 0 12px; font-size: .9em; }
+      .steps .s { color: var(--secondary-text-color); }
+      .steps .s.now { color: var(--primary-text-color); font-weight: 600; border-bottom: 2px solid var(--primary-color); }
+      .steps .s.done { color: var(--success-color, #43a047); }
+      h3 { margin: 12px 0 4px; } h4 { margin: 12px 0 4px; }
+      .muted { color: var(--secondary-text-color); font-size: .9em; }
+      .part { border: 1px solid var(--divider-color); border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
+      .part.skipped { opacity: .65; }
+      .head { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+      .head .label { font-weight: 600; }
+      .badge { font-size: .75em; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--divider-color); }
+      .badge.req { background: rgba(219,68,55,.14); border-color: transparent; }
+      .badge.ok { color: var(--success-color, #43a047); border-color: var(--success-color, #43a047); }
+      .badge.warn { background: rgba(255,160,0,.18); color: var(--warning-color, #b26a00); border-color: transparent; }
+      .row { padding: 6px 0; border-top: 1px solid var(--divider-color); }
+      .row .desc, .row .live { color: var(--secondary-text-color); font-size: .88em; }
+      .row .problem { color: var(--error-color, #db4437); font-size: .88em; }
+      .row.bad .label { color: var(--error-color, #db4437); }
+      .ctl { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin-top: 4px; }
+      .ctl select, .ctl input[type=text], .ctl input[type=number] { min-height: 36px; box-sizing: border-box; }
+      ha-entity-picker { display: block; min-width: 260px; flex: 1; }
+      .banner { padding: 8px 12px; border-radius: 6px; margin: 8px 0; background: var(--secondary-background-color); }
+      .banner.ok { background: rgba(67,160,71,.15); } .banner.error { background: rgba(219,68,55,.15); }
+      .banner.warn { background: rgba(255,160,0,.18); }
+      .nav { display: flex; justify-content: space-between; gap: 8px; margin-top: 16px; }
+      button { min-height: 36px; padding: 0 14px; cursor: pointer; }
+      button.primary { background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); border: none; border-radius: 6px; }
+      button.primary:disabled { opacity: .5; cursor: default; }
+      button.link { background: none; border: none; color: var(--primary-color); padding: 0; min-height: 0; text-decoration: underline; }
+      a { color: var(--primary-color); }
+      details { margin: 6px 0; } summary { cursor: pointer; }
+      textarea { width: 100%; box-sizing: border-box; }
+      ul { margin: 4px 0; padding-left: 20px; }
+    `);
+  }
+
+  _render() {
+    const root = this.shadowRoot;
+    if (!root || !this._st) return;
+    this._live = [];
+    this._pickers = [];
+    const st = this._st;
+    const bar = el("div", { class: "steps" }, WIZARD_STEPS.map(([, label], i) =>
+      el("span", { class: `s${i === st.step ? " now" : i < st.step ? " done" : ""}` }, `${i < st.step ? "✓ " : `${i + 1}. `}${label}`)));
+    const body = [this._stepNeeds, this._stepDevices, this._stepMap, this._stepCheck, this._stepSave][st.step].call(this);
+    const next = st.step < 4 ? el("button", { class: "primary", onclick: () => this._go(st.step + 1) }, "Next") : null;
+    this._next = next;
+    const nav = el("div", { class: "nav" },
+      el("button", { onclick: () => this._go(st.step - 1), disabled: st.step === 0 }, "Back"), next);
+    root.replaceChildren(this._style(), el("ha-card", { header: "PowerEngine setup wizard" }, el("div", { class: "content" }, bar, body, nav)));
+    this._tick();
+  }
+
+  _go(i) {
+    const st = this._st;
+    if (i < 0 || i > 4) return;
+    if (i > st.step) {
+      const why = this._blocked(st.step);
+      if (why) { this._notice = why; this._render(); return; }
+    }
+    this._notice = "";
+    st.step = i;
+    if (i === 2) this._active().forEach((k) => { const p = this._part(k); this._autoPick(p); if (!st.suggested) st.suggested = {}; if (!st.suggested[k]) { st.suggested[k] = true; this._suggestPart(p, false); } });
+    this._render();
+    if (this.scrollIntoView) this.scrollIntoView({ block: "start" });
+  }
+
+  /** Why the user can't leave a step yet, in words, or "". */
+  _blocked(step) {
+    const st = this._st;
+    if (step === 1) {
+      for (const k of this._active()) {
+        const p = this._part(k);
+        const pk = st.pick[k];
+        if (!pk || pk.unlisted) return p.required
+          ? `${p.title}: PowerEngine doesn't have a definition for your device yet. Download the device list below and send it to us, so one can be written. Meanwhile you can still set PowerEngine up by hand on the configuration page.`
+          : `${p.title}: pick a device, or tick "I don't have this" to leave it out.`;
+      }
+    }
+    if (step === 2) {
+      const miss = wizardMissing(this._eff(), this._parts(), this._roles, this._active());
+      if (miss.length) return `${miss.length} required input${miss.length === 1 ? " is" : "s are"} still empty: ${miss.slice(0, 4).map((m) => m.role.label).join(", ")}${miss.length > 4 ? " and more" : ""}.`;
+    }
+    return "";
+  }
+
+  _notes() { return this._notice ? el("div", { class: "banner warn" }, this._notice) : null; }
+
+  // ---- step 1: what you'll need
+  _stepNeeds() {
+    const facts = this._facts();
+    const st = this._st;
+    const kids = [];
+    if (this._readOnly) kids.push(el("div", { class: "banner" }, "View only: log in as an admin to save changes."));
+    kids.push(el("p", {}, this._configured
+      ? "PowerEngine is already set up. Tick \"Change\" on the parts you want to set up again; the others stay as they are."
+      : "This wizard gets PowerEngine to a working Passive install: it watches and plans, and never controls your inverter until you say so. First, what each part needs. Parts marked required must already be set up in Home Assistant; the others can be skipped."));
+    kids.push(el("h3", {}, "What you'll need to hand"), el("ul", {}, WIZARD_HAVE_TO_HAND.map((t) => el("li", {}, t))));
+    kids.push(el("h3", {}, "Parts of your home"));
+    this._parts().forEach((p) => {
+      const n = wizardNeed(p, facts, this._hacs || null);
+      const skipped = !!st.skip[p.part];
+      const status = n.status === "found" ? el("span", { class: "badge ok" }, "✓ found in Home Assistant")
+        : n.status === "installed" ? el("span", { class: "badge warn" }, "installed in HACS, not added yet") : el("span", { class: "badge warn" }, "not found");
+      const box = el("div", { class: `part${skipped ? " skipped" : ""}` });
+      box.append(el("div", { class: "head" }, el("span", { class: "label" }, p.title),
+        el("span", { class: `badge ${p.required ? "req" : ""}` }, p.required ? "Required" : "Optional"), skipped ? null : status));
+      box.append(el("div", { class: "muted" }, p.why));
+      if (!skipped && n.status !== "found") {
+        const how = n.rows.map((r) => (r.url ? el("a", { href: r.url, target: "_blank", rel: "noopener" }, r.name) : r.name));
+        const line = el("div", { class: "muted" }, n.status === "installed"
+          ? "Add it under Settings, Devices & services, Add integration: " : "Install and set up one of these in Home Assistant, then press Check again: ");
+        how.forEach((h, i) => { if (i) line.append(", "); line.append(h); });
+        box.append(line);
+      } else if (!skipped) {
+        box.append(el("div", { class: "muted" }, `Found: ${n.rows.filter((r) => r.found).map((r) => r.name).join(", ")}`));
+      }
+      const ctl = el("div", { class: "ctl" });
+      if (!p.required) {
+        const cb = el("input", { type: "checkbox", onchange: (ev) => { st.skip[p.part] = ev.target.checked; this._render(); } });
+        cb.checked = skipped;
+        ctl.append(el("label", {}, cb, " I don't have this / skip it"));
+      }
+      if (this._configured && !skipped) {
+        const cb = el("input", { type: "checkbox", onchange: (ev) => { st.change[p.part] = ev.target.checked; this._render(); } });
+        cb.checked = !!st.change[p.part];
+        ctl.append(el("label", {}, cb, " Change this part"));
+      }
+      if (ctl.children.length) box.append(ctl);
+      kids.push(box);
+    });
+    kids.push(el("div", { class: "ctl" }, el("button", { onclick: () => { this._hacs = null; this._loadHacs(); this._render(); } }, "Check again"),
+      el("span", { class: "muted" }, "Looks at Home Assistant's devices and entities; nothing is changed.")));
+    kids.push(this._notes());
+    return el("div", {}, kids);
+  }
+
+  // ---- step 2: your devices
+  _stepDevices() {
+    const st = this._st;
+    const facts = this._facts();
+    const kids = [el("p", {}, "Pick the device for each part. Only that device's entities are used in the next step.")];
+    const parts = this._parts().filter((p) => this._active().includes(p.part));
+    if (!parts.length) kids.push(el("div", { class: "banner" }, "Nothing to set up: every part is skipped or unchanged."));
+    parts.forEach((p) => {
+      this._autoPick(p);
+      const cands = this._cands(p);
+      const pk = st.pick[p.part] || {};
+      const box = el("div", { class: "part" }, el("div", { class: "head" }, el("span", { class: "label" }, p.title),
+        el("span", { class: `badge ${p.required ? "req" : ""}` }, p.required ? "Required" : "Optional")));
+      const sel = el("select", { onchange: (ev) => {
+        const v = ev.target.value;
+        if (v === "__unlisted") st.pick[p.part] = { unlisted: true };
+        else { const c = cands.find((x) => x.key === v); st.pick[p.part] = { cand: v, option: c.option }; if (st.suggested) st.suggested[p.part] = false; }
+        this._notice = "";
+        this._render();
+      } });
+      cands.forEach((c) => sel.append(el("option", { value: c.key }, c.label)));
+      sel.append(el("option", { value: "__unlisted" }, cands.length ? "My device isn't listed" : "Nothing found: my device isn't listed"));
+      sel.value = pk.unlisted ? "__unlisted" : pk.cand || "__unlisted";
+      box.append(el("div", { class: "ctl" }, sel));
+      const row = pk.option ? this._optionRow(p.part, pk.option) : null;
+      if (row) {
+        const badge = row.status === "verified" ? el("span", { class: "badge ok" }, "verified") : el("span", { class: "badge warn" }, `${row.status}: not fully tested`);
+        box.append(el("div", { class: "ctl" }, el("span", {}, row.name), badge));
+        if (row.status !== "verified") box.append(el("div", { class: "muted" }, "PowerEngine will only run Passive on this until it has been tested on real hardware."));
+      }
+      if (p.part === "inverter" && row) box.append(this._firmwareBox(row));
+      if (pk.unlisted || !cands.length) box.append(this._exportBox(p, facts));
+      else box.append(el("details", {}, el("summary", {}, "Send this device's entity list (for support)"), this._exportBox(p, facts, true)));
+      kids.push(box);
+    });
+    kids.push(this._notes());
+    return el("div", {}, kids);
+  }
+
+  _firmwareBox(row) {
+    const list = siteFirmwareOptions(this._info.options, row.id);
+    if (!list.length) return el("span", {});
+    const sel = el("select", { onchange: (ev) => { this._firmware = ev.target.value || null; this._render(); } },
+      list.map((f) => el("option", { value: f }, f)), el("option", { value: "" }, SITE_UNKNOWN_FW));
+    this._firmware = this._firmware === undefined ? (this._site0.inverter_firmware || null) : this._firmware;
+    sel.value = this._firmware || "";
+    return el("div", { class: "ctl" }, el("span", {}, "Firmware"), sel, el("span", { class: "muted" }, siteDetectedLine(this._info.detected, this._firmware)));
+  }
+
+  /** "Download candidate entities": the export for an unsupported (or any) device. */
+  _exportBox(part, facts, compact) {
+    const st = this._st;
+    const pk = st.pick[part.part] || {};
+    const box = el("div", { class: "exportbox" });
+    if (!compact) box.append(el("div", { class: "banner" }, `${part.required ? "We don't have a definition for your " : "We can't find your "}${part.title.toLowerCase()} yet. Send us a list of its entities and we can write one. The list holds entity names, units and current values only; long numbers (meter and account numbers, serials) are removed first, and you can read the file before you send it.`));
+    let devId = pk.exportDevice || (this._cand(part) && this._cand(part).device ? this._cand(part).device.id : "");
+    const devs = wizardEnergyDevices(facts, this._hass.states);
+    const sel = el("select", { onchange: (ev) => { pk.exportDevice = ev.target.value; st.pick[part.part] = pk; } },
+      el("option", { value: "" }, "Choose the device…"), devs.map((d) => el("option", { value: d.id }, `${d.name}${d.manufacturer || d.model ? ` (${[d.manufacturer, d.model].filter(Boolean).join(" ")})` : ""}`)));
+    sel.value = devId || "";
+    pk.exportDevice = devId;
+    const note = el("textarea", { rows: 2, placeholder: "Anything we should know? (make, model, firmware: no personal details)" });
+    note.value = st.note || "";
+    note.addEventListener("input", () => { st.note = note.value; });
+    const go = (how) => {
+      const did = sel.value || devId;
+      const cand = this._cand(part);
+      const looseIds = cand && !cand.device ? cand.entityIds : [];
+      if (!did && !looseIds.length) { this._notice = "Choose the device first."; this._render(); return; }
+      const data = buildCandidateExport({ hass: this._hass, facts, deviceIds: did ? [did] : [], looseIds, note: st.note, now: new Date(),
+        appVersion: ((this._hass.states[VERSION_SENSOR] || {}).state) || null, chosen: this._chosen() });
+      const text = JSON.stringify(data, null, 1);
+      if (how === "copy") {
+        (navigator.clipboard && navigator.clipboard.writeText ? navigator.clipboard.writeText(text) : Promise.reject(new Error("no clipboard")))
+          .then(() => { this._flash(box, `Copied ${data.entities.length} entities.`); }, () => { this._flash(box, "Could not copy: use Download."); });
+      } else {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+        a.download = candidateFileName(new Date());
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+        this._flash(box, `Downloaded ${data.entities.length} entities from ${data.devices.length} device(s).`);
+      }
+    };
+    box.append(el("div", { class: "ctl" }, sel), note, el("div", { class: "ctl" },
+      el("button", { class: "primary", onclick: () => go("download") }, "Download candidate entities"),
+      el("button", { onclick: () => go("copy") }, "Copy"),
+      el("a", { href: WIZARD_ISSUES, target: "_blank", rel: "noopener" }, "Open a GitHub issue and attach it")));
+    return box;
+  }
+
+  _flash(box, text) {
+    let n = box.querySelector(".flash");
+    if (!n) { n = el("div", { class: "banner ok flash" }); box.append(n); }
+    n.textContent = text;
+  }
+
+  _chosen() {
+    const out = {};
+    this._parts().forEach((p) => {
+      const pk = this._st.pick[p.part];
+      out[p.part] = this._st.skip[p.part] ? "none" : !pk || pk.unlisted ? "unlisted" : pk.option;
+    });
+    return out;
+  }
+
+  // ---- step 3: map inputs
+  _stepMap() {
+    const st = this._st;
+    const kids = [el("p", {}, "Each input is filled from your chosen device's own entities. Check the live value beside each one. Inputs with no match are left empty, never guessed.")];
+    this._parts().filter((p) => this._active().includes(p.part)).forEach((p) => {
+      const cand = this._cand(p);
+      const roles = wizardRoles(p, this._roles);
+      const pair = BATTERY_PAIR.every((k) => (this._draft.inputs[k] || {}).entity);
+      const box = el("div", { class: "part" }, el("div", { class: "head" }, el("span", { class: "label" }, p.title),
+        cand ? el("span", { class: "muted" }, `from ${cand.label}`) : null));
+      const all = !!st.showAll[p.part];
+      const showAll = el("input", { type: "checkbox", onchange: (ev) => { st.showAll[p.part] = ev.target.checked; this._render(); } });
+      showAll.checked = all;
+      box.append(el("div", { class: "ctl" }, el("label", {}, showAll, " Show all entities (for something on another device, like a separate CT clamp)"),
+        el("button", { onclick: () => { this._suggestPart(p, true); this._render(); } }, "Use suggestions again")));
+      const main = [], later = [];
+      roles.forEach((r) => (roleNeed(r, this._eff(), pair).level === "req" ? main : later).push(r));
+      if (p.part === "inverter") WIZARD_PLANT.forEach(([which, label, desc]) => main.push({ key: `plant_${which}`, plant: which, label, description: desc, kind: "plant", domains: ["sensor"], required: "yes" }));
+      main.forEach((r) => box.append(this._roleRow(r, p, cand, all)));
+      if (later.length) {
+        const d = el("details", {}, el("summary", {}, `Optional and later (${later.length}): useful extras, and the controls PowerEngine needs to go live`));
+        d.open = !!st.open[p.part];
+        d.addEventListener("toggle", () => { st.open[p.part] = d.open; });
+        later.forEach((r) => d.append(this._roleRow(r, p, cand, all)));
+        box.append(d);
+      }
+      kids.push(box);
+    });
+    kids.push(this._notes());
+    return el("div", {}, kids);
+  }
+
+  _roleRow(role, part, cand, all) {
+    const draft = this._draft;
+    const plant = role.plant ? this._plant() : null;
+    const getSpec = () => (plant ? plant[role.plant] : draft.inputs[role.key]);
+    const setSpec = (v) => {
+      if (plant) plant[role.plant] = v ? { entity: v.entity } : {};
+      else if (v) draft.inputs[role.key] = v; else delete draft.inputs[role.key];
+      this._tick();
+    };
+    const row = el("div", { class: "row" });
+    const pair = BATTERY_PAIR.every((k) => (draft.inputs[k] || {}).entity);
+    const need = role.plant ? { level: "req", badge: "Required" } : roleNeed(role, this._eff(), pair);
+    row.append(el("div", { class: "head" }, el("span", { class: "label" }, role.label), el("span", { class: `badge ${need.level === "req" ? "req" : ""}` }, need.badge)));
+    row.append(el("div", { class: "desc" }, role.description));
+    const ctl = el("div", { class: "ctl" });
+    const cur = getSpec() || {};
+    if (role.kind === "static") {
+      const inp = el("input", { type: "number", step: "any", value: cur.value !== undefined ? cur.value : "", onchange: (ev) => setSpec(ev.target.value === "" ? null : { value: ev.target.value }) });
+      ctl.append(inp, el("span", { class: "muted" }, role.static_unit || ""));
+    } else {
+      const ids = (cand && !all ? cand.entityIds : this._facts().ids).filter((id) => (role.domains || ["sensor"]).includes(id.split(".")[0]));
+      if (this._usePicker) {
+        const pk = document.createElement("ha-entity-picker");
+        pk.hass = this._hass; pk.value = cur.entity || ""; pk.includeDomains = role.domains || ["sensor"]; pk.allowCustomEntity = true;
+        if (cand && !all) pk.includeEntities = ids;
+        pk.label = role.label;
+        pk.addEventListener("value-changed", (ev) => { const v = ev.detail.value || ""; setSpec(v ? { entity: v } : null); this._auto[role.key] = ""; });
+        this._pickers.push(pk);
+        ctl.append(pk);
+      } else {
+        const listId = `pe-w-${Math.random().toString(36).slice(2)}`;
+        ctl.append(el("input", { type: "text", value: cur.entity || "", list: listId, placeholder: "entity id", onchange: (ev) => { const v = ev.target.value.trim(); setSpec(v ? { entity: v } : null); } }),
+          el("datalist", { id: listId }, ids.sort().map((id) => el("option", { value: id }))));
+      }
+    }
+    row.append(ctl);
+    const live = el("div", { class: "live" }), problem = el("div", { class: "problem" });
+    row.append(live, problem);
+    this._live.push(() => {
+      const s = getSpec() || {};
+      const st = s.entity ? this._hass.states[s.entity] : null;
+      const rr = role.plant ? { text: st ? `${st.state} ${((st.attributes || {}).unit_of_measurement) || ""}`.trim() : "", readsAs: "" } : readout(role, s, st);
+      live.textContent = rr.text ? `Now: ${rr.text}${rr.readsAs ? ` (${rr.readsAs})` : ""}` : "";
+      const spec = role.plant ? { entity: s.entity } : s;
+      const rl = role.plant ? { key: role.key, kind: role.plant === "power" ? "power" : "energy", domains: ["sensor"], required: "yes" } : role;
+      const p = (s.entity || s.value !== undefined) ? instantProblem(rl, spec, st) : "";
+      problem.textContent = p;
+      row.classList.toggle("bad", !!p);
+      const from = !role.plant && s.entity && this._auto[role.key] === s.entity && cand && !cand.entityIds.includes(s.entity) ? "Suggested from another device. " : "";
+      if (from && !problem.textContent) problem.textContent = from;
+    });
+    return row;
+  }
+
+  // ---- step 4: live checks
+  _stepCheck() {
+    const st = this._st;
+    const kids = [el("p", {}, "Two quick checks against what you can see, to catch signs and units that are the wrong way round. These are advice only: nothing here stops you saving.")];
+    const d = this._draft;
+    const mapped = (k) => !!(d.inputs[k] && d.inputs[k].entity);
+    if (!this._active().includes("inverter")) kids.push(el("div", { class: "banner" }, "The inverter was not changed, so there is nothing to check."));
+    const signed = [["battery_power", "Right now, is your battery…"], ["grid_power", "Right now, is your house…"]];
+    signed.forEach(([key, question]) => {
+      const role = this._roles.find((r) => r.key === key);
+      if (!role || !mapped(key) || !this._active().includes("inverter")) return;
+      const words = parseSignNote(role.sign_note);
+      const box = el("div", { class: "part" }, el("div", { class: "head" }, el("span", { class: "label" }, role.label)));
+      const live = el("div", { class: "live" });
+      const result = el("div", {});
+      const sel = el("select", { onchange: (ev) => { st.says[key] = ev.target.value; this._tick(); } },
+        el("option", { value: "" }, "Choose…"), el("option", { value: "pos" }, cap(words.pos)), el("option", { value: "neg" }, cap(words.neg)), el("option", { value: "idle" }, "Neither / not sure"));
+      sel.value = st.says[key] || "";
+      box.append(el("div", { class: "ctl" }, el("span", {}, question), sel), live, result);
+      this._live.push(() => {
+        const s = d.inputs[key] || {};
+        const w = wizardWatts(this._hass.states[s.entity]);
+        live.textContent = w === null ? "No reading yet." : `Reads ${Math.round(w)} W${s.invert ? " (inverted)" : ""}.`;
+        const v = wizardSignCheck(st.says[key], w, !!s.invert);
+        result.replaceChildren();
+        if (!st.says[key]) return;
+        if (v === "ok") result.append(el("div", { class: "banner ok" }, "✓ That matches what PowerEngine expects."));
+        else if (v === "flip") result.append(el("div", { class: "banner warn" }, "That reads the wrong way round. ",
+          el("button", { onclick: () => { const t = d.inputs[key]; if (t.invert) delete t.invert; else t.invert = true; this._tick(); } }, s.invert ? "Remove invert" : "Invert it")));
+        else if (v === "unknown") result.append(el("div", { class: "muted" }, "Too close to zero to tell: try again when it is charging or discharging hard."));
+      });
+      kids.push(box);
+    });
+    const bal = el("div", { class: "part" }, el("div", { class: "head" }, el("span", { class: "label" }, "Does it add up?")),
+      el("div", { class: "muted" }, "House load should be about grid + solar + battery output."));
+    const balText = el("div", {});
+    bal.append(balText);
+    this._live.push(() => {
+      const v = (k) => { const s = d.inputs[k]; if (!s || !s.entity) return null; const w = wizardWatts(this._hass.states[s.entity]); return w === null ? null : (s.invert ? -w : w); };
+      const pl = this._plant();
+      const solar = pl.power && pl.power.entity ? wizardWatts(this._hass.states[pl.power.entity]) : null;
+      const r = wizardBalance({ battery: v("battery_power"), solar, grid: v("grid_power"), house: v("house_load_power") });
+      balText.replaceChildren(r ? el("div", { class: `banner ${r.ok ? "ok" : "warn"}` },
+        r.ok ? `✓ Close enough (house ${Math.round(v("house_load_power"))} W against ${r.expected} W from the others).`
+          : `Off by ${Math.abs(r.diff)} W (house ${Math.round(v("house_load_power"))} W against ${r.expected} W). Check the signs above and the units of each input. A car charging, or a moment of change, can also cause a gap.`)
+        : el("div", { class: "muted" }, "Needs battery power, solar power, grid power and house load all mapped and reading."));
+    });
+    kids.push(bal, this._notes());
+    return el("div", {}, kids);
+  }
+
+  // ---- step 5: review and save
+  _stepSave() {
+    const st = this._st;
+    const site = this._site();
+    const features = wizardFeatures(this._draft.features, site, this._draft);
+    const kids = [];
+    kids.push(el("h3", {}, "Review"));
+    const list = el("ul", {});
+    this._parts().forEach((p) => {
+      const skipped = st.skip[p.part];
+      const pk = st.pick[p.part];
+      const row = pk && pk.option ? this._optionRow(p.part, pk.option) : null;
+      const n = wizardRoles(p, this._roles).filter((r) => this._draft.inputs[r.key] && (this._draft.inputs[r.key].entity || this._draft.inputs[r.key].value !== undefined)).length;
+      const changed = this._active().includes(p.part);
+      list.append(el("li", {}, `${p.title}: `, skipped ? "left out" : !changed ? "unchanged" : `${row ? row.name : p.part}, ${n} input${n === 1 ? "" : "s"} mapped`));
+    });
+    kids.push(list);
+    const off = Object.keys(features).filter((k) => this._draft.features[k] && !features[k]).map((k) => (FEATURES.find((f) => f[0] === k) || [k, k])[1]);
+    if (off.length) kids.push(el("div", { class: "banner" }, `Switched off because their inputs aren't set: ${off.map(T).join(", ")}. You can turn them on later on the configuration page.`));
+    kids.push(el("div", { class: "banner warn" }, "PowerEngine starts in Passive mode: it watches and plans, and writes nothing to your inverter. A backup of any existing configuration is kept. Before going Active, run the supervised tests on the Tests page."));
+    if (this._siteWarns(site)) kids.push(el("div", { class: "banner warn" }, SITE_WARNING));
+    if (this._result) kids.push(el("div", { class: `banner ${this._result.ok ? "ok" : "error"}` }, this._result.text));
+    const save = el("button", { class: "primary", disabled: this._readOnly || this._saving || (this._result && this._result.ok), onclick: () => this._save() },
+      this._saving ? "Saving…" : "Save and start PowerEngine");
+    kids.push(el("div", { class: "ctl" }, save, this._readOnly ? el("span", { class: "muted" }, "Log in as an admin to save.") : null));
+    return el("div", {}, kids);
+  }
+
+  /** The draft as it will be saved for the checks: features that need a part or an input that isn't there are off. */
+  _eff() { return Object.assign({}, this._draft, { features: wizardFeatures(this._draft.features, this._site(), this._draft) }); }
+
+  _siteWarns(site) { return this._configured && siteNeedsWarning(this._info.options, this._site0, site); }
+
+  async _save() {
+    const site = this._site();
+    if (this._siteWarns(site) && typeof confirm === "function" && !confirm(SITE_WARNING)) return;
+    const draft = JSON.parse(JSON.stringify(this._draft));
+    draft.features = wizardFeatures(draft.features, site, draft);
+    draft.operation = Object.assign({}, draft.operation, { mode: "passive" });
+    draft.site = site;
+    this._saving = true;
+    this._result = null;
+    this._render();
+    try {
+      await this._hass.callWS({ type: "fire_event", event_type: SAVE_EVENT, event_data: { config: buildConfig(draft) } });
+      setTimeout(() => { if (this._saving) { this._saving = false; this._result = { ok: false, text: "No reply from PowerEngine. Check the AppDaemon log." }; this._render(); } }, 15000);
+    } catch (e) {
+      this._saving = false;
+      this._result = { ok: false, text: `Could not send: ${e.message || e}. Saving needs an admin user.` };
+      this._render();
+    }
+  }
+
+  /** Live updates without redrawing (and so without losing a picker's focus). */
+  _tick() {
+    (this._live || []).forEach((f) => { try { f(); } catch (e) { /* a row that can't update is left as it was */ } });
+  }
+}
+
+function cap(text) { return capFirst(text); }
+
+if (typeof customElements !== "undefined" && !customElements.get("powerengine-wizard-card")) {
+  customElements.define("powerengine-wizard-card", PowerEngineWizardCard);
+  window.customCards = window.customCards || [];
+  window.customCards.push({
+    type: "powerengine-wizard-card",
+    name: "PowerEngine setup wizard",
+    description: "Finds your devices in Home Assistant, maps PowerEngine's inputs from them and saves a Passive setup. Also exports a device's entity list for unsupported hardware.",
+  });
+}
+
 // --- Plan history day picker -------------------------------------------------------------------------------------
 // Picks the day the Plan history tab shows: a date box with previous / next arrows either side. It fires the event
 // pe_history_day {date: "YYYY-MM-DD"} (admins only: HA's fire_event needs admin). The app answers by showing that day
@@ -3618,5 +4476,6 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-hi
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel };
+  module.exports = { historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel,
+  WIZARD_STEPS, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardNeed, wizardRoles, wizardSuggest, wizardPlantGuess, wizardSite, wizardFeatures, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices };
 }

@@ -15,3 +15,8 @@ on the owner's machine, not in a cloud session.
   `min_card_version` on `sensor.pe_diag_version`. Each side warns only when the other is older than its minimum
   (`versionWarnings`), not when the versions differ. Raise `MIN_APP_VERSION` when the card starts to need something
   a newer app publishes.
+- The setup wizard (`PowerEngineWizardCard`, section "setup wizard and candidate export") works from what the app publishes as
+  `sensor.pe_diag_version` attribute `wizard`; it holds no brand names itself. Its pure helpers (`wizard*`, `scrubText`,
+  `buildCandidateExport`) are tested in `tests/wizard.test.cjs`. Format and rules: the app repo's `docs/WIZARD.md`. Not yet run on
+  a live Home Assistant. To look at it without one, load the file in a page with a fake `hass` (states, entities, devices) and the
+  app's published JSON, as the tests do for the helpers.
