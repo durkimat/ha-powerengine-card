@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.89";
+const CARD_VERSION = "0.9.93";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -465,6 +465,7 @@ function buildConfig(draft) {
     out.notifications = { service: draft.notifications.service, events: Object.assign({}, draft.notifications.events) };
   }
   if (draft.site) out.site = draft.site;      // only set when the app publishes site_options
+  if (Array.isArray(draft.devices)) out.devices = buildDevices(draft.devices);   // only set when the app supports devices
   if (draft.remove_entities) out.remove_entities = true;
   return out;
 }
@@ -537,6 +538,59 @@ function siteDetectedLine(detected, chosen) {
 /** Option label: name, plus the status when it is not verified. */
 function siteOptionLabel(row) { return row.status && row.status !== "verified" ? `${row.name} (${row.status})` : row.name; }
 
+/* ------------------------------------------------------------ Other devices (multiple-devices plan, M1)
+ * Read-only devices beyond the main inverter: the app (0.9.93 and newer) reads their battery and solar, publishes one sensor per
+ * mapped input (sensor.pe_state_dev_<id>_soc / _battery_power / _solar_power) and counts their solar. Nothing is controlled. */
+const DEVICES_APP_VERSION = "0.9.93";
+const DEVICE_INPUTS = [          // [input key, label, can be inverted]
+  ["battery_soc", "Battery state of charge (%)", false],
+  ["battery_power", "Battery power (W); + discharging, - charging", true],
+  ["solar_power", "Solar power (W)", false],
+];
+const DEVICE_NOTE = "Read only: PowerEngine measures these and counts their solar, but only the inverter chosen above is controlled.";
+
+function devicesSupported(appVersion) { return versionOlder(appVersion, DEVICES_APP_VERSION) === false; }
+
+/** The saved devices as an editable draft (a copy with every field present). */
+function deviceDraft(saved) {
+  return (Array.isArray(saved) ? saved : []).map((d) => ({
+    id: d.id, adapter: d.adapter, name: d.name || d.id, firmware: d.firmware || "", control: "read_only",
+    inputs: JSON.parse(JSON.stringify(d.inputs || {})),
+  }));
+}
+
+function deviceNewId(name, taken) { return slugify(name, ["main"].concat(taken || [])); }
+
+/** The `devices` list to save: drop a device with no adapter, and inputs with no entity. */
+function buildDevices(list) {
+  return (list || []).filter((d) => d && d.id && d.adapter).map((d) => {
+    const inputs = {};
+    DEVICE_INPUTS.forEach(([key, , invertible]) => {
+      const spec = (d.inputs || {})[key];
+      if (spec && spec.entity) inputs[key] = invertible && spec.invert ? { entity: spec.entity, invert: true } : { entity: spec.entity };
+    });
+    const out = { id: d.id, adapter: d.adapter, name: d.name || d.id, control: "read_only", inputs };
+    if (d.firmware) out.firmware = d.firmware;
+    return out;
+  });
+}
+
+/** One line of live readings for a device, from the sensors the app publishes for it. */
+function deviceReadout(states, dev) {
+  const num = (field) => {
+    const st = (states || {})[`sensor.pe_state_dev_${dev.id}_${field}`];
+    const n = st ? parseFloat(st.state) : NaN;
+    return Number.isFinite(n) ? n : null;
+  };
+  if (!Object.keys(dev.inputs || {}).some((k) => dev.inputs[k] && dev.inputs[k].entity)) return "No inputs chosen yet";
+  const parts = [];
+  const soc = num("soc"), bp = num("battery_power"), pv = num("solar_power");
+  if (soc !== null) parts.push(`battery ${Math.round(soc)}%`);
+  if (bp !== null) parts.push(Math.abs(bp) < 10 ? "battery idle" : `battery ${bp > 0 ? "discharging" : "charging"} ${Math.round(Math.abs(bp))} W`);
+  if (pv !== null) parts.push(`solar ${Math.round(pv)} W`);
+  return parts.length ? parts.join(", ") : "Waiting for the first reading (save, then PowerEngine reads it within a minute)";
+}
+
 /* --------------------------------------------------------------------- card */
 
 async function ensureEntityPicker() {
@@ -605,6 +659,8 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     this._wizard = wizardInfo(ver.attributes);
     this._siteSaved = this._site ? siteFromSelection(this._site.site) : null;
     if (this._site) draft.site = Object.assign({}, this._siteSaved); else delete draft.site;
+    this._devices = devicesSupported(ver.state);
+    if (this._devices) draft.devices = deviceDraft(draft.devices); else delete draft.devices;
     this._draft = draft;
     this._prefilled = fresh;
     this._build();
@@ -1219,12 +1275,14 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     if (this._filter === "attention" || this._query) this._applyFilter();
     const base = initialDraft(saved, [], [], this._settings).draft;
     if (this._siteSaved) base.site = this._siteSaved; else delete base.site;
+    if (this._devices) base.devices = deviceDraft(base.devices); else delete base.devices;
     const dirty = JSON.stringify(buildConfig(this._draft)) !== JSON.stringify(buildConfig(base));
     if (this._saveBtn) {
       this._saveBtn.disabled = this._readOnly || blocking > 0 || this._saving || !dirty;
       this._saveBtn.textContent = this._saving ? "Saving…" : "Save";
     }
     if (this._resetBtn) this._resetBtn.disabled = this._readOnly || !dirty || this._saving;
+    (this._devLive || []).forEach(({ dev, node }) => { node.textContent = deviceReadout(states, dev); });
   }
 
   /** Devices Home Assistant has for each part that PowerEngine isn't using: [{title, labels}]. */
@@ -1237,13 +1295,59 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       const nameOf = (id) => { const r = siteRow(this._site.options, p.part, id); return r ? r.name : id; };
       const cands = wizardCandidates(p, facts, nameOf);
       const labels = wizardAlso(p, cands, wizardInUse(p, cands, this._saved.inputs, this._siteSaved)).map((x) => x.label);
-      if (p.part === "inverter") wizardOthers(w.parts, facts, this._hass.states, wizardUsedEntities(this._saved)).forEach((d) => labels.push(`${wizardDeviceName(d)}, ${d.kind === "solar" ? "could be added as a solar plant in the Setup wizard" : "not supported yet"}`));
+      if (p.part === "inverter") wizardOthers(w.parts, facts, this._hass.states, wizardUsedEntities(this._saved)).forEach((d) => labels.push(`${wizardDeviceName(d)}, ${d.kind === "solar" ? "could be added as a solar plant in the Setup wizard" : this._devices ? "could be added as a read-only device below" : "not supported yet"}`));
       if (labels.length) out.push({ title: p.title, labels });
     });
     return out;
   }
 
   _siteWarns() { return !!this._site && siteNeedsWarning(this._site.options, this._siteSaved, this._draft.site); }
+
+  /** "Other devices": read-only devices beyond the main inverter (app 0.9.93+). Returns the nodes to show. */
+  _devicesBlock() {
+    const list = this._draft.devices;
+    const adapters = siteRows(this._site.options, "inverter");
+    const redraw = () => { this._renderSite(); this._refresh(); };
+    this._devLive = [];
+    const kids = [el("h4", {}, "Other devices"), el("div", { class: "muted" }, DEVICE_NOTE)];
+    list.forEach((d, i) => {
+      const name = el("input", { type: "text", value: d.name || "", placeholder: "Name", onchange: (ev) => { d.name = ev.target.value; this._refresh(); } });
+      const sel = el("select", { onchange: (ev) => { d.adapter = ev.target.value; this._refresh(); } },
+        adapters.map((r) => el("option", { value: r.id }, siteOptionLabel(r))));
+      sel.value = d.adapter;
+      const fw = el("input", { type: "text", value: d.firmware || "", placeholder: "Firmware (optional)", onchange: (ev) => { d.firmware = ev.target.value.trim(); this._refresh(); } });
+      const head = el("div", { class: "ctl" }, name, sel, fw, el("span", { class: "badge" }, "read only"),
+        el("button", { onclick: () => { list.splice(i, 1); redraw(); } }, "Remove"));
+      const box = el("div", { class: "plant" }, head);
+      DEVICE_INPUTS.forEach(([key, label, invertible]) => {
+        d.inputs[key] = d.inputs[key] || {};
+        const spec = d.inputs[key];
+        const row = el("div", { class: "ctl" }, this._entityInput(spec.entity, ["sensor"], (v) => { spec.entity = v; this._refresh(); }, label));
+        if (invertible) {
+          const cb = el("input", { type: "checkbox", onchange: (ev) => { spec.invert = ev.target.checked; this._refresh(); } });
+          cb.checked = !!spec.invert;
+          row.append(el("label", {}, cb, " Invert"));
+        }
+        box.append(el("div", { class: "desc" }, label), row);
+      });
+      const live = el("div", { class: "live" });
+      this._devLive.push({ dev: d, node: live });
+      box.append(live);
+      if (this._readOnly) {
+        box.querySelectorAll("input,select,button").forEach((n) => { n.disabled = true; });
+        box.querySelectorAll("ha-entity-picker").forEach((n) => { n.disabled = true; });
+      }
+      kids.push(box);
+    });
+    const add = el("button", { onclick: () => {
+      const n = list.length + 1;
+      list.push({ id: deviceNewId(`device ${n}`, list.map((x) => x.id)), adapter: (adapters[0] || {}).id || "", name: `Device ${n}`, firmware: "", control: "read_only", inputs: {} });
+      redraw();
+    } }, "+ Add device");
+    add.disabled = this._readOnly || !adapters.length;
+    kids.push(add);
+    return kids;
+  }
 
   /** The "Your system" block: hidden when the app doesn't publish site_options. Redrawn on each change. */
   _renderSite() {
@@ -1283,6 +1387,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     kids.push(grid);
     const plants = ((this._saved || {}).solar_plants || []).filter((pl) => pl.enabled !== false);
     if (plants.length) kids.push(el("div", { class: "muted" }, `Solar plants counted: ${plants.map((pl) => pl.name || pl.id).join(", ")}. Each is read only; the inverter selected above is the one PowerEngine controls.`));
+    if (this._devices) kids.push(...this._devicesBlock());
     const also = this._alsoFound();
     if (also.length) {
       kids.push(el("div", { class: "muted" }, "Also found in Home Assistant, not used by PowerEngine:"),
@@ -3624,6 +3729,7 @@ function wizardUsedEntities(cfg) {
   const used = new Set();
   Object.values((cfg || {}).inputs || {}).forEach((sp) => { if (sp && sp.entity) used.add(sp.entity); });
   ((cfg || {}).solar_plants || []).forEach((pl) => ["power", "energy_today"].forEach((k) => { if (pl && pl[k] && pl[k].entity) used.add(pl[k].entity); }));
+  ((cfg || {}).devices || []).forEach((d) => Object.values((d && d.inputs) || {}).forEach((s) => { if (s && s.entity) used.add(s.entity); }));
   return used;
 }
 
@@ -4696,6 +4802,6 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-hi
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel,
+  module.exports = { historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   WIZARD_STEPS, wizardDeviceName, wizardInUse, wizardOthers, wizardAlso, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardNeed, wizardRoles, wizardSuggest, wizardPlantGuess, wizardSite, wizardFeatures, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices };
 }

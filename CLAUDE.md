@@ -24,3 +24,8 @@ on the owner's machine, not in a cloud session.
   mapped entity), lists other candidates and unowned energy devices (`wizardAlso`, `wizardOthers`); "Your system" shows the same
   ("also found"). The setup card hides itself when `setupSummary().allSet`. Use "grid events" for the concept in texts; the provider
   name comes from `<<event>>`. Extra solar plants (`solar_plants[1..]`, read only) are added in the wizard's step 3 (`_plantsBox`, `wizardPlantFromDevice`); a device already used by the config (`wizardUsedEntities`) is not listed as "also found".
+- "Other devices" (section "Other devices" before the card class: `DEVICES_APP_VERSION`, `DEVICE_INPUTS`, `devicesSupported`, `deviceDraft`,
+  `buildDevices`, `deviceReadout`; UI `_devicesBlock` in the config card's "Your system") edits the app's read-only `devices` (app 0.9.93+, see
+  the app repo's docs/SITE.md and docs/plans/multiple-devices.md). **Rules:** the list is shown, and `devices` sent, only when the app is 0.9.93
+  or newer (an older app rejects the unknown key); once sent it is always a list (`[]` removes them; a save without the key keeps the saved
+  ones, which is what an older card does); the entity-in-use check (`wizardUsedEntities`) counts device inputs. Tests: `tests/devices.test.cjs`.
