@@ -889,3 +889,12 @@ test("versionWarnings warns only when the other side is older than its minimum",
   assert.deepEqual(h.versionWarnings(st("unavailable")), []);
   assert.deepEqual(h.versionWarnings(st("0.9.70", {})), []);
 });
+
+test("history day payload accepts a date inside the range and nothing else", () => {
+  assert.deepStrictEqual(h.historyDayPayload("2026-03-04", "2025-09-01", "2026-10-03"),
+    { type: "fire_event", event_type: "pe_history_day", event_data: { date: "2026-03-04" } });
+  assert.strictEqual(h.historyDayPayload("2025-08-31", "2025-09-01", "2026-10-03"), null);
+  assert.strictEqual(h.historyDayPayload("2026-10-04", "2025-09-01", "2026-10-03"), null);
+  assert.strictEqual(h.historyDayPayload("", "2025-09-01", "2026-10-03"), null);
+  assert.strictEqual(h.historyDayPayload("04/03/2026", "2025-09-01", "2026-10-03"), null);
+});
