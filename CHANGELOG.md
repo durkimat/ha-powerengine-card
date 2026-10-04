@@ -3,6 +3,16 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.95
+
+### Your system
+
+- **New "Your system" card replaces the Setup wizard** (`custom:powerengine-system-card`; the old `powerengine-wizard-card` name still works). The list of equipment is read only. **Change your system** opens a panel to add, edit, replace and remove equipment: pick what it is, find it in Home Assistant, choose its entities (with live values, a sign check and an Invert tick), review.
+- Changes are a draft until **Apply to System**. **Save draft** keeps it in this browser; closing with unsaved edits asks Save draft, Discard changes or Keep editing. Apply sends only the equipment changes.
+- Removing an optional part, an extra solar plant or another device shows what goes with it first. The inverter and the tariff can only be replaced.
+- The configuration card no longer edits the inverter, tariff, solar plants or other devices; use Your system. It follows the saved equipment after an Apply, so its own Save never writes old equipment back.
+- Needs PowerEngine app 0.9.95 for the dashboard that names the new card; the card itself works with the same apps as before.
+
 ## 0.9.93
 
 ### Other devices
