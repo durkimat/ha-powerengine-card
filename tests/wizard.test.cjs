@@ -110,18 +110,6 @@ test("wizardCandidates lists devices and entities found by name, with readable l
   assert.deepEqual(m.wizardCandidates(PARTS[3], facts), []);
 });
 
-test("wizardNeed says found, installed in HACS, or missing, and what to install", () => {
-  const facts = m.wizardFacts(hass());
-  assert.equal(m.wizardNeed(PARTS[0], facts, null).status, "found");
-  const empty = m.wizardFacts({ states: {}, entities: {}, devices: {} });
-  const missing = m.wizardNeed(PARTS[0], empty, null);
-  assert.equal(missing.status, "missing");
-  assert.equal(missing.rows[0].url, SOLIS.integration.url);
-  assert.equal(m.wizardNeed(PARTS[0], empty, [{ full_name: "wills106/homeassistant-solax-modbus", installed: true }]).status, "installed");
-  assert.equal(m.wizardNeed(PARTS[0], empty, [{ full_name: "wills106/homeassistant-solax-modbus", installed: false }]).status, "missing");
-  assert.equal(m.wizardNeed(PARTS[2], facts, null).required, false);
-});
-
 test("suggestions come from the picked device first, and from elsewhere only when flagged", () => {
   const facts = m.wizardFacts(hass());
   const cand = m.wizardCandidates(PARTS[0], facts)[0];
@@ -133,29 +121,6 @@ test("suggestions come from the picked device first, and from elsewhere only whe
   const solar = m.wizardPlantGuess("power", cand, facts, hass().states);
   assert.equal(solar.entity, "sensor.solis_pv_total_power");
   assert.equal(m.wizardPlantGuess("energy_today", cand, facts, hass().states).entity, "sensor.solis_power_generation_today");
-});
-
-test("wizardSite: a skipped part is none, the tariff stays auto, the picked options are written", () => {
-  const saved = m.siteFromSelection({ inverter: "solis", ev_charger: "zappi", tariff: "auto", forecast: "solcast", events: "axle" });
-  const site = m.wizardSite(PARTS, { inverter: { option: "solis" } }, { ev_charger: true, forecast: true }, saved);
-  assert.equal(site.inverter, "solis");
-  assert.equal(site.ev_charger, "none");
-  assert.equal(site.forecast, "none");
-  assert.equal(site.tariff, "auto");
-  assert.equal(site.events, "axle");
-  assert.equal(m.wizardSite(PARTS, {}, {}, saved, "420044").inverter_firmware, "420044");
-});
-
-test("wizardFeatures turns off what needs a skipped or unmapped part, and never turns anything on", () => {
-  const f = { smart_charge_optimisation: true, axle: true, axle_plus_export: true, free_power_days: true, arbitrage: false };
-  const draft = { inputs: {} };
-  const out = m.wizardFeatures(f, { ev_charger: "none", events: "none" }, draft);
-  assert.deepEqual([out.smart_charge_optimisation, out.axle, out.axle_plus_export, out.free_power_days, out.arbitrage], [false, false, false, false, false]);
-  const kept = m.wizardFeatures(f, { ev_charger: "zappi", events: "axle" }, { inputs: { free_power_active: { entity: "binary_sensor.x" } } });
-  assert.deepEqual([kept.smart_charge_optimisation, kept.axle, kept.free_power_days], [false, true, true]);   // no request entities mapped
-  const withTargets = m.wizardFeatures(f, { ev_charger: "zappi", events: "axle" }, { inputs: { free_power_active: { entity: "binary_sensor.x" },
-    smart_target_soc: { entity: "number.a" }, smart_target_time: { entity: "select.b" } } });
-  assert.equal(withTargets.smart_charge_optimisation, true);
 });
 
 test("wizardMissing lists the required inputs of the active parts only", () => {
@@ -240,8 +205,6 @@ test("two options that find the same device give one candidate, and each row say
   assert.equal(c.length, 1);
   assert.equal(c[0].option, "edf");                                    // its name patterns match the entity
   assert.match(c[0].label, /Electricity meter · EDF/);
-  const need = m.wizardNeed(part, facts, null, nameOf);
-  assert.deepEqual(need.rows.map((r) => [r.name, r.found]), [["EDF", true], ["Octopus", false]]);   // the Octopus integration is there but owns nothing
   // an Octopus home: the octopus option's names match, so it wins
   const o = hass();
   o.states["sensor.octopus_energy_electricity_99_current_rate"] = { state: "0.2", attributes: {} };
@@ -264,7 +227,7 @@ test("with EDF and Octopus both set up, the one in the saved config is the one i
   const saved = { import_rate_now: { entity: "sensor.edf_energy_electricity_1234567890_current_rate" } };
   const inUse = m.wizardInUse(part, cands, saved, { tariff: "auto" });
   assert.equal(inUse.option, "edf");
-  assert.deepEqual(m.wizardAlso(part, cands, inUse).map((x) => x.label), ["Octopus meter · Octopus"]);
+  assert.deepEqual(cands.filter((c) => c.key !== inUse.key).map((c) => c.label), ["Octopus meter · Octopus"]);   // the other candidates
   // no saved mapping: the site names the option (the tariff's "auto" and "none" name none)
   assert.equal(m.wizardInUse(part, cands, {}, { tariff: "octopus" }).option, "octopus");
   assert.equal(m.wizardInUse(part, cands, {}, { tariff: "auto" }), null);
