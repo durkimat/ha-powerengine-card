@@ -3,6 +3,11 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.100
+
+- New **Report a problem** section in the diagnostics card on the Health tab. Type a title and a short description and press **Prepare report**: the card collects the diagnostics and replaces account, meter and serial numbers, site and device ids, emails and postcodes with placeholders. You can read exactly what will be sent. **Download and open GitHub issue** saves the file and opens a pre-filled GitHub issue (you need a GitHub account); drag the file onto the issue's Diagnostics box and submit.
+- The ordinary diagnostics export is unchanged.
+
 ## 0.9.97
 
 - New **Override** card at the top of the Monitoring page: shows what the inverter is doing and lets an admin switch it to Self-use, Hold, Charge or Export for a plan window, a number of half-hours, until a time, or permanently, with a Cancel button while one is on. It hides itself on an app without the override.
