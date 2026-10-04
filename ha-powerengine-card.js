@@ -3366,6 +3366,51 @@ function diagFileName(d) {
   return `powerengine-diagnostics-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.json`;
 }
 
+// --- Report a problem (Health tab, in the diagnostics card) --------------------------------------------------
+// The report is the diagnostics file with identifying text scrubbed, plus a pre-filled new-issue link. GitHub takes no
+// attachments from a link, so the user drags the downloaded file onto the issue; the link carries only the title and a
+// short description (a link is practically limited to about 8 KB).
+const REPORT_ISSUES = "https://github.com/durkimat/ha-powerengine-controller/issues/new";
+const REPORT_TEMPLATE = "report-a-problem.yml";
+const REPORT_DESCRIPTION_MAX = 4000;
+
+/** Scrub identifying text from a serialised export. Account, meter and serial numbers (digit runs of 7 or more),
+ *  hex site and device ids, emails and postcodes are replaced; the same value always gets the same placeholder
+ *  (<n1>, <id2>), so entity names stay distinguishable. Returns the text and how many values were replaced. */
+function scrubReport(text) {
+  const seen = new Map();
+  let count = 0;
+  const swap = (tag) => (m) => {
+    const key = tag + ":" + m;
+    if (!seen.has(key)) seen.set(key, `<${tag}${seen.size + 1}>`);
+    count += 1;
+    return seen.get(key);
+  };
+  const out = String(text)
+    .replace(/[^\s@"\\]+@[^\s@"\\]+\.[^\s@"\\]+/g, swap("email"))
+    .replace(/\b[A-Z]{1,2}\d[A-Z\d]? ?\d[A-Z]{2}\b/gi, (m) => (/\d/.test(m) ? swap("postcode")(m) : m))
+    .replace(/(?<![0-9a-z])(?=[0-9a-f_-]*\d)[0-9a-f]{4,8}(?:[_-][0-9a-f]{4,12}){2,}(?![0-9a-z])/gi, swap("id"))
+    .replace(/(?<![0-9a-z])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{8,}(?![0-9a-z])/gi, swap("id"))
+    .replace(/\d{7,}/g, swap("n"));
+  return { text: out, count };
+}
+
+function reportFileName(d) {
+  return diagFileName(d).replace("diagnostics", "report");
+}
+
+/** The new-issue link: the general issue form with the title and description filled in. */
+function reportIssueUrl(opts) {
+  const o = opts || {};
+  const q = new URLSearchParams();
+  q.set("template", REPORT_TEMPLATE);
+  if (o.title) q.set("title", String(o.title).trim().slice(0, 200));
+  q.set("description", String(o.description || "").trim().slice(0, REPORT_DESCRIPTION_MAX));
+  const versions = [o.appVersion && `app ${o.appVersion}`, o.cardVersion && `card ${o.cardVersion}`].filter(Boolean).join(", ");
+  if (versions) q.set("versions", versions);
+  return `${REPORT_ISSUES}?${q.toString()}`;
+}
+
 class PowerEngineDiagnosticsCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
   setConfig(config) {
     this._config = config || {};
@@ -3411,11 +3456,8 @@ class PowerEngineDiagnosticsCard extends (typeof HTMLElement !== "undefined" ? H
     }
   }
 
-  async _export() {
-    if (!this._hass || this._busy) return;
-    this._busy = true;
-    this._file = null;
-    this._status("Collecting from PowerEngine…");
+  /** Ask the app, add entity states and history; returns the bundle's text and the app's answer. */
+  async _collect() {
     const now = new Date();
     const id = Math.random().toString(36).slice(2) + now.getTime().toString(36);
     const app = await this._askApp(id);
@@ -3429,13 +3471,62 @@ class PowerEngineDiagnosticsCard extends (typeof HTMLElement !== "undefined" ? H
       states: diagStates(this._hass.states, configEntities(cfg)),
       history,
     };
-    const text = JSON.stringify(bundle, null, 1);
+    return { now, app, text: JSON.stringify(bundle, null, 1) };
+  }
+
+  async _export() {
+    if (!this._hass || this._busy) return;
+    this._busy = true;
+    this._file = null;
+    this._where = "msg";
+    this._status("Collecting from PowerEngine…");
+    const { now, app, text } = await this._collect();
     this._name = diagFileName(now);
     this._file = new Blob([text], { type: "application/json" });
     this._busy = false;
     this._download();
     this._status(`Ready: ${this._name} (${Math.round(text.length / 1024)} KB). If nothing downloaded, use Share or ` +
       `Copy.${app.saved ? " A copy of PowerEngine's part is also in " + app.saved.replace(/^.*\/powerengine\//, "/homeassistant/powerengine/") + "." : ""}`);
+  }
+
+  /** Report a problem, step 1: collect, scrub, and show what would be sent. */
+  async _prepareReport() {
+    if (!this._hass || this._busy) return;
+    this._busy = true;
+    this._report = null;
+    this._where = "rmsg";
+    this._status("Collecting from PowerEngine…");
+    const { now, text } = await this._collect();
+    const scrubbed = scrubReport(text);
+    this._report = { name: reportFileName(now), text: scrubbed.text, count: scrubbed.count,
+      blob: new Blob([scrubbed.text], { type: "application/json" }) };
+    this._busy = false;
+    this._status(`Report ready (${Math.round(scrubbed.text.length / 1024)} KB, ${scrubbed.count} identifying value(s) replaced). ` +
+      "Read it below, then download it and open the issue.");
+  }
+
+  _downloadReport() {
+    if (!this._report) return;
+    const url = URL.createObjectURL(this._report.blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = this._report.name;
+    this.shadowRoot.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+
+  /** Step 2: the file downloads, and the issue opens in a new tab with the title and description filled in. */
+  _openIssue() {
+    if (!this._report) return;
+    this._where = "rmsg";
+    this._downloadReport();
+    const q = (sel) => this.shadowRoot.querySelector(sel);
+    const url = reportIssueUrl({ title: q(".rtitle").value, description: q(".rdesc").value,
+      appVersion: ((this._hass.states[VERSION_SENSOR] || {}).state) || "", cardVersion: CARD_VERSION });
+    window.open(url, "_blank", "noopener");
+    this._status(`Downloaded ${this._report.name}. In the issue that opened, drag that file onto the "Diagnostics" box, then submit.`);
   }
 
   _download() {
@@ -3452,6 +3543,7 @@ class PowerEngineDiagnosticsCard extends (typeof HTMLElement !== "undefined" ? H
 
   async _share() {
     if (!this._file) return;
+    this._where = "msg";
     try {
       const file = new File([this._file], this._name, { type: "application/json" });
       await navigator.share({ files: [file], title: "PowerEngine diagnostics" });
@@ -3462,6 +3554,7 @@ class PowerEngineDiagnosticsCard extends (typeof HTMLElement !== "undefined" ? H
 
   async _copy() {
     if (!this._file) return;
+    this._where = "msg";
     try {
       await navigator.clipboard.writeText(await this._file.text());
       this._status("Copied to the clipboard.");
@@ -3471,7 +3564,7 @@ class PowerEngineDiagnosticsCard extends (typeof HTMLElement !== "undefined" ? H
   }
 
   _status(text) {
-    this._msg = text;
+    this._msgs = Object.assign(this._msgs || {}, { [this._where || "msg"]: text });
     this._render();
   }
 
@@ -3489,6 +3582,11 @@ class PowerEngineDiagnosticsCard extends (typeof HTMLElement !== "undefined" ? H
           button.second { background: none; color: var(--primary-text-color); }
           button:disabled { opacity: .5; cursor: default; }
           .msg { color: var(--primary-text-color); }
+          h3 { margin: 16px 0 6px; font-size: 1.05em; font-weight: 500; }
+          input, textarea { font: inherit; width: 100%; box-sizing: border-box; padding: 6px 8px; margin: 4px 0;
+                            border: 1px solid var(--divider-color); border-radius: 6px;
+                            background: var(--card-background-color); color: var(--primary-text-color); }
+          pre { max-height: 240px; overflow: auto; font-size: .75em; white-space: pre-wrap; word-break: break-all; }
         </style>
         <ha-card>
           <h2>Diagnostics export</h2>
@@ -3502,8 +3600,22 @@ class PowerEngineDiagnosticsCard extends (typeof HTMLElement !== "undefined" ? H
             <button class="second copy">Copy</button>
           </div>
           <p class="msg"></p>
+          <h3>Report a problem</h3>
+          <p>Opens a GitHub issue with your description. The diagnostics are downloaded as a file with account and meter
+             numbers, serials, ids and emails replaced, for you to read first and then drag onto the issue.
+             You need a GitHub account.</p>
+          <input class="rtitle" placeholder="Short title" maxlength="200" aria-label="Title">
+          <textarea class="rdesc" rows="4" placeholder="What happened, and what did you expect? (no personal details)" aria-label="Description"></textarea>
+          <div class="row">
+            <button class="rprep">Prepare report</button>
+            <button class="second ropen">Download and open GitHub issue</button>
+          </div>
+          <details class="rprev"><summary>What the file contains</summary><pre></pre></details>
+          <p class="rmsg"></p>
         </ha-card>`;
       const q = (sel) => this.shadowRoot.querySelector(sel);
+      q(".rprep").addEventListener("click", () => this._prepareReport());
+      q(".ropen").addEventListener("click", () => this._openIssue());
       q(".go").addEventListener("click", () => this._export());
       q(".again").addEventListener("click", () => this._download());
       q(".share").addEventListener("click", () => this._share());
@@ -3517,7 +3629,12 @@ class PowerEngineDiagnosticsCard extends (typeof HTMLElement !== "undefined" ? H
     q(".copy").disabled = !have;
     q(".share").disabled = !have;
     q(".share").style.display = typeof navigator !== "undefined" && navigator.share ? "" : "none";
-    q(".msg").textContent = this._msg || "";
+    q(".msg").textContent = (this._msgs && this._msgs.msg) || "";
+    q(".rmsg").textContent = (this._msgs && this._msgs.rmsg) || "";
+    q(".rprep").disabled = !!this._busy;
+    q(".ropen").disabled = !this._report || !!this._busy;
+    q(".rprev").style.display = this._report ? "" : "none";
+    if (this._report) q(".rprev pre").textContent = this._report.text.slice(0, 20000) + (this._report.text.length > 20000 ? "\n… (shortened here; the file has it all)" : "");
   }
 }
 
@@ -5338,7 +5455,7 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-hi
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
+  module.exports = { historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary };
