@@ -3,6 +3,11 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.97
+
+- New **Override** card at the top of the Monitoring page: shows what the inverter is doing and lets an admin switch it to Self-use, Hold, Charge or Export for a plan window, a number of half-hours, until a time, or permanently, with a Cancel button while one is on. It hides itself on an app without the override.
+- The dashboard's "Mode" tile is renamed **Power Engine**. Needs card 0.9.97 (the dashboard now names the new card).
+
 ## 0.9.95
 
 ### Your system

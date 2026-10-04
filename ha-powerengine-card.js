@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.95";
+const CARD_VERSION = "0.9.97";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -2656,6 +2656,285 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-de
     description: "Welcome and demo banner: try PowerEngine on recorded data before setting it up." });
 }
 
+// --- Manual override (Monitoring page) --------------------------------------------------------------------------
+// Switches the inverter to Self-use, Hold, Charge or Export for a while, or until cancelled. Fires the event
+// pe_override {action: "set", mode, window | slots | until | permanent} or {action: "clear"} (admin only, like the demo)
+// and hears pe_override_result {ok, message}. The app (pe_core/override.py) does the checks; this only offers valid
+// choices. Hidden when the app publishes no sensor.pe_state_override (an older app). Plan: the app repo's
+// docs/plans/mode-override.md.
+const OVERRIDE_EVENT = "pe_override";
+const OVERRIDE_RESULT_EVENT = "pe_override_result";
+const OVERRIDE_SENSOR = "sensor.pe_state_override";
+const OVERRIDE_MODES = [
+  { key: "self_use", label: "Self-use", help: "The battery covers the house." },
+  { key: "hold", label: "Hold", help: "The grid runs the house; the battery is kept." },
+  { key: "grid_charge", label: "Charge", help: "Charge the battery from the grid to the charge target." },
+  { key: "export", label: "Export", help: "Sell from the battery to the grid." },
+];
+const OVERRIDE_PERIODS = [
+  { key: "window", label: "This plan window" },
+  { key: "slots", label: "Half-hours" },
+  { key: "until", label: "Until a time" },
+  { key: "permanent", label: "Permanent" },
+];
+const OVERRIDE_MAX_SLOTS = 24;      // 12 hours
+const INVERTER_WORDS = {
+  self_use: "Self-use", grid_charge: "Charging from the grid", hold: "Holding (grid runs the house)",
+  force_discharge: "Force discharging", export: "Exporting", none: "No decision",
+};
+
+/** What the inverter is doing, in words, from the decision sensor's state. */
+function inverterWords(decision) {
+  return INVERTER_WORDS[decision] || (decision && decision !== "unknown" && decision !== "unavailable" ? String(decision) : "Unknown");
+}
+
+/** The half-hour boundaries from the end of the half-hour now running, up to 12 hours on: [{iso, label}]. `tz` is
+ *  HA's time zone (hass.config.time_zone); a bad or missing one falls back to the browser's. */
+function overrideEndOptions(now, tz) {
+  const t = new Date(now instanceof Date ? now.getTime() : now);
+  t.setUTCSeconds(0, 0);
+  t.setUTCMinutes(t.getUTCMinutes() < 30 ? 30 : 60);       // next boundary (half-hours are UTC half-hours everywhere)
+  let fmt;
+  try { fmt = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: tz || undefined }); }
+  catch (e) { fmt = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false }); }
+  const out = [];
+  for (let i = 0; i < OVERRIDE_MAX_SLOTS; i += 1) {
+    out.push({ iso: t.toISOString(), label: fmt.format(t) });
+    t.setUTCMinutes(t.getUTCMinutes() + 30);
+  }
+  return out;
+}
+
+/** The fire_event call for a choice {mode, period, slots, until}, or null when it isn't valid. */
+function overridePayload(choice) {
+  const c = choice || {};
+  if (c.clear) return { type: "fire_event", event_type: OVERRIDE_EVENT, event_data: { action: "clear" } };
+  if (!OVERRIDE_MODES.some((m) => m.key === c.mode)) return null;
+  const data = { action: "set", mode: c.mode };
+  if (c.period === "window") data.window = true;
+  else if (c.period === "permanent") data.permanent = true;
+  else if (c.period === "slots") {
+    const n = Number(c.slots);
+    if (!Number.isInteger(n) || n < 1 || n > OVERRIDE_MAX_SLOTS) return null;
+    data.slots = n;
+  } else if (c.period === "until") {
+    if (!c.until || Number.isNaN(Date.parse(c.until))) return null;
+    data.until = c.until;
+  } else return null;
+  return { type: "fire_event", event_type: OVERRIDE_EVENT, event_data: data };
+}
+
+/** What the card shows. states: hass.states. */
+function overrideView(states, isAdmin) {
+  const st = states || {};
+  const ov = st[OVERRIDE_SENSOR];
+  if (!ov) return { shown: false };
+  const a = ov.attributes || {};
+  const active = ov.state && ov.state !== "none" && ov.state !== "unknown" && ov.state !== "unavailable";
+  const op = st["sensor.pe_state_operation_mode"];
+  const isActive = !!op && op.state === "active";
+  const dec = st["sensor.pe_state_decision"];
+  const rate = st["sensor.pe_state_import_rate"];
+  const p = rate && rate.attributes && rate.attributes.pence != null ? Number(rate.attributes.pence) : null;
+  let blocked = "";
+  if (!isAdmin) blocked = "Only an admin user can change the override.";
+  else if (!isActive && !active) blocked = "An override works only while PowerEngine is Active.";
+  return {
+    shown: true, active: !!active, text: active ? String(a.text || ov.state) : "", mode: active ? ov.state : null,
+    inverter: inverterWords(dec && dec.state), canAct: !blocked, blocked, canCancel: !!isAdmin && !!active,
+    priceNow: p != null && Number.isFinite(p) ? `${Number(p.toFixed(2))}p` : null,
+  };
+}
+
+/** The line shown before applying: what the choice means and, for Charge, the price being paid now. */
+function overrideSummary(choice, priceNow) {
+  const m = OVERRIDE_MODES.find((x) => x.key === (choice || {}).mode);
+  if (!m) return "";
+  let line = m.help;
+  if (m.key === "grid_charge" && priceNow) line += ` The grid rate now is ${priceNow}.`;
+  if (m.key === "export") line += " It stops at the minimum reserve.";
+  if ((choice || {}).period === "permanent") line += " It stays until you cancel it.";
+  line += " A grid event in progress still takes over.";
+  return line;
+}
+
+class PowerEngineOverrideCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
+  setConfig(config) {
+    this._config = config || {};
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    this._choice = this._choice || { mode: "hold", period: "window", slots: 2 };
+    this._open = !!this._open;
+  }
+
+  get connectedWhileHidden() { return true; }
+
+  getCardSize() { return 2; }
+
+  getGridOptions() { return { columns: "full", rows: "auto" }; }
+
+  connectedCallback() { if (this._hass) this._subscribe(); }
+
+  disconnectedCallback() {
+    if (this._unsub) { try { this._unsub(); } catch (e) { /* connection already gone */ } }
+    this._unsub = null;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._subscribe();
+    this._render();
+  }
+
+  _subscribe() {
+    const conn = this._hass && this._hass.connection;
+    if (this._unsub || this._subscribing || !conn || !conn.subscribeEvents) return;
+    this._subscribing = true;
+    conn.subscribeEvents((ev) => this._result(ev && ev.data), OVERRIDE_RESULT_EVENT).then((unsub) => {
+      this._subscribing = false;
+      if (!this.isConnected) unsub();
+      else this._unsub = unsub;
+    }, () => { this._subscribing = false; });
+  }
+
+  _result(data) {
+    const d = data || {};
+    this._busy = false;
+    this._msg = { ok: d.ok !== false, text: String(d.message || (d.ok === false ? "That didn't work." : "Done.")) };
+    if (d.ok !== false) this._open = false;
+    this._render();
+  }
+
+  async _fire(choice) {
+    const payload = overridePayload(choice);
+    if (!payload || !this._hass) return;
+    this._busy = true;
+    this._msg = null;
+    this._render();
+    try {
+      await this._hass.callWS(payload);
+    } catch (err) {
+      this._busy = false;
+      this._msg = { ok: false, text: "Couldn't send that: " + ((err && err.message) || err) };
+      this._render();
+    }
+  }
+
+  _render() {
+    if (!this.shadowRoot || !this._hass) return;
+    const isAdmin = !!(this._hass.user && this._hass.user.is_admin);
+    const view = overrideView(this._hass.states, isAdmin);
+    const hide = !view.shown && !this.editMode;
+    this.hidden = hide;
+    if (hide !== this._wasHidden) {
+      this._wasHidden = hide;
+      this.dispatchEvent(new CustomEvent("card-visibility-changed", { detail: { value: !hide }, bubbles: true, composed: true }));
+    }
+    const tz = this._hass.config && this._hass.config.time_zone;
+    const sig = JSON.stringify([view, this._choice, this._open, this._busy, this._msg, hide]);
+    if (sig === this._sig) return;
+    this._sig = sig;
+    const root = this.shadowRoot;
+    if (hide) { root.innerHTML = ""; return; }
+    root.innerHTML = `
+      <style>
+        :host { display: block; }
+        ha-card { display: block; padding: 10px 16px; }
+        .row { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; }
+        .text { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+        .label { color: var(--secondary-text-color); font-size: 0.85em; }
+        .big { font-size: 1.1em; font-weight: 500; }
+        .on-banner { margin-top: 8px; padding: 6px 10px; border-left: 4px solid var(--warning-color, #ff9800);
+                     background: color-mix(in srgb, var(--warning-color, #ff9800) 14%, var(--card-background-color, #fff)); }
+        .panel { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--divider-color); }
+        .sub, .msg { color: var(--secondary-text-color); font-size: 0.9em; margin-top: 6px; overflow-wrap: anywhere; }
+        .msg.bad { color: var(--error-color, #db4437); }
+        .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+        h3 { margin: 8px 0 0; font-size: 0.95em; font-weight: 500; }
+        button, select { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--divider-color); cursor: pointer;
+                         background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); }
+        select { background: var(--card-background-color, #fff); color: var(--primary-text-color); padding: 5px 8px; }
+        button.second, button.chip { background: none; color: var(--primary-text-color); }
+        button.chip { border-radius: 16px; padding: 4px 12px; }
+        button.chip.on { background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); border-color: var(--primary-color, #03a9f4); }
+        button:disabled, select:disabled { opacity: .5; cursor: default; }
+      </style>
+      <ha-card></ha-card>`;
+    const card = root.querySelector("ha-card");
+    const mk = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
+    const head = mk("div", "row");
+    const text = mk("div", "text");
+    text.append(mk("div", "label", "Inverter"), mk("div", "big", view.inverter || "Unknown"));
+    head.append(text);
+    const btn = mk("button", this._open ? "second" : "", this._open ? "Close" : "Override");
+    btn.disabled = !view.canAct || this._busy;
+    if (view.blocked) btn.title = view.blocked;
+    btn.addEventListener("click", () => { this._open = !this._open; this._msg = null; this._render(); });
+    head.append(btn);
+    card.append(head);
+    if (view.active) {
+      const b = mk("div", "on-banner row");
+      b.append(mk("div", "text", `Manual override: ${view.text}`));
+      const cancel = mk("button", "second", "Cancel override");
+      cancel.disabled = !view.canCancel || this._busy;
+      cancel.addEventListener("click", () => this._fire({ clear: true }));
+      b.append(cancel);
+      card.append(b);
+    }
+    if (this._open) {
+      const c = this._choice;
+      const panel = mk("div", "panel");
+      const chips = (list, current, set) => {
+        const box = mk("div", "chips");
+        list.forEach((o) => {
+          const on = o.key === current;
+          const ch = mk("button", "chip" + (on ? " on" : ""), o.label);
+          ch.setAttribute("aria-pressed", on ? "true" : "false");
+          ch.addEventListener("click", () => { set(o.key); this._render(); });
+          box.append(ch);
+        });
+        return box;
+      };
+      panel.append(mk("h3", "", "Switch the inverter to"), chips(OVERRIDE_MODES, c.mode, (k) => { c.mode = k; }));
+      panel.append(mk("h3", "", "For"), chips(OVERRIDE_PERIODS, c.period, (k) => { c.period = k; }));
+      if (c.period === "slots") {
+        const sel = mk("select");
+        for (let n = 1; n <= OVERRIDE_MAX_SLOTS; n += 1) {
+          const o = mk("option", "", n === 1 ? "1 half-hour (to the end of this one)" : `${n} half-hours (${n / 2} h)`);
+          o.value = String(n);
+          if (n === Number(c.slots)) o.selected = true;
+          sel.append(o);
+        }
+        sel.addEventListener("change", () => { c.slots = Number(sel.value); this._render(); });
+        panel.append(sel);
+      } else if (c.period === "until") {
+        const opts = overrideEndOptions(new Date(), tz);
+        if (!c.until || !opts.some((o) => o.iso === c.until)) c.until = opts[0].iso;
+        const sel = mk("select");
+        opts.forEach((o) => { const op = mk("option", "", o.label); op.value = o.iso; if (o.iso === c.until) op.selected = true; sel.append(op); });
+        sel.addEventListener("change", () => { c.until = sel.value; this._render(); });
+        panel.append(sel);
+      }
+      panel.append(mk("div", "sub", overrideSummary(c, view.priceNow)));
+      const go = mk("button", "", this._busy ? "Applying…" : "Apply");
+      go.disabled = this._busy || !overridePayload(c);
+      go.addEventListener("click", () => this._fire(c));
+      const act = mk("div", "row");
+      act.style.marginTop = "8px";
+      act.append(go);
+      panel.append(act);
+      card.append(panel);
+    }
+    if (this._msg) card.append(mk("div", "msg" + (this._msg.ok ? "" : " bad"), this._msg.text));
+  }
+}
+
+if (typeof customElements !== "undefined" && !customElements.get("powerengine-override-card")) {
+  customElements.define("powerengine-override-card", PowerEngineOverrideCard);
+  window.customCards = window.customCards || [];
+  window.customCards.push({ type: "powerengine-override-card", name: "PowerEngine override",
+    description: "What the inverter is doing, with a button to override it for a while." });
+}
+
 // --- Health findings with Dismiss, and PowerEngine's log (Health tab) -------------------------------------------
 function escHtml(s) {
   return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -5061,5 +5340,6 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-hi
 if (typeof module !== "undefined") {
   module.exports = { historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
-  SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave };
+  SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
+  OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary };
 }
