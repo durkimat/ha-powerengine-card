@@ -3,6 +3,10 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.105
+
+- The Config page's *Tariff and planning* section has the new **Overnight window** choice (Learned or Fixed times) and the two fixed times, with a line showing the window in use and the one learned from the rates (needs app 0.9.105; an older app has no such settings or line, so nothing shows).
+
 ## 0.9.104
 
 - New setting **Shortest real charge** and tick box **Learn: shortest real charge** in the car section of the Config page (needs app 0.9.104; an older app does not list them, so nothing shows).
