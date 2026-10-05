@@ -907,3 +907,33 @@ test("history day arrows step one day and stop at the ends", () => {
   assert.strictEqual(h.shiftHistoryDay("2025-09-01", -1, "2025-09-01", "2026-10-03"), null);
   assert.strictEqual(h.shiftHistoryDay(undefined, 1, "2025-09-01", "2026-10-03"), null);
 });
+
+test("the overnight window choice and its two times sit in Tariff and planning, not Other", () => {
+  const plan = h.topicPlan([], ["overnight_start_h", "overnight_end_h", "cheap_threshold_p"], [], ["overnight_window"]);
+  const tariff = plan.find((t) => t.key === "tariff");
+  assert.deepEqual(tariff.system, ["overnight_window"]);
+  assert.deepEqual(tariff.settings.slice(0, 2), ["overnight_start_h", "overnight_end_h"]);
+  assert.equal(plan.find((t) => t.key === "other"), undefined);
+});
+
+test("overnightReadout says what is in use and what was learned, and stays quiet without the sensor", () => {
+  assert.equal(h.overnightReadout(null), null);
+  assert.equal(h.overnightReadout({ state: "unavailable", attributes: {} }), null);
+  const learned = h.overnightReadout({ state: "23:30–05:30", attributes: { source: "learned", learned: "23:30–05:30", learned_days: 5, fixed: null } });
+  assert.deepEqual(learned.lines.map((l) => l.text), ["23:30–05:30 (learned)", "23:30–05:30 (from 5 days of rates)"]);
+  assert.deepEqual(learned.notes, []);
+  const fixed = h.overnightReadout({ state: "00:30–05:30", attributes: { source: "fixed", learned: "23:30–05:30", learned_days: 1, fixed: "00:30–05:30" } });
+  assert.equal(fixed.lines[0].text, "00:30–05:30 (your fixed times)");
+  assert.equal(fixed.lines[1].text, "23:30–05:30 (from 1 day of rates)");
+  assert.deepEqual(fixed.notes, []);                                     // fixed in use: the learned note is not needed
+});
+
+test("overnightReadout warns when nothing is learned yet or the fixed times don't make a window", () => {
+  const fresh = h.overnightReadout({ state: "none yet", attributes: { source: "learned", learned: "none yet", learned_days: 0 } });
+  assert.equal(fresh.lines[1].text, "nothing yet");
+  assert.equal(fresh.notes.length, 1);
+  assert.match(fresh.notes[0], /two full days/);
+  const bad = h.overnightReadout({ state: "23:30–05:30", attributes: { source: "learned", learned: "23:30–05:30", learned_days: 4, fixed_not_valid: true } });
+  assert.equal(bad.notes.length, 1);
+  assert.match(bad.notes[0], /don't make a window/);
+});
