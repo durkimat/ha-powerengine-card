@@ -32,7 +32,7 @@ const SAVED = {
     ev_plug_status: { entity: "sensor.zappi_plug" }, event_state: { entity: "sensor.axle_event" } },
   solar_plants: [{ id: "main", name: "Main", power: { entity: "sensor.pv" }, energy_today: { entity: "sensor.pv_today" }, forecast: "solcast_site", enabled: true },
     { id: "garage", name: "Garage roof", power: { entity: "sensor.g_pv" }, energy_today: { entity: "sensor.g_pv_today" }, forecast: "none", enabled: true }],
-  features: { smart_charge_optimisation: true, learn_car: true, axle: true, arbitrage: false },
+  features: { smart_charge_optimisation: true, learn_car: true, learn_car_min: true, axle: true, arbitrage: false },
   operation: { mode: "active" }, safety: { battery_reserve_soc: 12 }, system: { poll_s: 30 },
   site: SITE,
 };
@@ -105,7 +105,7 @@ test("applyOps: removing the car charger leaves it out, clears its inputs and sw
   assert.equal(d.features.learn_car, false);
   assert.equal(d.features.axle, true);
   assert.equal(d.features.arbitrage, false);
-  assert.deepEqual(d.features, Object.assign({}, base().features, { smart_charge_optimisation: false, learn_car: false }));   // nothing else moves
+  assert.deepEqual(d.features, Object.assign({}, base().features, { smart_charge_optimisation: false, learn_car: false, learn_car_min: false }));   // nothing else moves
   assert.deepEqual(m.featuresLeftOut({ axle: true, axle_plus_export: false, learn_car: true }, "events"), ["axle"]);
   assert.deepEqual(m.featuresLeftOut({ learn_car: true }, "tariff"), []);
   const add = m.applyOps(base(), [{ target: "events", op: "set", kind: "events", part: "events", option: "axle", inputs: {} }], INFO);
