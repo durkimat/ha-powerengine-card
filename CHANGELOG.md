@@ -3,6 +3,20 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.106
+
+### Behaviour changes
+
+- **Config page: an engine choice at the top** (engine v1 or engine v2, with a confirmation either way), and the settings in
+  three groups: Your house, Engine v1 settings and Engine v2 settings. The engine not in use is dimmed but stays editable.
+  With an app older than 0.9.106 nothing changes.
+
+### New
+
+- Three cards for engine v2: what it is doing now and what ends it (with the value of a stored kWh against today's prices),
+  the expected timeline and value map, and its health.
+- The new shared setting "Battery's hard floor" in the battery section.
+
 ## 0.9.105
 
 - The Config page's *Tariff and planning* section has the new **Overnight window** choice (Learned or Fixed times) and the two fixed times, with a line showing the window in use and the one learned from the rates (needs app 0.9.105; an older app has no such settings or line, so nothing shows).
