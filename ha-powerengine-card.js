@@ -77,6 +77,7 @@ const FEATURES = [
   ["smart_charge_optimisation", "Smart-charge optimisation", "Ask <<supplier>> for extra smart-charge slots by changing the car's ready-by time when it's worth it, with back-off and within the limits below. Replaces the fixed daily triggers. Sends nothing in Passive mode."],
   ["slots_whole_house", "Smart slots cover the whole house", "Tick if your supplier charges the whole house the slot rate during a smart-charge slot, even when the car isn't charging (<<supplier>> does). Off: PowerEngine plans slots at your normal rate for the house and battery, and doesn't ask for extra slots, since they'd only help the car."],
   ["smart_skip_full_car", "Don't ask when the car is full", "Skip requests while the charger says the charge is complete, or the car drew nothing in the last smart slot. Leave off if your supplier gives slots even when the car is full: the Config page's success rate shows whether requests for a full car work."],
+  ["learn_car_min", "Learn: shortest real charge", "Move the Shortest real charge setting towards what the car's confirmed smart-charge slots show: half of a typical short real charge, a little at a time, and never below half or above double the setting. Until there are enough confirmed slots it uses the setting as it is."],
   ["arbitrage", "Energy arbitrage", "Sell stored energy just before a cheap refill when it pays after losses and wear, keeping enough for the house. In Passive mode this only plans and simulates it, so you can see what it would earn.",
     "Check your export tariff terms first: some only pay for exported solar, not energy bought from the grid."],
   ["deep_overnight", "Deeper selling overnight", "Inside the fixed overnight window, where the cheap refill is guaranteed, arbitrage may sell below the band's bottom (down to the reserve plus 10%): one deeper sale and one refill instead of many shallow cycles, for the same money. Off: the band's bottom holds overnight too."],
@@ -105,7 +106,7 @@ const NOTIFY_EVENTS = [
   ["simulator", "Tariff opportunities", "When the overnight Simulator finds a tariff that would have cost noticeably less (at least £5 and 5% a month), or new tariffs appear.", true],
 ];
 const FEATURE_DEFAULTS = { auto_cheap_threshold: true, fill_when_cheap: true, smart_charge_optimisation: true, arbitrage: false, axle: true, free_power_days: true, tariff_simulator: true, optimised_plan: true,
-  learn_taper: true, learn_conversion: true, learn_reserve: true, learn_export: true, learn_car: true, cold_caution: true, cold_learning: true,
+  learn_taper: true, learn_conversion: true, learn_reserve: true, learn_export: true, learn_car: true, learn_car_min: true, cold_caution: true, cold_learning: true,
   damp_restart: true, damp_bursts: false, deep_overnight: true,
   use_check_meter: true, axle_plus_export: true, slots_whole_house: true, smart_skip_full_car: false };
 
@@ -240,12 +241,12 @@ const TOPICS = [
     roles: ["import_rate_now", "import_rates_today", "import_rates_tomorrow", "export_rate", "standing_charge", "offpeak_now"],
     features: ["optimised_plan", "auto_cheap_threshold", "fill_when_cheap"],
     settings: ["cheap_threshold_p", "window_switch_cost_p"] },
-  { key: "car", title: "Car and <<smart_charge>>",
+  { key: "car", title: "Car and smart charging",
     roles: ["ev_plug_status", "ev_charger_status", "ev_charge_power", "ev_energy_today", "ev_charge_mode",
       "ev_session_energy", "smart_dispatches", "smart_state", "smart_target_soc", "smart_target_time"],
     features: ["smart_charge_optimisation", "slots_whole_house", "smart_skip_full_car"],
-    settings: ["ev_charger_kw", "smart_max_requests_per_day", "smart_min_gap_min", "smart_lookahead_h"],
-    learning: ["learn_car"] },
+    settings: ["ev_charger_kw", "smart_max_requests_per_day", "smart_min_gap_min", "smart_lookahead_h", "car_min_charge_min"],
+    learning: ["learn_car", "learn_car_min"] },
   { key: "selling", title: "Selling (arbitrage and export)", features: ["arbitrage", "deep_overnight"],
     settings: ["export_limit_kw", "battery_wear_p", "arbitrage_min_margin_p", "arbitrage_min_soc", "arbitrage_max_soc",
       "arbitrage_band_penalty_p", "overnight_switch_cost_p"],
@@ -4139,7 +4140,7 @@ function wizardEnergyDevices(facts, states) {
 const SYSTEM_DRAFT_KEY = "powerengine.system.draft";
 const SYSTEM_GROUPS = ["inverter", "plant", "device", "ev_charger", "tariff", "forecast", "events"];
 // features that only make sense with a part: removing the part switches them off (adding one never switches anything on)
-const SYSTEM_LEFT_OUT_FEATURES = { ev_charger: ["smart_charge_optimisation", "smart_skip_full_car", "learn_car"], events: ["axle", "axle_plus_export"] };
+const SYSTEM_LEFT_OUT_FEATURES = { ev_charger: ["smart_charge_optimisation", "smart_skip_full_car", "learn_car", "learn_car_min"], events: ["axle", "axle_plus_export"] };
 const SYSTEM_PLANT_NOTE = "Read only: PowerEngine counts its solar in the totals, but never controls it.";
 
 /** What can be added, in the order shown: the app's parts (title and reason come from the app) plus the card's own two. */

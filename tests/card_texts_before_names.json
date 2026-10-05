@@ -26,6 +26,11 @@
    "Skip requests while the charger says the charge is complete, or the car drew nothing in the last smart slot. Leave off if your supplier gives slots even when the car is full: the Config page's success rate shows whether requests for a full car work."
   ],
   [
+   "learn_car_min",
+   "Learn: shortest real charge",
+   "Move the Shortest real charge setting towards what the car's confirmed smart-charge slots show: half of a typical short real charge, a little at a time, and never below half or above double the setting. Until there are enough confirmed slots it uses the setting as it is."
+  ],
+  [
    "arbitrage",
    "Energy arbitrage",
    "Sell stored energy just before a cheap refill when it pays after losses and wear, keeping enough for the house. In Passive mode this only plans and simulates it, so you can see what it would earn.",
@@ -135,7 +140,7 @@
   },
   {
    "key": "car",
-   "title": "Car and EDF smart charge",
+   "title": "Car and smart charging",
    "note": null
   },
   {

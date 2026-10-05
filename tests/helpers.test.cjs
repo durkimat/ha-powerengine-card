@@ -296,7 +296,7 @@ test("topicPlan puts everything somewhere, clocks together, leftovers in Other",
 });
 
 test("smart-charge request options are in the car topic, not Other", () => {
-  const settings = ["ev_charger_kw", "smart_max_requests_per_day", "smart_min_gap_min", "smart_lookahead_h"];
+  const settings = ["ev_charger_kw", "smart_max_requests_per_day", "smart_min_gap_min", "smart_lookahead_h", "car_min_charge_min"];
   const features = ["smart_charge_optimisation", "slots_whole_house", "smart_skip_full_car"];
   const plan = h.topicPlan([], settings, features, []);
   const car = plan.find((t) => t.key === "car");
