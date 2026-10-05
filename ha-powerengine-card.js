@@ -229,7 +229,7 @@ const TOPICS = [
     roles: ["battery_soc", "battery_power", "battery_charge_power", "battery_discharge_power", "battery_capacity",
       "battery_max_charge_power", "battery_max_discharge_power", "battery_charge_today", "battery_discharge_today",
       "battery_round_trip", "battery_soh", "inverter_min_soc"],
-    settings: ["min_reserve_soc", "grid_charge_target_soc", "charge_hysteresis_soc"],
+    settings: ["battery_floor_soc", "min_reserve_soc", "grid_charge_target_soc", "charge_hysteresis_soc"],
     learning: ["learn_taper", "learn_conversion", "learn_reserve"] },
   { key: "grid", title: "Grid and house",
     roles: ["grid_power", "grid_import_today", "grid_export_today", "house_load_power", "house_load_today",
@@ -484,6 +484,11 @@ function buildConfig(draft) {
   }
   if (draft.site) out.site = draft.site;      // only set when the app publishes site_options
   if (Array.isArray(draft.devices)) out.devices = buildDevices(draft.devices);   // only set when the app supports devices
+  if (draft.engine_v2 && typeof draft.engine_v2 === "object") {      // only set when the app publishes the v2 settings
+    const f = engineFields(true, (draft.system || {}).engine, draft.engine_v2);
+    if (f.system) out.system = Object.assign({}, out.system, f.system);
+    if (f.engine_v2) out.engine_v2 = f.engine_v2;
+  }
   if (draft.remove_entities) out.remove_entities = true;
   return out;
 }
@@ -678,6 +683,9 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     if (this._site) draft.site = Object.assign({}, this._siteSaved); else delete draft.site;
     this._devices = devicesSupported(ver.state);
     if (this._devices) draft.devices = deviceDraft(draft.devices); else delete draft.devices;
+    this._v2 = v2Supported(s) ? s[V2_SETTINGS].attributes : null;
+    if (this._v2) { draft.engine_v2 = Object.assign({}, this._saved.engine_v2 || {}); draft.system.engine = engineInUse(s, this._saved); this._engine = draft.system.engine; }
+    else { delete draft.engine_v2; this._engine = null; }
     this._draft = draft;
     this._prefilled = fresh;
     this._build();
@@ -783,6 +791,21 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       .sysgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 4px 16px; }
       .sysgrid .field { padding: 6px 0; }
       .sysgrid select { width: 100%; box-sizing: border-box; min-height: 40px; }
+      .enginebox { border: 1px solid var(--divider-color); border-radius: 8px; padding: 8px 12px 12px; margin: 8px 0; }
+      .enginepick { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-top: 6px; }
+      .engineopt { border: 1px solid var(--divider-color); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 2px;
+        text-align: left; background: var(--card-background-color); color: var(--primary-text-color); }
+      .engineopt[aria-pressed="true"] { border-color: var(--primary-color); box-shadow: 0 0 0 1px var(--primary-color); }
+      .engineopt small { color: var(--secondary-text-color); }
+      .engineconfirm { border: 1px solid var(--primary-color); background: rgba(3, 169, 244, .1); border-radius: 10px; padding: 10px 12px; margin-top: 10px; display: flex; flex-direction: column; gap: 10px; }
+      .engineconfirm .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+      .groups { display: flex; flex-direction: column; }
+      .group.dim { opacity: .6; }
+      .grouphead { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin: 14px 0 2px; }
+      .grouphead h3 { margin: 0; }
+      .groupchip { font-size: .8em; padding: 1px 10px; border-radius: 999px; background: var(--secondary-background-color); color: var(--secondary-text-color); }
+      .groupchip.on { background: rgba(3, 169, 244, .14); color: var(--primary-color); }
+      .readline { background: var(--secondary-background-color); border-radius: 8px; padding: 8px 10px; font-size: .9em; margin: 6px 0; }
       .badge.status-verified { border: 1px solid var(--success-color, #43a047); color: var(--success-color, #43a047); background: none; }
       .badge.status-community, .badge.status-draft { background: rgba(255, 160, 0, .18); color: var(--warning-color, #b26a00); }
     `);
@@ -819,6 +842,11 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       : this._prefilled
         ? "Suggested entities have been pre-filled from your system. Check each live value below, then Save."
         : "Change any input, check its live value, then Save.");
+    this._v2Rows = [];
+    this._v2Readouts = [];
+    this._groups = {};
+    if (this._v2) { this._engineBox = el("div", { class: "enginebox" }); content.append(this._engineBox); this._renderEngineBox(); }
+    else this._engineBox = null;
 
     // search, filters and the overall status
     this._items = [];                                      // every row, for search and filters
@@ -843,6 +871,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
 
     // collapsible sections (open state kept across rebuilds and page loads)
     this._sections = {};
+    let host = content;                                    // sections go here (a group's box once the groups start)
     const section = (key, title, note) => {
       const count = el("span", { class: "count" });
       const body = el("div", { class: "body" });
@@ -852,7 +881,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       if (note) body.append(el("div", { class: "desc" }, note));
       this._sections[key] = { details: d, count, problems: 0, unsaved: 0, req: 0, reqOk: 0, opt: 0, body };
       this._currentSection = key;
-      content.append(d);
+      host.append(d);
       return body;
     };
     const track = (node, kind, text) => {
@@ -903,9 +932,9 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const allSettings = this._settings.safety || [];
     const settingByKey = Object.fromEntries(allSettings.map((x) => [x.key, x]));
     this._settingRows = [];
-    const plan = topicPlan(roles.map((r) => r.key), allSettings.map((x) => x.key), FEATURES.map((f) => f[0]),
-      (this._settings.system || []).map((x) => x.key));
-    plan.forEach((t) => {
+    const grouping = engineGrouping(roles.map((r) => r.key), allSettings.map((x) => x.key), FEATURES.map((f) => f[0]),
+      (this._settings.system || []).map((x) => x.key), !!this._v2);
+    const renderTopic = (t) => {
       const body = section(`topic_${t.key}`, T(t.title), t.note && T(t.note));
       this._sections[`topic_${t.key}`].main = t.main;
       t.features.forEach((k) => { const r = featureRow(k); if (r) body.append(r); });
@@ -944,7 +973,28 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
         sub(body, "Learning");
         t.learning.forEach((k) => { const r = featureRow(k); if (r) body.append(r); });
       }
-    });
+    };
+    if (!grouping.grouped) grouping.house.forEach(renderTopic);
+    else {
+      // Your house (both engines), Engine v1 settings, Engine v2 settings: the one not in use is dimmed but stays editable
+      const groupsBox = el("div", { class: "groups" });
+      content.append(groupsBox);
+      const startGroup = (key, title) => {
+        const wrap = el("div", { class: "group" });
+        const chip = el("span", { class: "groupchip" });
+        wrap.append(el("div", { class: "grouphead" }, el("h3", {}, title), chip));
+        groupsBox.append(wrap);
+        host = wrap;
+        this._groups[key] = { wrap, chip };
+      };
+      startGroup("house", "Your house");
+      grouping.house.forEach(renderTopic);
+      startGroup("v1", "Engine v1 settings");
+      grouping.v1.forEach((sec) => renderTopic(Object.assign({ roles: [], learning: [], system: [] }, sec)));
+      startGroup("v2", "Engine v2 settings");
+      this._renderV2Sections(section, track, sub);
+      host = content;
+    }
 
     // notifications: HA's notification area (default), a phone, or off
     const nb = section("notifications", "Notifications",
@@ -983,6 +1033,109 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     // open any section that needs attention
     Object.values(this._sections).forEach((s) => { if (s.problems) s.details.open = true; });
     this._applyFilter();
+  }
+
+  /** The engine choice at the top: two buttons, and the same inline confirmation whichever way you switch. */
+  _renderEngineBox() {
+    const box = this._engineBox;
+    if (!box) return;
+    const cur = this._engine || engineInUse(this._hass.states, this._saved);
+    const opt = (id, name, text) => el("button", { class: "engineopt", "aria-pressed": String(cur === id), disabled: this._readOnly || this._saving,
+      onclick: () => { this._enginePending = cur === id ? null : id; this._renderEngineBox(); } }, el("b", {}, name), el("small", {}, text));
+    box.replaceChildren(el("div", { class: "head" }, el("span", { class: "label" }, "Planning engine")),
+      el("div", { class: "enginepick", role: "group", "aria-label": "Planning engine" },
+        opt("v1", "Engine v1", "Half-hour plan, remade every 5 minutes and on changes."),
+        opt("v2", "Engine v2", "Acts on conditions: a level reached, a price change, the sun falling short.")));
+    if (this._enginePending && this._enginePending !== cur) {
+      const c = engineConfirm(cur, this._enginePending);
+      box.append(el("div", { class: "engineconfirm" }, el("p", {}, el("b", {}, c.title), " ", c.text),
+        el("div", { class: "btns" },
+          el("button", { class: "primary", disabled: this._readOnly || this._saving, onclick: () => this._switchEngine(this._enginePending) }, c.confirm),
+          el("button", { onclick: () => { this._enginePending = null; this._renderEngineBox(); } }, c.cancel))));
+    }
+  }
+
+  /** Sends the saved configuration with only the engine changed (other edits on this page stay unsaved drafts). */
+  async _switchEngine(to) {
+    if (this._readOnly || this._saving) return;
+    const saved = this._saved || {};
+    const base = this._baseDraft(saved);
+    base.system.engine = to;
+    this._enginePending = null;
+    this._draft.system.engine = to;
+    this._saving = true;
+    this._renderEngineBox();
+    try {
+      await this._hass.callWS({ type: "fire_event", event_type: SAVE_EVENT, event_data: { config: buildConfig(base) } });
+      this._setBanner("info", `Switching to engine ${to}: sent to PowerEngine; waiting for it to check and save…`);
+      setTimeout(() => { if (this._saving) { this._saving = false; this._setBanner("error", "No reply from PowerEngine. Check the AppDaemon log."); this._renderEngineBox(); this._refresh(); } }, 15000);
+    } catch (e) {
+      this._saving = false;
+      this._draft.system.engine = engineInUse(this._hass.states, saved);
+      this._setBanner("error", `Could not send: ${e.message || e}. Saving needs an admin user.`);
+      this._renderEngineBox();
+    }
+    this._refresh();
+  }
+
+  /** The saved configuration as a draft (what the page is compared with, and what a switch sends). */
+  _baseDraft(saved) {
+    const base = initialDraft(saved, [], [], this._settings).draft;
+    if (this._siteSaved) base.site = this._siteSaved; else delete base.site;
+    if (this._devices) base.devices = deviceDraft(base.devices); else delete base.devices;
+    if (this._v2) { base.engine_v2 = Object.assign({}, saved.engine_v2 || {}); base.system.engine = engineInUse(this._hass.states, saved); }
+    else delete base.engine_v2;
+    return base;
+  }
+
+  /** The engine v2 settings, from the app's catalogue (sensor.pe_diag_v2_settings): its sections, then each setting. */
+  _renderV2Sections(section, track, sub) {
+    const cat = this._v2 || {};
+    const byKey = Object.fromEntries((cat.settings || []).map((x) => [x.key, x]));
+    const listed = new Set();
+    const sections = (cat.sections || []).map((sec) => ({ key: sec.key, label: sec.label, keys: (sec.keys || []).filter((k) => byKey[k] && !listed.has(k) && listed.add(k)) }));
+    const rest = (cat.settings || []).map((x) => x.key).filter((k) => !listed.has(k));
+    if (rest.length) sections.push({ key: "more", label: "More", keys: rest });
+    sections.forEach((sec) => {
+      if (!sec.keys.length) return;
+      const body = section(`v2_${sec.key}`, T(sec.label));
+      sec.keys.forEach((k) => body.append(track(this._v2Row(byKey[k], `v2_${sec.key}`), "setting", `${byKey[k].label} ${byKey[k].help} ${k} engine v2`)));
+      const readout = (fn) => { const box = el("div", { class: "readline" }); body.append(box); this._v2Readouts.push({ box, fn }); };
+      if (sec.key === "comfort") readout(() => comfortReadout(this._v2Diag(), v2Values(this._v2, this._draft.engine_v2)));
+      if (sec.key === "forecast") readout(() => weightsReadout(this._v2Diag()));
+      if (sec.key === "floors") readout(() => floorsReadout(this._draft.safety, v2Values(this._v2, this._draft.engine_v2)));
+    });
+  }
+
+  _v2Diag() { return v2Attrs(this._hass.states, V2_DIAG); }
+
+  _v2Row(st, section) {
+    const cur = () => (this._draft.engine_v2[st.key] !== undefined ? this._draft.engine_v2[st.key] : (this._v2.values || {})[st.key]);
+    const set = (v) => {
+      const inSaved = (this._saved.engine_v2 || {})[st.key] !== undefined;
+      if (!inSaved && v2Same(v, (this._v2.values || {})[st.key])) delete this._draft.engine_v2[st.key];   // back to what is in use: leave it unset
+      else this._draft.engine_v2[st.key] = v;
+      this._refresh();
+    };
+    const label = T(st.label), help = T(st.help || "");
+    const problem = el("div", { class: "problem" });
+    this._v2Rows.push({ st, problem, section });
+    if (st.kind === "bool") {
+      const cb = el("input", { type: "checkbox", onchange: (ev) => set(ev.target.checked) });
+      cb.checked = !!asBool(cur());
+      return el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, label)), el("div", { class: "desc" }, help), problem);
+    }
+    let input;
+    if (st.kind === "choice") {
+      input = el("select", { onchange: (ev) => set(ev.target.value) });
+      (st.options || []).forEach((o) => input.append(el("option", { value: o }, capFirst(String(o)))));
+      input.value = String(cur());
+    } else {
+      input = el("input", { type: "number", step: st.kind === "int" ? "1" : "any", min: st.min, max: st.max, value: cur(), onchange: (ev) => set(ev.target.value) });
+    }
+    return el("div", { class: "row" },
+      el("div", { class: "head" }, el("span", { class: "label" }, label), el("span", { class: "badge" }, `default ${st.default}${st.unit ? " " + st.unit : ""}`)),
+      el("div", { class: "desc" }, help), el("div", { class: "ctl" }, input, el("span", { class: "muted" }, st.kind === "choice" ? "" : (st.unit || ""))), problem);
   }
 
   /** Search and filter chips: show matching rows only, opening their sections; restore when cleared. */
@@ -1238,6 +1391,35 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       const was = savedSafety[st.key] !== undefined ? savedSafety[st.key] : st.default;
       if (Number(this._draft.safety[st.key]) !== Number(was)) tally(section, "unsaved");
     });
+    if (this._v2) {                                         // engine v2 settings and the engine choice
+      const savedV2 = saved.engine_v2 || {};
+      const vals = v2Values(this._v2, this._draft.engine_v2);
+      const contra = v2Contradictions(vals);
+      (this._v2Rows || []).forEach(({ st, problem, section }) => {
+        const p = v2Problem(st, vals[st.key]) || contra[st.key] || "";
+        problem.textContent = p;
+        if (p) { blocking++; tally(section, "problems"); }
+        const was = savedV2[st.key] !== undefined ? savedV2[st.key] : (this._v2.values || {})[st.key];
+        if (!v2Same(vals[st.key], was)) tally(section, "unsaved");
+      });
+      (this._v2Readouts || []).forEach(({ box, fn }) => { const t = fn(); box.textContent = t || ""; box.style.display = t ? "" : "none"; });
+      const eng = engineInUse(states, saved);
+      if (eng !== this._engine) { this._engine = eng; this._draft.system.engine = eng; }
+      const g = this._groups || {};
+      if (g.house) {
+        g.house.chip.textContent = "used by both engines";
+        g.house.wrap.style.order = 0;
+        ["v1", "v2"].forEach((k) => {
+          const on = this._engine === k;
+          g[k].wrap.classList.toggle("dim", !on);
+          g[k].chip.textContent = on ? "in use" : "not in use: can be set now";
+          g[k].chip.className = `groupchip${on ? " on" : ""}`;
+          g[k].wrap.style.order = on ? 1 : 2;
+        });
+      }
+      const sig = [this._engine, this._enginePending, this._saving, this._readOnly].join("|");
+      if (sig !== this._engineSig) { this._engineSig = sig; this._renderEngineBox(); }
+    }
     Object.values(secs).forEach((s) => {
       const parts = [];
       if (s.problems) parts.push(`${s.problems} to check`);
@@ -1257,9 +1439,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       this._summary.className = reqBad ? "summary bad" : "summary good";
     }
     if (this._filter === "attention" || this._query) this._applyFilter();
-    const base = initialDraft(saved, [], [], this._settings).draft;
-    if (this._siteSaved) base.site = this._siteSaved; else delete base.site;
-    if (this._devices) base.devices = deviceDraft(base.devices); else delete base.devices;
+    const base = this._baseDraft(saved);
     const dirty = JSON.stringify(buildConfig(this._draft)) !== JSON.stringify(buildConfig(base));
     if (this._saveBtn) {
       this._saveBtn.disabled = this._readOnly || blocking > 0 || this._saving || !dirty;
@@ -5484,9 +5664,853 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-hi
     description: "Pick a day for the Plan history tab, with previous and next arrows." });
 }
 
+// --- Engine v2: Monitoring panel, plan (timeline and value map), health, and the config helpers ----------------------
+// Engine v2 acts on conditions (a level reached, a price change) instead of a half-hour plan. The app publishes its state
+// as sensor.pe_state_engine ("v1" or "v2") and sensor.pe_v2_* / sensor.pe_diag_v2* (docs/plans/engine-v2-build.md,
+// "Published sensors"). Every piece here copes with a missing sensor by saying so in one plain line. Pure helpers first
+// (exported for tests/engine_v2.test.cjs), then the cards, which draw SVG themselves.
+const ENGINE_SENSOR = "sensor.pe_state_engine";
+const V2_MODE = "sensor.pe_v2_mode";
+const V2_VALUE = "sensor.pe_v2_value";
+const V2_TIMELINE = "sensor.pe_v2_timeline";
+const V2_CURVE = "sensor.pe_v2_value_curve";
+const V2_TRIGGERS = "sensor.pe_v2_triggers";
+const V2_DIAG = "sensor.pe_diag_v2";
+const V2_SETTINGS = "sensor.pe_diag_v2_settings";
+const V2_NOT_RUNNING = "Engine v2 is not running (engine v1 is).";
+const V2_NO_DATA = "Engine v2 has not published anything yet.";
+
+const V2_MODES = {
+  self_use: { name: "Self-use", colour: "--m-self", glyph: "⌂" },
+  hold: { name: "Hold", colour: "--m-hold", glyph: "⏸" },
+  charge: { name: "Charge", colour: "--m-charge", glyph: "⚡" },
+  export: { name: "Export", colour: "--m-export", glyph: "⇧" },
+  event: { name: "Grid event", colour: "--m-event", glyph: "★" },
+  free: { name: "Free power", colour: "--m-free", glyph: "☀" },
+  none: { name: "No mode yet", colour: "--m-hold", glyph: "–" },
+};
+function v2Mode(key) { return V2_MODES[key] || V2_MODES.none; }
+
+function v2Attrs(states, id) {
+  const s = (states || {})[id];
+  if (!s || s.state === "unavailable" || s.state === "unknown") return null;
+  return s.attributes && typeof s.attributes === "object" ? s.attributes : {};
+}
+function v2Clamp(x, lo, hi) { return Math.min(hi, Math.max(lo, x)); }
+function v2Ms(iso) { const t = Date.parse(iso); return Number.isNaN(t) ? null : t; }
+function v2Hm(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+function v2P(n, digits) { const v = toNumber(n); return v === null ? "" : `${(Math.round(v * Math.pow(10, digits === undefined ? 2 : digits)) / Math.pow(10, digits === undefined ? 2 : digits))}p`; }
+function v2Pct(n) { const v = toNumber(n); return v === null ? "" : `${Math.round(v * 10) / 10}%`; }
+function lowerFirst(s) { const t = String(s || ""); return t.charAt(0).toLowerCase() + t.slice(1); }
+
+/** Which engine runs: "v1", "v2", or null when the app doesn't say. */
+function v2Engine(states) {
+  const s = (states || {})[ENGINE_SENSOR];
+  return s && (s.state === "v1" || s.state === "v2") ? s.state : null;
+}
+/** Does the app publish the v2 settings catalogue (so the v2 keys may be sent and shown)? */
+function v2Supported(states) {
+  const a = v2Attrs(states, V2_SETTINGS);
+  return !!(a && Array.isArray(a.settings) && a.settings.length);
+}
+/** What a v2 card says instead of its content: null when it can show content. */
+function v2Gate(states, needIds) {
+  if (v2Engine(states) === "v1") return V2_NOT_RUNNING;
+  const missing = (needIds || []).every((id) => !v2Attrs(states, id) && !((states || {})[id]));
+  return missing ? V2_NO_DATA : null;
+}
+
+/** Positions for the value bar: the marker (value of a stored kWh at the level now) and the two real-price lines on one
+ *  0 to `max` scale. Pure; the card turns the numbers into SVG. */
+function valueBarGeometry(v, opts) {
+  const o = opts || {};
+  const width = o.width || 384, x0 = o.x0 === undefined ? 8 : o.x0;
+  const max = toNumber((v || {}).scale_max_p) > 0 ? toNumber(v.scale_max_p) : (o.max || 40);
+  const x = (p) => x0 + (v2Clamp(p, 0, max) / max) * width;
+  const val = toNumber((v || {}).value_p), buy = toNumber((v || {}).buy_line_p), sell = toNumber((v || {}).sell_line_p);
+  const anchor = (px) => (px > x0 + width * 0.7 ? "end" : "start");
+  const step = max <= 60 ? 10 : max <= 150 ? 25 : 50;
+  const ticks = [];
+  for (let p = 0; p <= max + 1e-9; p += step) ticks.push({ p, x: x(p) });
+  return {
+    max, x0, x1: x0 + width, ticks,
+    marker: val === null ? null : { x: x(val), p: val, off: val > max },
+    buy: buy === null ? null : { x: x(buy), p: buy, anchor: anchor(x(buy)) },
+    sell: sell === null ? null : { x: x(sell), p: sell, anchor: anchor(x(sell)) },
+    sellFill: sell === null ? null : { x: x0, w: x(sell) - x0 },
+    buyFill: buy === null ? null : { x: x(buy), w: x0 + width - x(buy) },
+    markerAnchor: val === null ? "middle" : (x(val) < x0 + 50 ? "start" : x(val) > x0 + width - 50 ? "end" : "middle"),
+  };
+}
+
+/** "until the battery reaches 88% · expected about 02:40 · since 23:30" */
+function modeSubtitle(m) {
+  const exits = Array.isArray(m.exits) ? m.exits : [];
+  const first = exits.find((e) => e && e.first) || exits[0];
+  const parts = [];
+  if (first && first.text) {
+    let t = `until ${lowerFirst(first.text.replace(/^The /, "the "))}`;
+    if (first.expected_at && v2Hm(first.expected_at)) t += ` · expected about ${v2Hm(first.expected_at)}`;
+    parts.push(t);
+  }
+  if (m.since && v2Hm(m.since)) parts.push(`since ${v2Hm(m.since)}`);
+  return parts.join(" · ");
+}
+
+/** The rows of "This ends when": text, the time it is expected (or "any time"), the swatch colour variable. */
+function exitRows(exits, modeKey) {
+  return (Array.isArray(exits) ? exits : []).filter((e) => e && e.text).map((e) => {
+    const t = e.expected_at ? v2Hm(e.expected_at) : "";
+    const when = !t ? "any time" : e.kind === "level" ? `about ${t}` : t;
+    const colour = e.kind === "level" ? v2Mode(modeKey).colour : e.kind === "price" || e.kind === "time" ? "--v2-price"
+      : e.kind === "deadline" ? "--divider-color" : "--m-hold";
+    return { text: e.text, when, first: !!e.first, colour };
+  });
+}
+
+/** Everything the Monitoring panel shows, from the states. kind: "v1" | "none" | "ok". */
+function engineCardView(states) {
+  const gate = v2Gate(states, [V2_MODE, V2_VALUE]);
+  if (gate) return { kind: v2Engine(states) === "v1" ? "v1" : "none", text: gate };
+  const m = v2Attrs(states, V2_MODE);
+  if (!m) return { kind: "none", text: V2_NO_DATA };
+  const key = (states[V2_MODE] || {}).state;
+  const mode = v2Mode(key);
+  const val = v2Attrs(states, V2_VALUE);
+  const power = toNumber(m.power_w);
+  const figs = [
+    { k: "Battery (reading)", v: toNumber(m.level_reported) === null ? "–" : v2Pct(m.level_reported) },
+    { k: "Battery (filtered)", v: toNumber(m.level_filtered) === null ? "–" : v2Pct(m.level_filtered) },
+    { k: key === "charge" || key === "free" ? "Charging at" : key === "export" || key === "event" ? "Exporting at" : "Power",
+      v: power === null || power === 0 ? "–" : `${Math.round(Math.abs(power) / 100) / 10} kW` },
+    { k: "Values worked out", v: m.values_at && v2Hm(m.values_at) ? v2Hm(m.values_at) : "–" },
+  ];
+  const notes = [];
+  if (m.sending === false) notes.push(m.not_sending_reason ? `Not sending to the inverter: ${m.not_sending_reason}` : "Not sending to the inverter.");
+  if (m.deadline && v2Hm(m.deadline)) notes.push(`Deadline to look again: ${v2Hm(m.deadline)}`);
+  if (m.values_because) notes.push(`Values last worked out because: ${lowerFirst(m.values_because)}`);
+  const sv = (states[V2_VALUE] || {}).state;
+  const bar = val ? valueBarGeometry(Object.assign({}, val, { value_p: toNumber(val.value_p) !== null ? val.value_p : sv })) : null;
+  const barText = bar && bar.marker ? valueBarSummary(bar) : "";
+  return {
+    kind: "ok", key, mode, label: m.label || mode.name, subtitle: modeSubtitle(m), why: m.why || "", figs, notes, bar, barText,
+    exits: exitRows(m.exits, key), val: val || {},
+    offScale: !!(bar && bar.marker && bar.marker.off),
+  };
+}
+function valueBarSummary(g) {
+  const bits = [`A stored kWh is worth ${v2P(g.marker.p, 1)}`];
+  if (g.buy) bits.push(g.marker.p > g.buy.p ? `above the ${v2P(g.buy.p, 1)} buy line, so charging pays` : `below the ${v2P(g.buy.p, 1)} buy line, so charging does not pay`);
+  if (g.sell) bits.push(g.marker.p < g.sell.p ? `below the ${v2P(g.sell.p, 1)} sell line, so selling pays` : `above the ${v2P(g.sell.p, 1)} sell line, so selling does not pay`);
+  return bits.join("; ");
+}
+
+// ---- plan: timeline layout ----------------------------------------------------------------------------------------
+const HOUR_MS = 3600000;
+
+/** Where everything goes on the time axis, in hours from the left edge (t0). Pure: no widths, no clock labels. */
+function timelineLayout(tl, opts) {
+  const o = opts || {};
+  const a = tl || {};
+  const now = v2Ms(a.now) !== null ? v2Ms(a.now) : (o.now || Date.now());
+  const valid = (x) => x && v2Ms(x.start) !== null && v2Ms(x.end) !== null && v2Ms(x.end) > v2Ms(x.start);
+  const items = (Array.isArray(a.items) ? a.items : []).filter(valid);
+  const prices = (Array.isArray(a.prices) ? a.prices : []).filter(valid);
+  const path = a.path && Array.isArray(a.path.mid) && v2Ms(a.path.start) !== null ? a.path : null;
+  const stepMs = path ? (toNumber(path.step_min) > 0 ? toNumber(path.step_min) : 15) * 60000 : 0;
+  const pathEnd = path ? v2Ms(path.start) + (path.mid.length - 1) * stepMs : null;
+  const starts = items.map((x) => v2Ms(x.start)).concat(prices.map((x) => v2Ms(x.start)), path ? [v2Ms(path.start)] : [], [now]);
+  const ends = items.map((x) => v2Ms(x.end)).concat(prices.map((x) => v2Ms(x.end)), pathEnd !== null ? [pathEnd] : [], [now + HOUR_MS]);
+  const t0 = Math.max(Math.min(...starts), now - (o.pastHours || 6) * HOUR_MS);
+  const t1 = Math.min(Math.max(...ends), t0 + (o.maxHours || 48) * HOUR_MS);
+  const spanH = (t1 - t0) / HOUR_MS;
+  const h = (t) => (t - t0) / HOUR_MS;
+  const clip = (x) => ({ a: Math.max(0, h(v2Ms(x.start))), b: Math.min(spanH, h(v2Ms(x.end))) });
+  const bands = items.map((x) => {
+    const c = clip(x);
+    const s = v2Ms(x.start), e = v2Ms(x.end);
+    return Object.assign(c, { mode: x.mode, until: x.until || "", reason: x.reason || "", levelStart: toNumber(x.level_start), levelEnd: toNumber(x.level_end),
+      state: e <= now ? "past" : s < now ? "now" : "future", startMs: s, endMs: e });
+  }).filter((b) => b.b > b.a);
+  const steps = prices.map((x) => {
+    const c = clip(x);
+    return Object.assign(c, { importP: toNumber(x.import_p), exportP: toNumber(x.export_p), slot: x.slot_prob !== null && x.slot_prob !== undefined,
+      slotProb: toNumber(x.slot_prob), event: !!x.event, free: !!x.free, estimated: !!x.estimated });
+  }).filter((p) => p.b > p.a && p.importP !== null);
+  const pts = (arr) => (Array.isArray(arr) ? arr : []).map((v, i) => ({ h: h(v2Ms(path.start) + i * stepMs), level: toNumber(v) }))
+    .filter((p) => p.level !== null && p.h >= -1e-9 && p.h <= spanH + 1e-9);
+  const mid = path ? pts(path.mid) : [], low = path ? pts(path.low) : [], high = path ? pts(path.high) : [];
+  const ticks = [];
+  const d = new Date(t0); d.setMinutes(0, 0, 0);
+  while (d.getTime() < t0 || d.getHours() % 3 !== 0) d.setTime(d.getTime() + HOUR_MS);
+  for (let t = d.getTime(); t <= t1; t += 3 * HOUR_MS) ticks.push({ h: h(t), ms: t });
+  const nowH = h(now);
+  return { t0, t1, now, spanH, nowH, bands, steps, mid, low, high, ticks,
+    floor: toNumber(a.floor_soc), reserve: toNumber(a.reserve_soc), nowLevel: levelAtHour(mid, nowH) };
+}
+/** Battery level at `hour` along a list of {h, level} points (linear), or null outside it. */
+function levelAtHour(points, hour) {
+  if (!points || points.length === 0) return null;
+  if (hour < points[0].h - 1e-9 || hour > points[points.length - 1].h + 1e-9) return null;
+  for (let i = 1; i < points.length; i++) {
+    if (hour <= points[i].h + 1e-9) {
+      const p = points[i - 1], q = points[i];
+      return q.h === p.h ? q.level : p.level + (q.level - p.level) * ((hour - p.h) / (q.h - p.h));
+    }
+  }
+  return points[points.length - 1].level;
+}
+/** The text on a mode band, by how wide it is on screen. */
+function bandLabel(band, widthPx) {
+  const name = v2Mode(band.mode).name;
+  return widthPx > 120 ? name + (band.until ? ` · ${band.until}` : "") : widthPx > 50 ? name : "";
+}
+
+// ---- plan: value map ----------------------------------------------------------------------------------------------
+/** Colour of a value cell: pale (worth little) to deep blue (worth a lot), grid-event values in the event colour. */
+function heatColour(v, opts) {
+  const o = opts || {};
+  const max = o.max > 0 ? o.max : 40;
+  const eventAbove = o.eventAbove > 0 ? o.eventAbove : max * 1.5;
+  const n = toNumber(v);
+  if (n === null) return { kind: "none", css: "transparent", t: 0 };
+  if (n > eventAbove) return { kind: "event", css: "var(--m-event)", t: 1 };
+  const t = v2Clamp(n / max, 0, 1);
+  const from = o.dark ? [36, 40, 46] : [247, 244, 232], to = o.dark ? [100, 181, 246] : [13, 71, 161];
+  const m = from.map((c, i) => Math.round(c + (to[i] - c) * Math.pow(t, 0.85)));
+  return { kind: "scale", css: `rgb(${m.join(",")})`, t };
+}
+
+/** The value curve as cells: one row per step_min from `start`, one column per level, in hours from t0 (clipped to the
+ *  span). Each level covers half a step either side (0 and 100 only half). */
+function valueMapGrid(curve, t0, spanH) {
+  const c = curve || {};
+  const levels = (Array.isArray(c.levels) ? c.levels : []).map(toNumber);
+  const rows = Array.isArray(c.values) ? c.values : [];
+  const startMs = v2Ms(c.start);
+  if (startMs === null || !levels.length || !rows.length || levels.some((l) => l === null)) return null;
+  const stepMs = (toNumber(c.step_min) > 0 ? toNumber(c.step_min) : 60) * 60000;
+  const origin = t0 === undefined || t0 === null ? startMs : t0;
+  const span = spanH === undefined ? (rows.length * stepMs) / HOUR_MS : spanH;
+  const halfs = levels.map((l, i) => {
+    const lo = i === 0 ? l : (levels[i - 1] + l) / 2, hi = i === levels.length - 1 ? l : (l + levels[i + 1]) / 2;
+    return [lo, hi];
+  });
+  // a single level has no height; give it the whole axis
+  const cells = [];
+  rows.forEach((row, r) => {
+    const a = (startMs + r * stepMs - origin) / HOUR_MS, b = a + stepMs / HOUR_MS;
+    if (b <= 0 || a >= span || !Array.isArray(row)) return;
+    levels.forEach((l, i) => {
+      const v = toNumber(row[i]);
+      if (v !== null) cells.push({ a: Math.max(0, a), b: Math.min(span, b), lo: levels.length === 1 ? 0 : halfs[i][0], hi: levels.length === 1 ? 100 : halfs[i][1], level: l, value: v, row: r });
+    });
+  });
+  return { startMs, stepMs, levels, cells, rows: rows.length, unit: c.unit || "p/kWh" };
+}
+/** The cell under a point (hours from t0, battery %), or null. */
+function mapCellAt(grid, hour, level) {
+  if (!grid) return null;
+  return grid.cells.find((c) => hour >= c.a && hour < c.b && level >= c.lo && level <= c.hi) || null;
+}
+/** Value of a stored kWh at `level` in one curve row (linear between the levels, flat beyond the ends). */
+function interpValue(levels, row, level) {
+  if (!Array.isArray(levels) || !Array.isArray(row) || !levels.length) return null;
+  const vals = levels.map((_, i) => toNumber(row[i]));
+  if (level <= levels[0]) return vals[0];
+  for (let i = 1; i < levels.length; i++) {
+    if (level <= levels[i]) {
+      const a = vals[i - 1], b = vals[i];
+      if (a === null || b === null) return a === null ? b : a;
+      return a + (b - a) * ((level - levels[i - 1]) / (levels[i] - levels[i - 1]));
+    }
+  }
+  return vals[levels.length - 1];
+}
+/** The value of a stored kWh along the expected battery path: [{h, value}] for each path point (hours from t0). */
+function pathValueSeries(curve, layout) {
+  const c = curve || {};
+  const startMs = v2Ms(c.start), levels = c.levels, rows = c.values;
+  if (startMs === null || !layout || !layout.mid.length || !Array.isArray(rows) || !rows.length) return [];
+  const stepMs = (toNumber(c.step_min) > 0 ? toNumber(c.step_min) : 60) * 60000;
+  const out = [];
+  layout.mid.forEach((p) => {
+    const t = layout.t0 + p.h * HOUR_MS;
+    const r = v2Clamp(Math.floor((t - startMs) / stepMs), 0, rows.length - 1);
+    const v = interpValue(levels, rows[r], p.level);
+    if (v !== null) out.push({ h: p.h, value: v });
+  });
+  return out;
+}
+/** The real prices as lines in value terms: import and export steps scaled by what the value sensor says about losses
+ *  now (buy_line_p / import_p, sell_line_p / export_p). With no figures the prices are drawn as they are (k = 1). */
+function pathLines(layout, val) {
+  const v = val || {};
+  const ratio = (line, price) => (toNumber(line) !== null && toNumber(price) > 0 ? toNumber(line) / toNumber(price) : null);
+  const kb = ratio(v.buy_line_p, v.import_p), ks = ratio(v.sell_line_p, v.export_p);
+  const steps = (layout && layout.steps) || [];
+  return {
+    afterLosses: kb !== null || ks !== null,
+    buy: steps.map((s) => ({ a: s.a, b: s.b, p: s.importP * (kb === null ? 1 : kb), slot: s.slot, event: s.event })),
+    sell: steps.filter((s) => s.exportP !== null).map((s) => ({ a: s.a, b: s.b, p: s.exportP * (ks === null ? 1 : ks), event: s.event })),
+  };
+}
+/** Sentence for a point on the map. `buyLineAt` = the buy line (p) at that time, or null. */
+function mapReadoutText(cell, clock, buyLineAt) {
+  if (!cell) return "Point at the map: the value of one more kWh at that time and battery level.";
+  const lo = Math.round(cell.lo), hi = Math.round(cell.hi);
+  let t = `At ${clock} with the battery at ${lo === hi ? lo : `${lo}–${hi}`}%, one more kWh is worth ${v2P(cell.value, 1)}.`;
+  if (buyLineAt !== null && buyLineAt !== undefined) {
+    t += ` Buying then costs ${v2P(buyLineAt, 1)} per stored kWh: ${cell.value >= buyLineAt ? "worth it, so a charge would run" : "not worth it, so no charge"}.`;
+  }
+  return t;
+}
+/** The plan card's content: kind "v1" | "none" | "ok" (needs at least the timeline or the curve). */
+function planCardView(states, now) {
+  const gate = v2Gate(states, [V2_TIMELINE, V2_CURVE]);
+  if (gate) return { kind: v2Engine(states) === "v1" ? "v1" : "none", text: gate };
+  const tl = v2Attrs(states, V2_TIMELINE), curve = v2Attrs(states, V2_CURVE);
+  const hasTl = !!(tl && Array.isArray(tl.items) && tl.items.length);
+  const layout = hasTl ? timelineLayout(tl, { now }) : null;
+  const grid = curve ? valueMapGrid(curve, layout ? layout.t0 : null, layout ? layout.spanH : undefined) : null;
+  if (!layout && !grid) return { kind: "none", text: V2_NO_DATA };
+  const val = v2Attrs(states, V2_VALUE) || {};
+  const worked = (states[V2_TIMELINE] || {}).state;
+  const cost = tl && toNumber(tl.cost_expected) !== null && toNumber(tl.cost_selfuse) !== null
+    ? `Expected cost £${toNumber(tl.cost_expected).toFixed(2)} against £${toNumber(tl.cost_selfuse).toFixed(2)} on Self-use`
+      + (toNumber(tl.comfort_given_up) ? `; comfort band gave up £${toNumber(tl.comfort_given_up).toFixed(2)}` : "") : "";
+  return { kind: "ok", tl, layout, grid, curve, val, scaleMax: toNumber(val.scale_max_p) > 0 ? toNumber(val.scale_max_p) : 40,
+    lines: layout ? pathLines(layout, val) : null, series: layout && curve ? pathValueSeries(curve, layout) : [],
+    chip: [worked && v2Hm(worked) ? `values worked out ${v2Hm(worked)}` : "", tl && tl.because ? lowerFirst(tl.because) : ""].filter(Boolean).join(" · "),
+    cost };
+}
+
+// ---- health -------------------------------------------------------------------------------------------------------
+const TRIGGER_CAUSES = {
+  drift: "Forecast drift", slots_changed: "Smart slots changed", slots: "Smart slots changed", car: "Car started or stopped",
+  car_start: "Car started", car_stop: "Car stopped", price: "New prices", prices: "New prices", backstop: "Backstop (2 h)",
+  forecast: "Forecast changed", deadline: "Deadline check", level: "Level reached", event: "Grid event changed",
+  settings: "Settings changed", start: "App started",
+};
+function causeLabel(key) {
+  return TRIGGER_CAUSES[key] || capFirst(String(key).replace(/_/g, " "));
+}
+/** Bars for "Values worked out N times, because": biggest first, backstop flagged, widths as a share of the largest. */
+function causeBars(today) {
+  const t = today || {};
+  const causes = Object.assign({}, t.causes || {});
+  if (causes.backstop === undefined && toNumber(t.backstop) > 0) causes.backstop = toNumber(t.backstop);
+  const rows = Object.entries(causes).map(([k, n]) => ({ key: k, label: causeLabel(k), n: toNumber(n) || 0, warn: /^backstop/.test(k) }))
+    .filter((r) => r.n > 0).sort((a, b) => b.n - a.n || a.label.localeCompare(b.label));
+  const max = Math.max(1, ...rows.map((r) => r.n));
+  return rows.map((r) => Object.assign(r, { pct: Math.round((r.n / max) * 100) }));
+}
+const WEIGHT_PARTS = [["morning", "Morning"], ["midday", "Midday"], ["afternoon", "Afternoon"]];
+function weightPct(arr) { return Array.isArray(arr) ? arr.map((x) => (toNumber(x) === null ? "–" : Math.round(toNumber(x) * 100))) : null; }
+/** The comfort-band sentence from the newest entry of sensor.pe_diag_v2's `comfort`. */
+function comfortSummary(diag, values) {
+  const list = diag && Array.isArray(diag.comfort) ? diag.comfort : [];
+  const c = list[list.length - 1];
+  if (!c) return null;
+  const v = values || {};
+  const lo = toNumber(v.comfort_low_soc), hi = toNumber(v.comfort_high_soc);
+  const hrs = (n) => (toNumber(n) ? `${Math.round(toNumber(n) * 10) / 10} h` : "none");
+  const changed = toNumber(c.decisions_changed) || 0;
+  return {
+    title: lo !== null && hi !== null ? `Comfort band (${lo} to ${hi}%)` : "Comfort band",
+    text: `${hrs(c.hours_above)} above${hi !== null ? ` ${hi}%` : ""}, ${hrs(c.hours_below)} below${lo !== null ? ` ${lo}%` : ""}. Gave up £${(toNumber(c.given_up) || 0).toFixed(2)} against no band; changed ${changed} decision${changed === 1 ? "" : "s"}.`,
+    date: c.date || "",
+  };
+}
+/** What the health card shows, from the states. */
+function healthCardView(states) {
+  const gate = v2Gate(states, [V2_TRIGGERS, V2_DIAG]);
+  if (gate) return { kind: v2Engine(states) === "v1" ? "v1" : "none", text: gate };
+  const trig = v2Attrs(states, V2_TRIGGERS) || {}, diag = v2Attrs(states, V2_DIAG) || {};
+  const today = trig.today || {};
+  const settings = v2Attrs(states, V2_SETTINGS);
+  const fig = (k, v, bad) => ({ k, v, bad: !!bad });
+  const n = (x) => (toNumber(x) === null ? "–" : String(toNumber(x)));
+  const w = diag.weights || {};
+  const solar = w.solar || {};
+  const weights = WEIGHT_PARTS.map(([key, label]) => ({ label, pct: weightPct(solar[key]) })).filter((r) => r.pct);
+  const start = w.start && w.start.solar ? weightPct(w.start.solar) : null;
+  const off = diag.soc_offset || {};
+  const recent = (Array.isArray(trig.recent) ? trig.recent : []).slice(-6).reverse().map((r) => ({
+    at: v2Hm(r.at), text: r.text || causeLabel(r.kind), effect: r.effect || "" }));
+  const filter = [];
+  [["charging", "while charging"], ["holding", "while holding"], ["discharging", "while discharging"]].forEach(([k, label]) => {
+    const x = toNumber(off[k]);
+    if (x !== null && Math.abs(x) >= 0.05) filter.push(`${Math.abs(Math.round(x * 10) / 10)} point${Math.abs(x) === 1 ? "" : "s"} ${x < 0 ? "low" : "high"} ${label}`);
+  });
+  return {
+    kind: "ok", learning: (states[V2_DIAG] || {}).state === "learning",
+    revalues: toNumber(today.revalues) === null ? toNumber((states[V2_TRIGGERS] || {}).state) : toNumber(today.revalues),
+    bars: causeBars(today),
+    figs: [fig("Mode changes", n(today.mode_changes)), fig("Flip-flops", n(today.flip_flops), toNumber(today.flip_flops) > 0),
+      fig("Deadlines missed", n(today.deadlines_missed), false), fig("Longest calculation", toNumber(today.longest_calc_s) === null ? "–" : `${toNumber(today.longest_calc_s)} s`)],
+    comfort: comfortSummary(diag, settings && settings.values),
+    weights, weightsStart: start, weightDays: toNumber(w.days),
+    filterText: filter.length ? `Reading is ${filter.join(", ")} (learned).` : "",
+    filterGap: toNumber(diag.filter_gap_max_today),
+    recent,
+  };
+}
+
+// ---- config: engine choice and groups ---------------------------------------------------------------------------
+// The planning topics only engine v1 uses, as sections of their own under "Engine v1 settings". Everything else in the
+// existing topics stays under "Your house" (both engines use it). Only the sections' keys that the app lists are shown.
+const V1_SECTIONS = [
+  { key: "v1_planning", title: "Planning and cheap rate", features: ["optimised_plan", "auto_cheap_threshold", "fill_when_cheap"],
+    settings: ["cheap_threshold_p", "window_switch_cost_p", "overnight_switch_cost_p", "ram_switch_cost_p", "grid_charge_target_soc", "charge_hysteresis_soc"] },
+  { key: "v1_selling", title: "Selling (arbitrage band)", features: ["arbitrage", "deep_overnight"],
+    settings: ["battery_wear_p", "arbitrage_min_margin_p", "arbitrage_min_soc", "arbitrage_max_soc", "arbitrage_band_penalty_p"] },
+  { key: "v1_events", title: "Grid events and reserve", features: [], settings: ["min_reserve_soc", "pre_axle_lookahead_h", "axle_margin_soc"] },
+];
+/** Which topics and keys go to which group. With `v2On` false nothing moves (house = the old topic plan). */
+function engineGrouping(roleKeys, settingKeys, featureKeys, systemKeys, v2On) {
+  if (!v2On) return { house: topicPlan(roleKeys, settingKeys, featureKeys, systemKeys), v1: [], grouped: false };
+  const v1Settings = new Set(), v1Features = new Set();
+  V1_SECTIONS.forEach((s) => { s.settings.forEach((k) => v1Settings.add(k)); s.features.forEach((k) => v1Features.add(k)); });
+  const house = topicPlan(roleKeys, settingKeys.filter((k) => !v1Settings.has(k)), featureKeys.filter((k) => !v1Features.has(k)),
+    systemKeys.filter((k) => k !== "engine"));
+  const v1 = V1_SECTIONS.map((s) => Object.assign({}, s, { settings: s.settings.filter((k) => settingKeys.includes(k)),
+    features: s.features.filter((k) => featureKeys.includes(k)) })).filter((s) => s.settings.length || s.features.length);
+  return { house, v1, grouped: true };
+}
+/** The engine in use: what the app says is running, else the saved choice, else v1. */
+function engineInUse(states, saved) {
+  return v2Engine(states) || (((saved || {}).system || {}).engine === "v2" ? "v2" : "v1");
+}
+/** The text of the inline confirmation, the same in both directions. */
+function engineConfirm(from, to) {
+  return {
+    title: `Switch to engine ${to}?`,
+    text: `It takes over within a few seconds. Active, Passive and Pause stay as they are; the inverter keeps its current command until engine ${to} has decided. Engine ${from}'s settings are kept, and you can switch back here at any time.`,
+    confirm: `Switch to ${to}`, cancel: `Keep ${from}`,
+  };
+}
+/** A v2 settings block ready to send: numbers as numbers, flags as booleans, nothing empty. */
+function cleanV2Block(block) {
+  const out = {};
+  Object.entries(block || {}).forEach(([k, v]) => {
+    if (typeof v === "boolean") out[k] = v;
+    else if (typeof v === "number") { if (Number.isFinite(v)) out[k] = v; }
+    else if (typeof v === "string" && v.trim() !== "") out[k] = toNumber(v) !== null ? toNumber(v) : v.trim();
+  });
+  return out;
+}
+/** The extra keys a save carries for engine v2. Only when the app publishes the v2 settings (an older app rejects
+ *  unknown keys): `system.engine` and the `engine_v2` block (left out while empty). */
+function engineFields(supported, engine, block) {
+  if (!supported) return {};
+  const out = {};
+  if (engine === "v1" || engine === "v2") out.system = { engine };
+  const clean = cleanV2Block(block);
+  if (Object.keys(clean).length) out.engine_v2 = clean;
+  return out;
+}
+/** Are two setting values the same (numbers compared as numbers, "5" and 5 alike)? */
+function v2Same(a, b) {
+  if (typeof a === "boolean" || typeof b === "boolean") return asBool(a) === asBool(b);
+  const x = toNumber(a), y = toNumber(b);
+  return x !== null && y !== null ? x === y : String(a) === String(b);
+}
+/** Problem with one v2 setting's value, or "". Kinds: number, int, bool, choice. */
+function v2Problem(st, value) {
+  if (st.kind === "bool") return "";
+  if (st.kind === "choice") return (st.options || []).includes(value) ? "" : "Choose one of the options";
+  const n = toNumber(value);
+  if (n === null) return "Enter a number";
+  if (st.kind === "int" && !Number.isInteger(n)) return "Enter a whole number";
+  if (n < st.min || n > st.max) return `Must be between ${st.min} and ${st.max}`;
+  return "";
+}
+/** Settings that contradict each other: { key: message } (the app checks the same). */
+function v2Contradictions(values) {
+  const v = values || {}, out = {};
+  const lo = toNumber(v.comfort_low_soc), hi = toNumber(v.comfort_high_soc);
+  if (lo !== null && hi !== null && lo >= hi) out.comfort_low_soc = "The lower edge must be below the upper edge";
+  ["solar", "load"].forEach((p) => {
+    const s = ["low", "mid", "high"].map((k) => toNumber(v[`${p}_${k}_pct`]));
+    if (s.every((x) => x !== null) && s[0] + s[1] + s[2] <= 0) out[`${p}_low_pct`] = "The weights can't all be 0";
+  });
+  return out;
+}
+/** The values to show in the v2 group: what the app uses now, overlaid with the draft's own block. */
+function v2Values(catalogue, block) {
+  return Object.assign({}, (catalogue && catalogue.values) || {}, block || {});
+}
+/** Readout under the comfort band, from sensor.pe_diag_v2. */
+function comfortReadout(diag, values) {
+  const c = comfortSummary(diag, values);
+  return c ? `Latest day (${c.date || "today"}): ${c.text}` : null;
+}
+/** Readout under the forecast weights: what has been learned. */
+function weightsReadout(diag) {
+  const w = (diag && diag.weights) || {};
+  const mid = w.solar && weightPct(w.solar.midday);
+  if (!mid) return null;
+  const days = toNumber(w.days);
+  return `Learned now (midday): ${mid.join(" / ")}${days ? ` from ${days} day${days === 1 ? "" : "s"}` : ""}. Morning and afternoon are on the engine's Health page.`;
+}
+/** Readout under the floors: the shared hard floor and where a grid event stops. */
+function floorsReadout(safety, values) {
+  const f = toNumber((safety || {}).battery_floor_soc);
+  if (f === null) return null;
+  const m = toNumber((values || {}).hard_floor_margin_pct);
+  return `Hard floor ${f}% (the battery's own limit, set under Your house).${m !== null ? ` Grid events stop at ${f + m}%.` : ""}`;
+}
+
+// ---- the cards -------------------------------------------------------------------------------------------------
+const V2_CSS = `
+  :host { display: block; --m-self: #00897b; --m-hold: #78909c; --m-charge: #43a047; --m-export: #e53935; --m-event: #8e24aa; --m-free: #f9a825;
+    --v2-battery: #1565c0; --v2-price: #fb8c00; --v2-good: #2e7d32; --v2-warn: #ef6c00; }
+  :host(.dark) { --m-self: #26a69a; --m-hold: #90a4ae; --m-charge: #66bb6a; --m-export: #ef5350; --m-event: #ba68c8; --m-free: #ffd54f;
+    --v2-battery: #64a6f0; --v2-price: #ffa940; --v2-good: #66bb6a; --v2-warn: #ffa726; }
+  ha-card { padding: 16px; display: flex; flex-direction: column; gap: 14px; min-width: 0; box-sizing: border-box; }
+  .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .title { font-size: 16px; font-weight: 500; }
+  .chip { display: inline-flex; align-items: center; font-size: 12px; font-weight: 500; padding: 2px 10px; border-radius: 999px;
+    background: rgba(3,169,244,.14); color: var(--primary-color); white-space: nowrap; }
+  .chip.muted { background: var(--secondary-background-color); color: var(--secondary-text-color); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .muted { color: var(--secondary-text-color); }
+  .small { font-size: 12px; }
+  .num { font-family: var(--code-font-family, monospace); font-variant-numeric: tabular-nums; }
+  h3 { font-size: 13px; font-weight: 500; margin: 0 0 6px; text-transform: uppercase; letter-spacing: .06em; color: var(--secondary-text-color); }
+  p { margin: 0; }
+  .line { padding: 4px 0; }
+  .figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+  .fig { background: var(--secondary-background-color); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
+  .fig .k { font-size: 12px; color: var(--secondary-text-color); }
+  .fig .v { font-family: var(--code-font-family, monospace); font-size: 16px; font-variant-numeric: tabular-nums; }
+  .fig .v.bad { color: var(--error-color, #db4437); }
+  .fig .v.good { color: var(--v2-good); }
+  .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; flex: none; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--secondary-text-color); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .chart { overflow-x: auto; }
+  .chart svg { display: block; width: 100%; min-width: 620px; height: auto; }
+  svg text { font-family: inherit; }
+`;
+
+const V2Base = typeof HTMLElement !== "undefined" ? HTMLElement : class {};
+class PowerEngineV2Card extends V2Base {
+  setConfig(config) {
+    this._config = config || {};
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+  }
+  getGridOptions() { return { columns: "full", rows: "auto" }; }
+  /** Ids whose changes redraw the card. */
+  _ids() { return []; }
+  set hass(hass) {
+    this._hass = hass;
+    const dark = !!(hass && hass.themes && hass.themes.darkMode);
+    if (this.classList) this.classList.toggle("dark", dark);
+    const st = (hass && hass.states) || {};
+    const sig = [ENGINE_SENSOR].concat(this._ids()).map((id) => (st[id] ? `${st[id].last_updated || ""}${st[id].state}` : "-")).join("|") + dark;
+    if (sig === this._sig) return;
+    this._sig = sig;
+    this._draw();
+  }
+  _draw() {
+    if (!this.shadowRoot || !this._hass) return;
+    try { this._render(this._hass.states || {}); } catch (e) {
+      this.shadowRoot.innerHTML = `<style>${V2_CSS}</style><ha-card><p class="muted">This card could not be drawn (${escHtml((e && e.message) || e)}).</p></ha-card>`;
+    }
+  }
+  _message(title, text) {
+    this.shadowRoot.innerHTML = `<style>${V2_CSS}</style><ha-card><div class="head"><span class="title">${escHtml(title)}</span></div><p class="muted">${escHtml(text)}</p></ha-card>`;
+  }
+}
+
+function svgEl(tag, attrs, parent, text) {
+  const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  const style = [];
+  Object.entries(attrs || {}).forEach(([k, v]) => {
+    if ((k === "fill" || k === "stroke") && String(v).startsWith("var(")) style.push(`${k}:${v}`);
+    else e.setAttribute(k, v);
+  });
+  if (style.length) e.setAttribute("style", style.join(";"));
+  if (text !== undefined) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+
+/* powerengine-engine-card: the Monitoring panel for engine v2 -------------------------------------------------------
+ *   type: custom:powerengine-engine-card
+ * Reads sensor.pe_v2_mode and sensor.pe_v2_value; says "Engine v2 is not running" while engine v1 runs. */
+class PowerEngineEngineCard extends PowerEngineV2Card {
+  getCardSize() { return 7; }
+  _ids() { return [V2_MODE, V2_VALUE, MODE_SENSOR]; }
+  _render(states) {
+    const v = engineCardView(states);
+    if (v.kind !== "ok") { this._message("PowerEngine", v.text); return; }
+    const op = (states[MODE_SENSOR] || {}).state;
+    const chips = (op === "active" || op === "passive" ? `<span class="chip${op === "active" ? "" : " muted"}">${op === "active" ? "Active" : "Passive"}</span>` : "") + '<span class="chip">Engine v2</span>';
+    const exits = v.exits.length ? `<div><h3>This ends when</h3><dl class="exits">${v.exits.map((e) =>
+      `<dt class="${e.first ? "first" : ""}"><span class="sw" style="background:var(${e.colour})"></span>${escHtml(e.text)}</dt><dd class="num">${escHtml(e.when)}</dd>`).join("")}</dl></div>` : "";
+    this.shadowRoot.innerHTML = `<style>${V2_CSS}
+      .mode-now { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px; align-items: center; }
+      .badge { width: 56px; height: 56px; border-radius: 14px; display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 22px; }
+      .mode-name { font-size: 22px; font-weight: 500; }
+      .why { background: var(--secondary-background-color); border-radius: 8px; padding: 10px 12px; }
+      .exits { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; margin: 0; }
+      .exits dt { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+      .exits dd { margin: 0; color: var(--secondary-text-color); text-align: right; }
+      .exits .first { font-weight: 500; }
+      .bar svg { display: block; width: 100%; max-width: 560px; height: auto; }
+      .offnote { font-size: 12px; color: var(--secondary-text-color); }
+    </style>
+    <ha-card>
+      <div class="head"><span class="title">PowerEngine</span><span class="chips">${chips}</span></div>
+      <div class="mode-now">
+        <div class="badge" aria-hidden="true" style="background:var(${v.mode.colour})">${escHtml(v.mode.glyph)}</div>
+        <div><div class="mode-name">${escHtml(v.label)}</div><div class="muted">${escHtml(v.subtitle)}</div></div>
+      </div>
+      ${v.why ? `<p class="why">${escHtml(v.why)}</p>` : ""}
+      <div class="bar"><h3>What a stored kWh is worth now, against today's prices</h3><div id="bar"></div>
+        <p class="muted small">The marker is the value at the battery's level now; it moves as the battery fills and when the values are worked out again.
+        The lines are the real prices after charging and discharging losses: buy while a stored kWh is worth more than the buy line, sell when it is worth less than the sell line.
+        ${v.offScale ? "The marker is off the scale: grid-event values are far above the prices." : "Grid-event values are off the scale."}</p></div>
+      ${exits}
+      <div class="figs">${v.figs.map((f) => `<div class="fig"><span class="k">${escHtml(f.k)}</span><span class="v">${escHtml(f.v)}</span></div>`).join("")}</div>
+      ${v.notes.map((n) => `<p class="muted small">${escHtml(n)}</p>`).join("")}
+    </ha-card>`;
+    const host = this.shadowRoot.getElementById("bar");
+    if (host && v.bar && v.bar.marker) this._drawBar(host, v);
+    else if (host) host.textContent = "The value of a stored kWh is not published yet.";
+  }
+  _drawBar(host, v) {
+    const g = v.bar;
+    const svg = svgEl("svg", { viewBox: "0 0 400 70", role: "img", "aria-label": v.barText }, host);
+    const track = { y: 24, h: 10 };
+    svgEl("rect", { x: g.x0, y: track.y, width: g.x1 - g.x0, height: track.h, rx: 5, fill: "var(--secondary-background-color)" }, svg);
+    if (g.sellFill) svgEl("rect", { x: g.sellFill.x, y: track.y, width: Math.max(0, g.sellFill.w), height: track.h, rx: 5, fill: "var(--m-export)", "fill-opacity": 0.25 }, svg);
+    if (g.buyFill) svgEl("rect", { x: g.buyFill.x, y: track.y, width: Math.max(0, g.buyFill.w), height: 4, fill: "var(--m-charge)", "fill-opacity": 0.55 }, svg);
+    [[g.buy, `buy above ${v2P(g.buy && g.buy.p, 1)}`, "var(--m-charge)", 50], [g.sell, `sell below ${v2P(g.sell && g.sell.p, 1)}`, "var(--m-export)", 64]].forEach(([l, t, c, y]) => {
+      if (!l) return;
+      svgEl("rect", { x: l.x - 1, y: 18, width: 2, height: 22, fill: c }, svg);
+      svgEl("text", { x: l.anchor === "end" ? l.x - 4 : l.x + 4, y, "text-anchor": l.anchor, "font-size": 10.5, fill: "var(--secondary-text-color)" }, svg, t);
+    });
+    g.ticks.forEach((t, i) => { if (i === 0 || i === g.ticks.length - 1) svgEl("text", { x: t.x, y: 50, "text-anchor": i === 0 ? "start" : "end", "font-size": 9.5, fill: "var(--secondary-text-color)" }, svg, `${t.p}p`); });
+    svgEl("circle", { cx: g.marker.x, cy: 29, r: 8, fill: "var(--v2-battery)", stroke: "var(--card-background-color, #fff)", "stroke-width": 2 }, svg);
+    svgEl("text", { x: g.marker.x, y: 12, "text-anchor": g.markerAnchor, "font-size": 11.5, "font-weight": 500, fill: "var(--primary-text-color)" }, svg,
+      `worth ${v2P(g.marker.p, 1)}${g.marker.off ? " (off the scale)" : ""}`);
+  }
+}
+
+/* powerengine-v2-plan-card: the expected timeline, and the value map with a toggle to "along the expected path" ------ */
+class PowerEngineV2PlanCard extends PowerEngineV2Card {
+  getCardSize() { return 9; }
+  _ids() { return [V2_TIMELINE, V2_CURVE, V2_VALUE]; }
+  _render(states) {
+    const v = planCardView(states);
+    if (v.kind !== "ok") { this._message("Engine v2 plan", v.text); return; }
+    this._v = v;
+    this._view = this._view || "map";
+    const dark = !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
+    this._dark = dark;
+    const legend = (items) => items.map(([c, t]) => `<span><i class="sw" style="background:${c}"></i>${escHtml(t)}</span>`).join("");
+    const L = v.layout;
+    this.shadowRoot.innerHTML = `<style>${V2_CSS}
+      .seg { display: inline-flex; background: var(--secondary-background-color); border-radius: 8px; padding: 3px; gap: 2px; }
+      .seg button { font: inherit; font-size: 13px; font-weight: 500; border: 0; background: none; color: var(--secondary-text-color); padding: 5px 12px; border-radius: 6px; cursor: pointer; }
+      .seg button[aria-pressed="true"] { background: var(--card-background-color); color: var(--primary-text-color); box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+      .readout { font-size: 13px; min-height: 2.6em; background: var(--secondary-background-color); border-radius: 8px; padding: 8px 12px; }
+      .gap { display: flex; flex-direction: column; gap: 14px; }
+    </style>
+    <div class="gap">
+    ${L ? `<ha-card>
+      <div class="head"><span class="title">Expected timeline · next ${Math.round(L.spanH)} hours</span>${v.chip ? `<span class="chip muted">${escHtml(v.chip)}</span>` : ""}</div>
+      <div class="chart" id="timeline"></div>
+      <div class="legend">${legend(Object.keys(V2_MODES).filter((k) => k !== "none" && k !== "free").map((k) => [`var(${V2_MODES[k].colour})`, V2_MODES[k].name]))
+        .concat(legend([["var(--v2-battery)", "Battery (shaded: likely range)"], ["var(--v2-price)", "Import price (dashed: smart slot that may not come)"]]))}</div>
+      <p class="muted small">Bands to the left of <b>now</b> are what happened. Bands to the right are expected: each says what ends it, and its edge moves when the condition is met earlier or later.${v.cost ? ` ${escHtml(v.cost)}.` : ""}</p>
+    </ha-card>` : ""}
+    ${v.grid ? `<ha-card>
+      <div class="head"><span class="title">What a stored kWh is worth</span>
+        <div class="seg" role="group" aria-label="Value view"><button data-view="map" aria-pressed="${this._view === "map"}">Map</button><button data-view="path" aria-pressed="${this._view === "path"}">Along the expected path</button></div></div>
+      <div class="chart" id="valuemap"></div>
+      <div class="legend" id="vlegend"></div>
+      <p class="readout" id="vreadout" aria-live="polite"></p>
+    </ha-card>` : ""}
+    </div>`;
+    this.shadowRoot.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => { this._view = b.dataset.view; this._renderValue(); this.shadowRoot.querySelectorAll(".seg button").forEach((o) => o.setAttribute("aria-pressed", String(o === b))); }));
+    if (L) this._drawTimeline(this.shadowRoot.getElementById("timeline"), v);
+    if (v.grid) this._renderValue();
+  }
+  _geom(extra) {
+    return Object.assign({ W: 900, H: 300, L: 40, R: 46, T: 14, B: 34 }, extra || {});
+  }
+  _drawTimeline(host, v) {
+    const L = v.layout, G = this._geom(), bandH = 26;
+    const svg = svgEl("svg", { viewBox: `0 0 ${G.W} ${G.H}`, role: "img", "aria-label": "Expected modes, battery level and import price over the coming hours" }, host);
+    const x = (h) => G.L + (h / L.spanH) * (G.W - G.L - G.R);
+    const top = G.T + bandH + 10;
+    const yL = (p) => top + (1 - p / 100) * (G.H - top - G.B);
+    const maxPrice = Math.max(10, Math.ceil(Math.max(0, ...L.steps.map((s) => s.importP)) / 5) * 5);
+    const yP = (p) => top + (1 - Math.min(p, maxPrice) / maxPrice) * (G.H - top - G.B);
+    const muted = "var(--secondary-text-color)";
+    for (let p = 0; p <= 100; p += 25) {
+      svgEl("line", { x1: G.L, x2: G.W - G.R, y1: yL(p), y2: yL(p), stroke: "var(--divider-color)" }, svg);
+      svgEl("text", { x: G.L - 6, y: yL(p) + 4, "text-anchor": "end", "font-size": 11, fill: muted }, svg, `${p}%`);
+    }
+    for (let p = 0; p <= maxPrice; p += maxPrice <= 20 ? 5 : 10) svgEl("text", { x: G.W - G.R + 6, y: yP(p) + 4, "font-size": 11, fill: "var(--v2-price)" }, svg, `${p}p`);
+    L.ticks.forEach((t) => svgEl("text", { x: x(t.h), y: G.H - 12, "text-anchor": "middle", "font-size": 11, fill: muted }, svg, v2Hm(new Date(t.ms).toISOString())));
+    L.bands.forEach((b) => {
+      const col = `var(${v2Mode(b.mode).colour})`;
+      const draw = (s, e, op) => svgEl("rect", { x: x(s), y: G.T, width: Math.max(0, x(e) - x(s) - 1), height: bandH, rx: 4, fill: col, "fill-opacity": op }, svg);
+      if (b.state === "now") { draw(b.a, L.nowH, 1); draw(L.nowH, b.b, 0.45); } else draw(b.a, b.b, b.state === "past" ? 1 : 0.45);
+      const label = bandLabel(b, x(b.b) - x(b.a));
+      if (label) svgEl("text", { x: x(b.a) + 6, y: G.T + 17, "font-size": 11.5, "font-weight": 500, fill: b.state === "past" ? "#fff" : "var(--primary-text-color)" }, svg, label);
+      if (b.state === "future") svgEl("rect", { x: x(b.a) - 1.5, y: G.T - 3, width: 3, height: bandH + 6, rx: 1, fill: col, "fill-opacity": 0.9 }, svg);
+    });
+    const future = (pts) => pts.filter((p) => p.h >= L.nowH - 1e-9);
+    if (L.low.length && L.high.length) {
+      const hi = future(L.high), lo = future(L.low).slice().reverse();
+      if (hi.length && lo.length) svgEl("polygon", { points: hi.concat(lo).map((p) => `${x(p.h)},${yL(p.level)}`).join(" "), fill: "var(--v2-battery)", "fill-opacity": 0.13 }, svg);
+    }
+    L.steps.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: yP(s.importP), y2: yP(s.importP), stroke: "var(--v2-price)", "stroke-width": 2, "stroke-dasharray": s.slot ? "5 4" : "none" }, svg));
+    for (let i = 1; i < L.steps.length; i++) {
+      if (Math.abs(L.steps[i].a - L.steps[i - 1].b) < 1e-6) svgEl("line", { x1: x(L.steps[i].a), x2: x(L.steps[i].a), y1: yP(L.steps[i - 1].importP), y2: yP(L.steps[i].importP), stroke: "var(--v2-price)", "stroke-opacity": 0.5 }, svg);
+    }
+    const poly = (pts) => pts.map((p) => `${x(p.h)},${yL(p.level)}`).join(" ");
+    const past = L.mid.filter((p) => p.h <= L.nowH + 1e-9), fut = future(L.mid);
+    if (past.length > 1) svgEl("polyline", { points: poly(past), fill: "none", stroke: "var(--v2-battery)", "stroke-width": 2.5 }, svg);
+    if (fut.length > 1) svgEl("polyline", { points: poly(fut), fill: "none", stroke: "var(--v2-battery)", "stroke-width": 2, "stroke-dasharray": "6 4" }, svg);
+    if (L.floor !== null) {
+      svgEl("line", { x1: G.L, x2: G.W - G.R, y1: yL(L.floor), y2: yL(L.floor), stroke: "var(--m-export)", "stroke-dasharray": "2 4" }, svg);
+      svgEl("text", { x: G.W - G.R - 4, y: yL(L.floor) - 4, "text-anchor": "end", "font-size": 10.5, fill: "var(--m-export)" }, svg, `hard floor ${L.floor}%`);
+    }
+    svgEl("line", { x1: x(L.nowH), x2: x(L.nowH), y1: G.T - 4, y2: G.H - G.B + 4, stroke: "var(--primary-text-color)", "stroke-width": 1.2 }, svg);
+    svgEl("text", { x: x(L.nowH) + 4, y: G.H - G.B - 4, "font-size": 11, "font-weight": 500, fill: "var(--primary-text-color)" }, svg, `now ${v2Hm(new Date(L.now).toISOString())}`);
+    if (L.nowLevel !== null) svgEl("circle", { cx: x(L.nowH), cy: yL(L.nowLevel), r: 4.5, fill: "var(--v2-battery)" }, svg);
+  }
+  _renderValue() {
+    const v = this._v;
+    if (!v || !v.grid) return;
+    const host = this.shadowRoot.getElementById("valuemap"), leg = this.shadowRoot.getElementById("vlegend"), ro = this.shadowRoot.getElementById("vreadout");
+    if (!host) return;
+    host.innerHTML = ""; leg.innerHTML = "";
+    const G = this._geom({ H: 290, T: 10 });
+    const spanH = v.layout ? v.layout.spanH : (v.grid.rows * v.grid.stepMs) / HOUR_MS;
+    const t0 = v.layout ? v.layout.t0 : v.grid.startMs;
+    const x = (h) => G.L + (h / spanH) * (G.W - G.L - G.R);
+    const muted = "var(--secondary-text-color)";
+    const svg = svgEl("svg", { viewBox: `0 0 ${G.W} ${G.H}`, role: "img", "aria-label": this._view === "map" ? "Heat map of the value of a stored kWh by time and battery level" : "Value of a stored kWh along the expected battery path, with the buy and sell lines" }, host);
+    const ticks = v.layout ? v.layout.ticks : [];
+    ticks.forEach((t) => svgEl("text", { x: x(t.h), y: G.H - 12, "text-anchor": "middle", "font-size": 11, fill: muted }, svg, v2Hm(new Date(t.ms).toISOString())));
+    const swatch = (css, t) => { const s = document.createElement("span"); const i = document.createElement("i"); i.className = "sw"; i.style.background = css; s.append(i, t); leg.appendChild(s); };
+    const clock = (h) => v2Hm(new Date(t0 + h * HOUR_MS).toISOString());
+    const buyAt = (h) => { const s = v.lines && v.lines.buy.find((b) => h >= b.a && h < b.b); return s ? s.p : null; };
+    if (this._view === "map") {
+      const y = (p) => G.T + (1 - p / 100) * (G.H - G.T - G.B);
+      const heat = { max: v.scaleMax, dark: this._dark };
+      v.grid.cells.forEach((c) => svgEl("rect", { x: x(c.a), y: y(c.hi), width: x(c.b) - x(c.a) + 0.5, height: y(c.lo) - y(c.hi) + 0.5, fill: heatColour(c.value, heat).css }, svg));
+      for (let p = 0; p <= 100; p += 25) svgEl("text", { x: G.L - 6, y: y(p) + 4, "text-anchor": "end", "font-size": 11, fill: muted }, svg, `${p}%`);
+      if (v.layout && v.layout.mid.length) {
+        const pts = v.layout.mid.map((p) => `${x(p.h)},${y(p.level)}`).join(" ");
+        svgEl("polyline", { points: pts, fill: "none", stroke: "var(--card-background-color, #fff)", "stroke-width": 5, "stroke-opacity": 0.85 }, svg);
+        svgEl("polyline", { points: pts, fill: "none", stroke: "var(--primary-text-color)", "stroke-width": 2 }, svg);
+        svgEl("line", { x1: x(v.layout.nowH), x2: x(v.layout.nowH), y1: G.T, y2: G.H - G.B, stroke: "var(--primary-text-color)", "stroke-width": 1.2, "stroke-dasharray": "3 3" }, svg);
+      }
+      const cover = svgEl("rect", { x: G.L, y: G.T, width: G.W - G.L - G.R, height: G.H - G.T - G.B, fill: "transparent", style: "cursor:crosshair" }, svg);
+      const point = (ev) => {
+        const r = svg.getBoundingClientRect();
+        if (!r.width) return;
+        const px = ((ev.clientX - r.left) / r.width) * G.W, py = ((ev.clientY - r.top) / r.height) * G.H;
+        const h = ((px - G.L) / (G.W - G.L - G.R)) * spanH, lvl = (1 - (py - G.T) / (G.H - G.T - G.B)) * 100;
+        const cell = mapCellAt(v.grid, h, lvl);
+        ro.textContent = mapReadoutText(cell, clock(h), cell ? buyAt(h) : null);
+      };
+      cover.addEventListener("pointermove", point); cover.addEventListener("pointerdown", point);
+      [0, 10, 20, 30].forEach((p) => p <= v.scaleMax && swatch(heatColour(p, heat).css, `${p}p`));
+      swatch(heatColour(v.scaleMax, heat).css, `${v.scaleMax}p+`);
+      swatch("var(--m-event)", "grid event (off the scale)");
+      swatch("var(--primary-text-color)", "expected battery path");
+      ro.textContent = mapReadoutText(null);
+    } else {
+      const max = v.scaleMax;
+      const y = (p) => G.T + (1 - Math.min(p, max) / max) * (G.H - G.T - G.B);
+      for (let p = 0; p <= max; p += max <= 50 ? 10 : 25) {
+        svgEl("line", { x1: G.L, x2: G.W - G.R, y1: y(p), y2: y(p), stroke: "var(--divider-color)" }, svg);
+        svgEl("text", { x: G.L - 6, y: y(p) + 4, "text-anchor": "end", "font-size": 11, fill: muted }, svg, `${p}p`);
+      }
+      const lines = v.lines || { buy: [], sell: [] };
+      (v.layout ? v.layout.steps : []).filter((s) => s.event).forEach((s) => {
+        svgEl("rect", { x: x(s.a), y: G.T, width: x(s.b) - x(s.a), height: G.H - G.T - G.B, fill: "var(--m-event)", "fill-opacity": 0.18 }, svg);
+        svgEl("text", { x: x(s.a) + 3, y: G.T + 14, "font-size": 11, fill: "var(--primary-text-color)" }, svg, "grid event: off the scale");
+      });
+      lines.buy.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: y(s.p), y2: y(s.p), stroke: "var(--v2-price)", "stroke-width": 2, "stroke-dasharray": s.slot ? "5 4" : "none" }, svg));
+      lines.sell.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: y(s.p), y2: y(s.p), stroke: "var(--m-export)", "stroke-width": 1.5, "stroke-dasharray": "2 3" }, svg));
+      if (v.series.length > 1) svgEl("polyline", { points: v.series.map((p) => `${x(p.h)},${y(p.value)}`).join(" "), fill: "none", stroke: "var(--v2-battery)", "stroke-width": 2.5 }, svg);
+      if (v.layout) svgEl("line", { x1: x(v.layout.nowH), x2: x(v.layout.nowH), y1: G.T, y2: G.H - G.B, stroke: "var(--primary-text-color)", "stroke-width": 1.2, "stroke-dasharray": "3 3" }, svg);
+      swatch("var(--v2-battery)", "value of a stored kWh at the expected level");
+      swatch("var(--v2-price)", lines.afterLosses ? "buy line (import price after charging losses)" : "import price");
+      swatch("var(--m-export)", lines.afterLosses ? "sell line (export price after discharge losses)" : "export price");
+      ro.textContent = "Where the blue line is above the orange one, buying is worth it; where it falls below, the charge stops. Where it is below the red line, selling pays.";
+    }
+  }
+}
+
+/* powerengine-v2-health-card: is engine v2 behaving? ---------------------------------------------------------------- */
+class PowerEngineV2HealthCard extends PowerEngineV2Card {
+  getCardSize() { return 7; }
+  _ids() { return [V2_TRIGGERS, V2_DIAG, V2_SETTINGS]; }
+  _render(states) {
+    const v = healthCardView(states);
+    if (v.kind !== "ok") { this._message("Engine v2 today", v.text); return; }
+    const bars = v.bars.length ? v.bars.map((b) => `<div class="bar${b.warn ? " backstop" : ""}"><span>${escHtml(b.label)}</span><span class="track"><span class="fill" style="width:${b.pct}%"></span></span><span class="num">${b.n}</span></div>`).join("")
+      : '<p class="muted">Nothing has been worked out again today.</p>';
+    const weights = v.weights.length ? `<div><h3>Solar weights, learned${v.weightsStart ? ` (started ${v.weightsStart.join(" / ")})` : ""}</h3>
+      <div class="wts"><span class="h"></span><span class="h">Low</span><span class="h">Middle</span><span class="h">High</span>${v.weights.map((r) => `<span class="h">${r.label}</span>${r.pct.map((p) => `<span class="num">${p}</span>`).join("")}`).join("")}</div>
+      <p class="muted small">${v.weightDays ? `From ${v.weightDays} day${v.weightDays === 1 ? "" : "s"}. ` : ""}More weight on "low" means the sun has been coming in under the forecast, so the engine keeps a little more back.</p></div>` : "";
+    const filter = v.filterText || v.filterGap !== null ? `<div><h3>Battery level filter</h3><p>${escHtml(v.filterText)}${v.filterGap !== null ? ` Largest gap between reading and filter today: <span class="num">${v.filterGap}</span> points.` : ""}</p></div>` : "";
+    this.shadowRoot.innerHTML = `<style>${V2_CSS}
+      .bars { display: flex; flex-direction: column; gap: 6px; }
+      .bar { display: grid; grid-template-columns: 150px minmax(0, 1fr) 28px; gap: 8px; align-items: center; font-size: 13px; }
+      .track { height: 10px; background: var(--secondary-background-color); border-radius: 5px; overflow: hidden; display: block; }
+      .fill { height: 100%; background: var(--primary-color); border-radius: 5px; display: block; }
+      .bar.backstop .fill { background: var(--v2-warn); }
+      .wts { display: grid; grid-template-columns: 90px repeat(3, minmax(0, 1fr)); gap: 6px; font-size: 13px; align-items: center; }
+      .wts .h { color: var(--secondary-text-color); font-size: 12px; }
+      .recent { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 10px; font-size: 13px; }
+      @media (max-width: 520px) { .bar { grid-template-columns: 110px minmax(0, 1fr) 28px; } }
+    </style>
+    <ha-card>
+      <div class="head"><span class="title">Engine v2 today</span>${v.learning ? '<span class="chip muted">still learning</span>' : ""}</div>
+      <div><h3>Values worked out${v.revalues === null ? "" : `: ${v.revalues} time${v.revalues === 1 ? "" : "s"}, because`}</h3><div class="bars">${bars}</div></div>
+      <div class="figs">${v.figs.map((f) => `<div class="fig"><span class="k">${escHtml(f.k)}</span><span class="v${f.bad ? " bad" : f.k === "Flip-flops" && f.v !== "–" ? " good" : ""}">${escHtml(f.v)}</span></div>`).join("")}</div>
+      ${v.comfort ? `<div><h3>${escHtml(v.comfort.title)}</h3><p>${escHtml(v.comfort.text)}</p></div>` : ""}
+      ${weights}${filter}
+      ${v.recent.length ? `<div><h3>Latest</h3><div class="recent">${v.recent.map((r) => `<span class="num muted">${escHtml(r.at)}</span><span>${escHtml(r.text)}</span><span class="muted">${escHtml(r.effect)}</span>`).join("")}</div></div>` : ""}
+    </ha-card>`;
+  }
+}
+
+[["powerengine-engine-card", PowerEngineEngineCard, "PowerEngine engine v2", "Engine v2's mode, why, the value of a stored kWh against the buy and sell lines, and what ends the mode."],
+  ["powerengine-v2-plan-card", PowerEngineV2PlanCard, "PowerEngine engine v2 plan", "Engine v2's expected timeline and the value map."],
+  ["powerengine-v2-health-card", PowerEngineV2HealthCard, "PowerEngine engine v2 health", "Engine v2's recalculations, flip-flops, comfort band and learned weights."],
+].forEach(([tag, cls, name, description]) => {
+  if (typeof customElements !== "undefined" && !customElements.get(tag)) {
+    customElements.define(tag, cls);
+    window.customCards = window.customCards || [];
+    window.customCards.push({ type: tag, name, description });
+  }
+});
+
 if (typeof module !== "undefined") {
   module.exports = { historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
-  OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary };
+  OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
+  ENGINE_SENSOR, V2_NOT_RUNNING, V2_NO_DATA, V2_MODES, v2Engine, v2Supported, v2Gate, valueBarGeometry, modeSubtitle, exitRows, engineCardView, timelineLayout, levelAtHour, bandLabel,
+  heatColour, valueMapGrid, mapCellAt, interpValue, pathValueSeries, pathLines, mapReadoutText, planCardView, causeBars, causeLabel, comfortSummary, healthCardView,
+  V1_SECTIONS, v2Same, engineGrouping, engineInUse, engineConfirm, cleanV2Block, engineFields, v2Problem, v2Contradictions, v2Values, comfortReadout, weightsReadout, floorsReadout };
 }
