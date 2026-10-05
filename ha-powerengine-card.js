@@ -240,7 +240,8 @@ const TOPICS = [
   { key: "tariff", title: "Tariff and planning",
     roles: ["import_rate_now", "import_rates_today", "import_rates_tomorrow", "export_rate", "standing_charge", "offpeak_now"],
     features: ["optimised_plan", "auto_cheap_threshold", "fill_when_cheap"],
-    settings: ["cheap_threshold_p", "window_switch_cost_p"] },
+    system: ["overnight_window"],
+    settings: ["overnight_start_h", "overnight_end_h", "cheap_threshold_p", "window_switch_cost_p"] },
   { key: "car", title: "Car and smart charging",
     roles: ["ev_plug_status", "ev_charger_status", "ev_charge_power", "ev_energy_today", "ev_charge_mode",
       "ev_session_energy", "smart_dispatches", "smart_state", "smart_target_soc", "smart_target_time"],
@@ -279,6 +280,22 @@ const GO_LIVE = ["timed_charge_start_hour", "timed_charge_start_minute", "timed_
   "timed_discharge_end_minute", "timed_discharge_current", "timed_update_button", "storage_mode", "guard_read_only"];
 const NEEDED_FOR = { axle: "axle", free_power: "free_power_days" };
 const ROLE_FEATURE = { smart_target_soc: "smart_charge_optimisation", smart_target_time: "smart_charge_optimisation" };
+
+/** The lines under the "Overnight window" choice: what the plan is using now, and what PowerEngine has learned from the
+ *  rates. `state` is sensor.pe_diag_overnight (app 0.9.105+); null when it isn't there, so an older app shows nothing. */
+function overnightReadout(state) {
+  const a = (state && state.attributes) || null;
+  if (!a || !state.state || state.state === "unknown" || state.state === "unavailable") return null;
+  const fixed = a.source === "fixed";
+  const learned = !a.learned || a.learned === "none yet" ? "nothing yet" : a.learned;
+  const days = Number(a.learned_days) || 0;
+  const lines = [{ label: "In use now", text: `${state.state} (${fixed ? "your fixed times" : "learned"})` },
+    { label: "Learned from the rates", text: days ? `${learned} (from ${days} day${days === 1 ? "" : "s"} of rates)` : learned }];
+  const notes = [];
+  if (a.fixed_not_valid) notes.push("The fixed times don't make a window (the start and end must differ), so the learned window is being used.");
+  if (!fixed && days < 2) notes.push("It needs at least two full days of published rates before it can tell the regular overnight rate from a smart-charge slot at the same time.");
+  return { lines, notes };
+}
 
 /** Where every role, setting and feature goes: TOPICS with anything unlisted gathered into "Other". */
 function topicPlan(roleKeys, settingKeys, featureKeys, systemKeys) {
@@ -916,7 +933,11 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       const sets = t.settings.map((k) => settingByKey[k]).filter(Boolean);
       if (sets.length || t.system.length) {
         sub(body, "Settings");
-        t.system.forEach((k) => { const r = systemRow(k); if (r) body.append(r); });
+        t.system.forEach((k) => {
+          const r = systemRow(k);
+          if (r) body.append(r);
+          if (r && k === "overnight_window") { const o = this._overnightRow(); if (o) body.append(o); }
+        });
         sets.forEach((st) => body.append(track(this._settingRow(st), "setting", `${st.label} ${st.help} ${st.key}`)));
       }
       if (t.learning.length) {
@@ -995,6 +1016,14 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const s = this._sections[first.section];
     if (s) s.details.open = true;
     first.node.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  _overnightRow() {
+    const view = overnightReadout(this._hass.states["sensor.pe_diag_overnight"]);
+    if (!view) return null;
+    return el("div", { class: "row plain" },
+      view.lines.map((l) => el("div", { class: "desc" }, el("strong", {}, `${l.label}: `), l.text)),
+      view.notes.map((n) => el("div", { class: "muted" }, n)));
   }
 
   _choiceRow(st) {
@@ -5456,7 +5485,7 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-hi
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
+  module.exports = { historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary };
