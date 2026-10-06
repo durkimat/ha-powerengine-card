@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.110";
+const CARD_VERSION = "0.9.111";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -46,6 +46,9 @@ const MAPPING_SENSOR = "sensor.pe_map_config";
 const SAVE_EVENT = "pe_config_save";
 const NOT_SET_UP = "Not set up yet";      // what the app's Mode and Health say before there is a config
 const RESULT_EVENT = "pe_config_result";
+// How long a save waits for PowerEngine's answer. A late answer still replaces the message (the subscription stays open).
+const SAVE_WAIT_MS = 45000;
+const SAVE_NO_REPLY = "No reply from PowerEngine yet. It may be busy, and the change may still go through: refresh this page in a minute to check. If it hasn't, look at the AppDaemon log.";
 
 // What this user's supplier and devices are called comes from the app (sensor.pe_diag_version, attribute "names").
 // Texts here never hard-code one: they carry <<term>> placeholders, filled by fillNames.
@@ -1190,7 +1193,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     try {
       await this._hass.callWS({ type: "fire_event", event_type: SAVE_EVENT, event_data: { config: buildConfig(base) } });
       this._setBanner("info", `Switching to engine ${to}: sent to PowerEngine; waiting for it to check and save…`);
-      setTimeout(() => { if (this._saving) { this._saving = false; this._setBanner("error", "No reply from PowerEngine. Check the AppDaemon log."); this._renderEngineBox(); this._refresh(); } }, 15000);
+      setTimeout(() => { if (this._saving) { this._saving = false; this._setBanner("info", SAVE_NO_REPLY); this._renderEngineBox(); this._refresh(); } }, SAVE_WAIT_MS);
     } catch (e) {
       this._saving = false;
       this._draft.system.engine = engineInUse(this._hass.states, saved);
@@ -1595,7 +1598,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     try {
       await this._hass.callWS({ type: "fire_event", event_type: SAVE_EVENT, event_data: { config: buildConfig(this._draft) } });
       this._setBanner("info", "Sent to PowerEngine; waiting for it to check and save…");
-      setTimeout(() => { if (this._saving) { this._saving = false; this._setBanner("error", "No reply from PowerEngine. Check the AppDaemon log."); this._refresh(); } }, 15000);
+      setTimeout(() => { if (this._saving) { this._saving = false; this._setBanner("info", SAVE_NO_REPLY); this._refresh(); } }, SAVE_WAIT_MS);
     } catch (e) {
       this._saving = false;
       this._setBanner("error", `Could not send: ${e.message || e}. Saving needs an admin user.`);
@@ -5155,7 +5158,7 @@ class PowerEngineSystemCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     this._renderShade();
     try {
       await this._hass.callWS({ type: "fire_event", event_type: SAVE_EVENT, event_data: { config: cfg } });
-      setTimeout(() => { if (this._applying) { this._applying = false; this._result = { ok: false, text: "No reply from PowerEngine. Check the AppDaemon log." }; this._renderShade(); } }, 15000);
+      setTimeout(() => { if (this._applying) { this._applying = false; this._result = { ok: false, text: SAVE_NO_REPLY }; this._renderShade(); } }, SAVE_WAIT_MS);
     } catch (e) {
       this._applying = false;
       this._result = { ok: false, text: `Could not send: ${e.message || e}. Applying needs an admin user.` };
@@ -6726,6 +6729,43 @@ if (typeof window !== "undefined") {
   window.customIconsets = window.customIconsets || {};         // the older hook, for a Home Assistant that has only this one
   window.customIconsets.pe = async (name) => engineIcon(name);
 }
+/** HA's ha-icon looks an icon up once, when its `icon` is set. The dashboard's tabs are drawn before this file has loaded,
+ *  so a `pe:` icon was looked up while the set was unknown: ha-icon then switched to its legacy mode (an iron-icon HA
+ *  doesn't provide, so nothing is drawn) and never looks again. This finds those ha-icons (through the shadow roots),
+ *  clears the legacy flag and sets the icon again so it is looked up anew. Returns how many it nudged. */
+function refreshEngineIcons(root) {
+  let n = 0;
+  const walk = (node, depth) => {
+    if (!node || depth > 40 || !node.querySelectorAll) return;
+    node.querySelectorAll("*").forEach((el) => {
+      if (el.localName === "ha-icon" && typeof el.icon === "string" && el.icon.startsWith("pe:")
+          && engineIcon(el.icon.slice(3)) && (el._legacy || !el._path)) {
+        const icon = el.icon;
+        el._legacy = false;
+        el.icon = "";
+        el.icon = icon;
+        n += 1;
+      }
+      if (el.shadowRoot) walk(el.shadowRoot, depth + 1);
+    });
+  };
+  walk(root || (typeof document !== "undefined" ? document : null), 0);
+  return n;
+}
+let engineIconsTimer = null;
+/** Nudge the engine icons now and a few times while the dashboard settles (cheap; at most every 2 s from cards). */
+function scheduleEngineIconRefresh() {
+  if (typeof window === "undefined" || typeof document === "undefined" || engineIconsTimer) return;
+  [0, 700, 2000, 5000, 12000].forEach((ms, i, all) => setTimeout(() => {
+    try { refreshEngineIcons(document); } catch (e) { /* never break the card for an icon */ }
+    if (i === all.length - 1) engineIconsTimer = null;
+  }, ms));
+  engineIconsTimer = true;
+}
+if (typeof window !== "undefined" && typeof document !== "undefined") {
+  scheduleEngineIconRefresh();
+  window.addEventListener("location-changed", () => setTimeout(() => { try { refreshEngineIcons(document); } catch (e) { /* ignore */ } }, 300));
+}
 
 // ---- the Active / Paused / Passive badge at the top of each engine page ----
 const PAUSE_SWITCH = "switch.pe_ctl_pause";
@@ -6759,6 +6799,7 @@ function engineBadge(states, engine) {
 
 class PowerEngineEngineBadgeCard extends PowerEngineV2Card {
   setConfig(config) {
+    scheduleEngineIconRefresh();
     super.setConfig(config);
     this._engine = (config && config.engine) === "v2" ? "v2" : "v1";
   }
@@ -7085,6 +7126,6 @@ if (typeof module !== "undefined") {
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
   ENGINE_SENSOR, V2_NOT_RUNNING, V2_NO_DATA, V2_MODES, v2Engine, v2Supported, v2Gate, valueBarGeometry, modeSubtitle, exitRows, engineCardView, timelineLayout, levelAtHour, bandLabel,
   heatColour, valueMapGrid, mapCellAt, interpValue, pathValueSeries, pathLines, mapReadoutText, planCardView, causeBars, causeLabel, comfortSummary, healthCardView,
-  ENGINE_ICONS, engineIcon, engineBadge, BADGE_LINES, V2_HISTORY_DAY_EVENT, v2HistoryDayPayload, v2HistoryView, engineCompareView, calibrationLine, gbp, COMPARE_WAITING,
+  ENGINE_ICONS, engineIcon, refreshEngineIcons, engineBadge, BADGE_LINES, V2_HISTORY_DAY_EVENT, v2HistoryDayPayload, v2HistoryView, engineCompareView, calibrationLine, gbp, COMPARE_WAITING,
   V1_SECTIONS, v2Same, engineGrouping, engineInUse, engineConfirm, cleanV2Block, engineFields, v2Problem, v2Contradictions, v2Values, comfortReadout, weightsReadout, floorsReadout };
 }
