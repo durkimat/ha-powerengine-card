@@ -192,3 +192,22 @@ test("engine_compare is a feature, on by default, listed in its own Costs-relate
   assert.deepStrictEqual(t.features, ["engine_compare"]);
   assert.ok(!plan.find((x) => x.key === "other"));
 });
+
+test("refreshEngineIcons re-looks-up pe: icons stuck in legacy mode, inside shadow roots", () => {
+  const { refreshEngineIcons } = require("../ha-powerengine-card.js");
+  const mk = (icon, extra) => Object.assign({ localName: "ha-icon", sets: [], _legacy: true, _path: undefined,
+    get icon() { return this._icon; }, set icon(v) { this.sets.push(v); this._icon = v; } }, extra || {});
+  const stuck = mk(); stuck._icon = "pe:engine-v1";
+  const fine = mk(); fine._icon = "pe:engine-v2"; fine._legacy = false; fine._path = "M0";
+  const other = mk(); other._icon = "mdi:cog";
+  const unknown = mk(); unknown._icon = "pe:nothing";
+  const inner = { querySelectorAll: () => [stuck, fine, other, unknown] };
+  const holder = { localName: "div", shadowRoot: inner };
+  const root = { querySelectorAll: () => [holder] };
+  assert.equal(refreshEngineIcons(root), 1);
+  assert.equal(stuck._legacy, false);
+  assert.deepEqual(stuck.sets, ["", "pe:engine-v1"]);
+  assert.deepEqual(fine.sets, []);
+  assert.deepEqual(other.sets, []);
+  assert.deepEqual(unknown.sets, []);
+});

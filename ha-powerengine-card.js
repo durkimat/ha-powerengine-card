@@ -6726,6 +6726,43 @@ if (typeof window !== "undefined") {
   window.customIconsets = window.customIconsets || {};         // the older hook, for a Home Assistant that has only this one
   window.customIconsets.pe = async (name) => engineIcon(name);
 }
+/** HA's ha-icon looks an icon up once, when its `icon` is set. The dashboard's tabs are drawn before this file has loaded,
+ *  so a `pe:` icon was looked up while the set was unknown: ha-icon then switched to its legacy mode (an iron-icon HA
+ *  doesn't provide, so nothing is drawn) and never looks again. This finds those ha-icons (through the shadow roots),
+ *  clears the legacy flag and sets the icon again so it is looked up anew. Returns how many it nudged. */
+function refreshEngineIcons(root) {
+  let n = 0;
+  const walk = (node, depth) => {
+    if (!node || depth > 40 || !node.querySelectorAll) return;
+    node.querySelectorAll("*").forEach((el) => {
+      if (el.localName === "ha-icon" && typeof el.icon === "string" && el.icon.startsWith("pe:")
+          && engineIcon(el.icon.slice(3)) && (el._legacy || !el._path)) {
+        const icon = el.icon;
+        el._legacy = false;
+        el.icon = "";
+        el.icon = icon;
+        n += 1;
+      }
+      if (el.shadowRoot) walk(el.shadowRoot, depth + 1);
+    });
+  };
+  walk(root || (typeof document !== "undefined" ? document : null), 0);
+  return n;
+}
+let engineIconsTimer = null;
+/** Nudge the engine icons now and a few times while the dashboard settles (cheap; at most every 2 s from cards). */
+function scheduleEngineIconRefresh() {
+  if (typeof window === "undefined" || typeof document === "undefined" || engineIconsTimer) return;
+  [0, 700, 2000, 5000, 12000].forEach((ms, i, all) => setTimeout(() => {
+    try { refreshEngineIcons(document); } catch (e) { /* never break the card for an icon */ }
+    if (i === all.length - 1) engineIconsTimer = null;
+  }, ms));
+  engineIconsTimer = true;
+}
+if (typeof window !== "undefined" && typeof document !== "undefined") {
+  scheduleEngineIconRefresh();
+  window.addEventListener("location-changed", () => setTimeout(() => { try { refreshEngineIcons(document); } catch (e) { /* ignore */ } }, 300));
+}
 
 // ---- the Active / Paused / Passive badge at the top of each engine page ----
 const PAUSE_SWITCH = "switch.pe_ctl_pause";
@@ -6759,6 +6796,7 @@ function engineBadge(states, engine) {
 
 class PowerEngineEngineBadgeCard extends PowerEngineV2Card {
   setConfig(config) {
+    scheduleEngineIconRefresh();
     super.setConfig(config);
     this._engine = (config && config.engine) === "v2" ? "v2" : "v1";
   }
@@ -7085,6 +7123,6 @@ if (typeof module !== "undefined") {
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
   ENGINE_SENSOR, V2_NOT_RUNNING, V2_NO_DATA, V2_MODES, v2Engine, v2Supported, v2Gate, valueBarGeometry, modeSubtitle, exitRows, engineCardView, timelineLayout, levelAtHour, bandLabel,
   heatColour, valueMapGrid, mapCellAt, interpValue, pathValueSeries, pathLines, mapReadoutText, planCardView, causeBars, causeLabel, comfortSummary, healthCardView,
-  ENGINE_ICONS, engineIcon, engineBadge, BADGE_LINES, V2_HISTORY_DAY_EVENT, v2HistoryDayPayload, v2HistoryView, engineCompareView, calibrationLine, gbp, COMPARE_WAITING,
+  ENGINE_ICONS, engineIcon, refreshEngineIcons, engineBadge, BADGE_LINES, V2_HISTORY_DAY_EVENT, v2HistoryDayPayload, v2HistoryView, engineCompareView, calibrationLine, gbp, COMPARE_WAITING,
   V1_SECTIONS, v2Same, engineGrouping, engineInUse, engineConfirm, cleanV2Block, engineFields, v2Problem, v2Contradictions, v2Values, comfortReadout, weightsReadout, floorsReadout };
 }
