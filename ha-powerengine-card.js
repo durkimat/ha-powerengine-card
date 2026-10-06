@@ -6805,7 +6805,7 @@ class PowerEngineEngineBadgeCard extends PowerEngineV2Card {
     this._engine = (config && config.engine) === "v2" ? "v2" : "v1";
   }
   getCardSize() { return 1; }
-  getGridOptions() { return { columns: "full", rows: 1, min_rows: 1 }; }
+  getGridOptions() { return { columns: "full", rows: "auto" }; }   // the line wraps on a phone: as tall as it needs
   _ids() { return [MODE_SENSOR, PAUSE_SWITCH, V2_MODE]; }
   _render(states) {
     const b = engineBadge(states, this._engine);
