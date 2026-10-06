@@ -46,6 +46,9 @@ const MAPPING_SENSOR = "sensor.pe_map_config";
 const SAVE_EVENT = "pe_config_save";
 const NOT_SET_UP = "Not set up yet";      // what the app's Mode and Health say before there is a config
 const RESULT_EVENT = "pe_config_result";
+// How long a save waits for PowerEngine's answer. A late answer still replaces the message (the subscription stays open).
+const SAVE_WAIT_MS = 45000;
+const SAVE_NO_REPLY = "No reply from PowerEngine yet. It may be busy, and the change may still go through: refresh this page in a minute to check. If it hasn't, look at the AppDaemon log.";
 
 // What this user's supplier and devices are called comes from the app (sensor.pe_diag_version, attribute "names").
 // Texts here never hard-code one: they carry <<term>> placeholders, filled by fillNames.
@@ -1190,7 +1193,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     try {
       await this._hass.callWS({ type: "fire_event", event_type: SAVE_EVENT, event_data: { config: buildConfig(base) } });
       this._setBanner("info", `Switching to engine ${to}: sent to PowerEngine; waiting for it to check and save…`);
-      setTimeout(() => { if (this._saving) { this._saving = false; this._setBanner("error", "No reply from PowerEngine. Check the AppDaemon log."); this._renderEngineBox(); this._refresh(); } }, 15000);
+      setTimeout(() => { if (this._saving) { this._saving = false; this._setBanner("info", SAVE_NO_REPLY); this._renderEngineBox(); this._refresh(); } }, SAVE_WAIT_MS);
     } catch (e) {
       this._saving = false;
       this._draft.system.engine = engineInUse(this._hass.states, saved);
@@ -1595,7 +1598,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     try {
       await this._hass.callWS({ type: "fire_event", event_type: SAVE_EVENT, event_data: { config: buildConfig(this._draft) } });
       this._setBanner("info", "Sent to PowerEngine; waiting for it to check and save…");
-      setTimeout(() => { if (this._saving) { this._saving = false; this._setBanner("error", "No reply from PowerEngine. Check the AppDaemon log."); this._refresh(); } }, 15000);
+      setTimeout(() => { if (this._saving) { this._saving = false; this._setBanner("info", SAVE_NO_REPLY); this._refresh(); } }, SAVE_WAIT_MS);
     } catch (e) {
       this._saving = false;
       this._setBanner("error", `Could not send: ${e.message || e}. Saving needs an admin user.`);
@@ -5155,7 +5158,7 @@ class PowerEngineSystemCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     this._renderShade();
     try {
       await this._hass.callWS({ type: "fire_event", event_type: SAVE_EVENT, event_data: { config: cfg } });
-      setTimeout(() => { if (this._applying) { this._applying = false; this._result = { ok: false, text: "No reply from PowerEngine. Check the AppDaemon log." }; this._renderShade(); } }, 15000);
+      setTimeout(() => { if (this._applying) { this._applying = false; this._result = { ok: false, text: SAVE_NO_REPLY }; this._renderShade(); } }, SAVE_WAIT_MS);
     } catch (e) {
       this._applying = false;
       this._result = { ok: false, text: `Could not send: ${e.message || e}. Applying needs an admin user.` };
