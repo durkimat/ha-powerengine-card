@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.106";
+const CARD_VERSION = "0.9.107";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -5679,6 +5679,7 @@ const V2_DIAG = "sensor.pe_diag_v2";
 const V2_SETTINGS = "sensor.pe_diag_v2_settings";
 const V2_NOT_RUNNING = "Engine v2 is not running (engine v1 is).";
 const V2_NO_DATA = "Engine v2 has not published anything yet.";
+const V2_PREVIEW_LINE = "Preview: engine v1 is in control. Nothing is sent.";
 
 const V2_MODES = {
   self_use: { name: "Self-use", colour: "--m-self", glyph: "⌂" },
@@ -5712,6 +5713,20 @@ function v2Engine(states) {
   const s = (states || {})[ENGINE_SENSOR];
   return s && (s.state === "v1" || s.state === "v2") ? s.state : null;
 }
+/** Is engine v2 only previewing (engine v1 is in control and the app publishes v2's working anyway)? The app says so on
+ *  sensor.pe_state_engine (v2_preview) and on sensor.pe_v2_mode (preview); the engine sensor wins when it exists, so a
+ *  preview that was switched off does not linger. */
+function v2Preview(states) {
+  const e = (states || {})[ENGINE_SENSOR];
+  const m = v2Attrs(states, V2_MODE);
+  if (e && (e.state === "v1" || e.state === "v2")) {
+    return e.state === "v1" && !!(e.attributes && e.attributes.v2_preview === true) && !!m;
+  }
+  return !!(m && m.preview === true);
+}
+/** The mode's name as a "would" while only previewing: "Charging from the grid" becomes "Would be charging from the grid". */
+function previewLabel(label, preview) { return preview ? `Would be ${lowerFirst(label)}` : label; }
+function previewBanner(preview) { return preview ? `<p class="preview-line" role="note">${escHtml(V2_PREVIEW_LINE)}</p>` : ""; }
 /** Does the app publish the v2 settings catalogue (so the v2 keys may be sent and shown)? */
 function v2Supported(states) {
   const a = v2Attrs(states, V2_SETTINGS);
@@ -5719,7 +5734,7 @@ function v2Supported(states) {
 }
 /** What a v2 card says instead of its content: null when it can show content. */
 function v2Gate(states, needIds) {
-  if (v2Engine(states) === "v1") return V2_NOT_RUNNING;
+  if (v2Engine(states) === "v1" && !v2Preview(states)) return V2_NOT_RUNNING;
   const missing = (needIds || []).every((id) => !v2Attrs(states, id) && !((states || {})[id]));
   return missing ? V2_NO_DATA : null;
 }
@@ -5789,15 +5804,16 @@ function engineCardView(states) {
       v: power === null || power === 0 ? "–" : `${Math.round(Math.abs(power) / 100) / 10} kW` },
     { k: "Values worked out", v: m.values_at && v2Hm(m.values_at) ? v2Hm(m.values_at) : "–" },
   ];
+  const preview = v2Preview(states);
   const notes = [];
-  if (m.sending === false) notes.push(m.not_sending_reason ? `Not sending to the inverter: ${m.not_sending_reason}` : "Not sending to the inverter.");
+  if (m.sending === false && !preview) notes.push(m.not_sending_reason ? `Not sending to the inverter: ${m.not_sending_reason}` : "Not sending to the inverter.");
   if (m.deadline && v2Hm(m.deadline)) notes.push(`Deadline to look again: ${v2Hm(m.deadline)}`);
   if (m.values_because) notes.push(`Values last worked out because: ${lowerFirst(m.values_because)}`);
   const sv = (states[V2_VALUE] || {}).state;
   const bar = val ? valueBarGeometry(Object.assign({}, val, { value_p: toNumber(val.value_p) !== null ? val.value_p : sv })) : null;
   const barText = bar && bar.marker ? valueBarSummary(bar) : "";
   return {
-    kind: "ok", key, mode, label: m.label || mode.name, subtitle: modeSubtitle(m), why: m.why || "", figs, notes, bar, barText,
+    kind: "ok", key, mode, preview, label: previewLabel(m.label || mode.name, preview), subtitle: modeSubtitle(m), why: m.why || "", figs, notes, bar, barText,
     exits: exitRows(m.exits, key), val: val || {},
     offScale: !!(bar && bar.marker && bar.marker.off),
   };
@@ -5983,7 +5999,7 @@ function planCardView(states, now) {
   const cost = tl && toNumber(tl.cost_expected) !== null && toNumber(tl.cost_selfuse) !== null
     ? `Expected cost £${toNumber(tl.cost_expected).toFixed(2)} against £${toNumber(tl.cost_selfuse).toFixed(2)} on Self-use`
       + (toNumber(tl.comfort_given_up) ? `; comfort band gave up £${toNumber(tl.comfort_given_up).toFixed(2)}` : "") : "";
-  return { kind: "ok", tl, layout, grid, curve, val, scaleMax: toNumber(val.scale_max_p) > 0 ? toNumber(val.scale_max_p) : 40,
+  return { kind: "ok", preview: v2Preview(states), tl, layout, grid, curve, val, scaleMax: toNumber(val.scale_max_p) > 0 ? toNumber(val.scale_max_p) : 40,
     lines: layout ? pathLines(layout, val) : null, series: layout && curve ? pathValueSeries(curve, layout) : [],
     chip: [worked && v2Hm(worked) ? `values worked out ${v2Hm(worked)}` : "", tl && tl.because ? lowerFirst(tl.because) : ""].filter(Boolean).join(" · "),
     cost };
@@ -6048,7 +6064,7 @@ function healthCardView(states) {
     if (x !== null && Math.abs(x) >= 0.05) filter.push(`${Math.abs(Math.round(x * 10) / 10)} point${Math.abs(x) === 1 ? "" : "s"} ${x < 0 ? "low" : "high"} ${label}`);
   });
   return {
-    kind: "ok", learning: (states[V2_DIAG] || {}).state === "learning",
+    kind: "ok", preview: v2Preview(states), learning: (states[V2_DIAG] || {}).state === "learning",
     revalues: toNumber(today.revalues) === null ? toNumber((states[V2_TRIGGERS] || {}).state) : toNumber(today.revalues),
     bars: causeBars(today),
     figs: [fig("Mode changes", n(today.mode_changes)), fig("Flip-flops", n(today.flip_flops), toNumber(today.flip_flops) > 0),
@@ -6180,6 +6196,8 @@ const V2_CSS = `
   .chip.muted { background: var(--secondary-background-color); color: var(--secondary-text-color); }
   .chips { display: flex; gap: 6px; flex-wrap: wrap; }
   .muted { color: var(--secondary-text-color); }
+  .preview-line { margin: 0; padding: 8px 12px; border-radius: 8px; font-size: 13px; font-weight: 500;
+    background: rgba(3,169,244,.14); color: var(--primary-text-color); }
   .small { font-size: 12px; }
   .num { font-family: var(--code-font-family, monospace); font-variant-numeric: tabular-nums; }
   h3 { font-size: 13px; font-weight: 500; margin: 0 0 6px; text-transform: uppercase; letter-spacing: .06em; color: var(--secondary-text-color); }
@@ -6252,7 +6270,7 @@ class PowerEngineEngineCard extends PowerEngineV2Card {
     const v = engineCardView(states);
     if (v.kind !== "ok") { this._message("PowerEngine", v.text); return; }
     const op = (states[MODE_SENSOR] || {}).state;
-    const chips = (op === "active" || op === "passive" ? `<span class="chip${op === "active" ? "" : " muted"}">${op === "active" ? "Active" : "Passive"}</span>` : "") + '<span class="chip">Engine v2</span>';
+    const chips = (v.preview ? '<span class="chip muted">Preview</span>' : op === "active" || op === "passive" ? `<span class="chip${op === "active" ? "" : " muted"}">${op === "active" ? "Active" : "Passive"}</span>` : "") + '<span class="chip">Engine v2</span>';
     const exits = v.exits.length ? `<div><h3>This ends when</h3><dl class="exits">${v.exits.map((e) =>
       `<dt class="${e.first ? "first" : ""}"><span class="sw" style="background:var(${e.colour})"></span>${escHtml(e.text)}</dt><dd class="num">${escHtml(e.when)}</dd>`).join("")}</dl></div>` : "";
     this.shadowRoot.innerHTML = `<style>${V2_CSS}
@@ -6268,6 +6286,7 @@ class PowerEngineEngineCard extends PowerEngineV2Card {
       .offnote { font-size: 12px; color: var(--secondary-text-color); }
     </style>
     <ha-card>
+      ${previewBanner(v.preview)}
       <div class="head"><span class="title">PowerEngine</span><span class="chips">${chips}</span></div>
       <div class="mode-now">
         <div class="badge" aria-hidden="true" style="background:var(${v.mode.colour})">${escHtml(v.mode.glyph)}</div>
@@ -6327,13 +6346,14 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     </style>
     <div class="gap">
     ${L ? `<ha-card>
+      ${previewBanner(v.preview)}
       <div class="head"><span class="title">Expected timeline · next ${Math.round(L.spanH)} hours</span>${v.chip ? `<span class="chip muted">${escHtml(v.chip)}</span>` : ""}</div>
       <div class="chart" id="timeline"></div>
       <div class="legend">${legend(Object.keys(V2_MODES).filter((k) => k !== "none" && k !== "free").map((k) => [`var(${V2_MODES[k].colour})`, V2_MODES[k].name]))
         .concat(legend([["var(--v2-battery)", "Battery (shaded: likely range)"], ["var(--v2-price)", "Import price (dashed: smart slot that may not come)"]]))}</div>
       <p class="muted small">Bands to the left of <b>now</b> are what happened. Bands to the right are expected: each says what ends it, and its edge moves when the condition is met earlier or later.${v.cost ? ` ${escHtml(v.cost)}.` : ""}</p>
     </ha-card>` : ""}
-    ${v.grid ? `<ha-card>
+    ${v.grid ? `<ha-card>${L ? "" : previewBanner(v.preview)}
       <div class="head"><span class="title">What a stored kWh is worth</span>
         <div class="seg" role="group" aria-label="Value view"><button data-view="map" aria-pressed="${this._view === "map"}">Map</button><button data-view="path" aria-pressed="${this._view === "path"}">Along the expected path</button></div></div>
       <div class="chart" id="valuemap"></div>
@@ -6484,6 +6504,7 @@ class PowerEngineV2HealthCard extends PowerEngineV2Card {
       @media (max-width: 520px) { .bar { grid-template-columns: 110px minmax(0, 1fr) 28px; } }
     </style>
     <ha-card>
+      ${previewBanner(v.preview)}
       <div class="head"><span class="title">Engine v2 today</span>${v.learning ? '<span class="chip muted">still learning</span>' : ""}</div>
       <div><h3>Values worked out${v.revalues === null ? "" : `: ${v.revalues} time${v.revalues === 1 ? "" : "s"}, because`}</h3><div class="bars">${bars}</div></div>
       <div class="figs">${v.figs.map((f) => `<div class="fig"><span class="k">${escHtml(f.k)}</span><span class="v${f.bad ? " bad" : f.k === "Flip-flops" && f.v !== "–" ? " good" : ""}">${escHtml(f.v)}</span></div>`).join("")}</div>
@@ -6506,7 +6527,7 @@ class PowerEngineV2HealthCard extends PowerEngineV2Card {
 });
 
 if (typeof module !== "undefined") {
-  module.exports = { historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
+  module.exports = { v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,

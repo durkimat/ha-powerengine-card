@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.107
+
+### Behaviour changes
+
+- **The Engine v2 page shows engine v2's preview while engine v1 is in control.** The three engine v2 cards (Monitoring, plan and health) now show the data with a line at the top, "Preview: engine v1 is in control. Nothing is sent.", and the Monitoring card says "Would be charging ..." instead of the live mode. The old "Engine v2 is not running (engine v1 is)" shows only when there is nothing to preview (an app older than 0.9.107, or the preview switched off). The new setting appears on the config page by itself.
+
 ## 0.9.106
 
 ### Behaviour changes

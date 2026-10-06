@@ -362,3 +362,41 @@ test("readouts under the v2 settings", () => {
 test("the battery topic lists the new shared floor setting", () => {
   assert.ok(card.TOPICS.find((t) => t.key === "battery").settings.includes("battery_floor_soc"));
 });
+
+test("preview: engine v1 in control with v2 publishing shows the data with a Preview line", () => {
+  const pre = (extra = {}) => Object.assign({
+    [card.ENGINE_SENSOR]: st("v1", { v2_available: true, v2_preview: true }),
+    "sensor.pe_v2_mode": st("charge", { label: "Charging from the grid", why: "Import is 6.99p", preview: true, sending: false, not_sending_reason: "Preview: engine v1 is in control", exits: [] }),
+    "sensor.pe_v2_value": st("30.0", { value_p: 30, buy_line_p: 7.36, sell_line_p: 14.25, scale_max_p: 40 }),
+    "sensor.pe_v2_timeline": st(iso(3), timeline()), "sensor.pe_v2_value_curve": st(iso(3), curve()),
+    "sensor.pe_v2_triggers": st("3", { today: { revalues: 3 }, recent: [] }), "sensor.pe_diag_v2": st("ok", {}),
+  }, extra);
+  assert.strictEqual(card.v2Preview(pre()), true);
+  const e = card.engineCardView(pre());
+  assert.strictEqual(e.kind, "ok");
+  assert.strictEqual(e.preview, true);
+  assert.strictEqual(e.label, "Would be charging from the grid");
+  assert.ok(!e.notes.some((n) => /Not sending/.test(n)));
+  assert.strictEqual(card.planCardView(pre()).preview, true);
+  assert.strictEqual(card.healthCardView(pre()).preview, true);
+  assert.match(card.previewBanner(true), /Preview: engine v1 is in control\. Nothing is sent\./);
+  assert.strictEqual(card.previewBanner(false), "");
+  assert.strictEqual(card.previewLabel("Self-use", false), "Self-use");
+});
+
+test("preview: off, stale or absent keeps the old message; a live v2 is never a preview", () => {
+  // preview switched off: engine sensor is v1 without v2_preview, the v2 sensors are stale
+  const stale = { [card.ENGINE_SENSOR]: st("v1", { v2_available: true }), "sensor.pe_v2_mode": st("hold", { preview: true }), "sensor.pe_v2_value": st("1") };
+  assert.strictEqual(card.v2Preview(stale), false);
+  assert.strictEqual(card.engineCardView(stale).text, card.V2_NOT_RUNNING);
+  // an app 0.9.106 (no preview anywhere)
+  assert.strictEqual(card.engineCardView({ [card.ENGINE_SENSOR]: st("v1", { v2_available: true }) }).text, card.V2_NOT_RUNNING);
+  // v2 live
+  const live = { [card.ENGINE_SENSOR]: st("v2"), "sensor.pe_v2_mode": st("hold", { preview: false, label: "Holding" }), "sensor.pe_v2_value": st("1") };
+  assert.strictEqual(card.v2Preview(live), false);
+  assert.strictEqual(card.engineCardView(live).label, "Holding");
+  // no engine sensor: the v2 mode's own flag decides
+  assert.strictEqual(card.v2Preview({ "sensor.pe_v2_mode": st("hold", { preview: true }) }), true);
+  // preview flag but no v2 mode data
+  assert.strictEqual(card.v2Preview({ [card.ENGINE_SENSOR]: st("v1", { v2_preview: true }) }), false);
+});
