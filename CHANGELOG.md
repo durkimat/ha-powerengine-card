@@ -3,6 +3,15 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.108
+
+### Behaviour changes
+
+- **Predbat is now optional on the dashboard.** The Battery controller handover card (the Predbat and PowerEngine switch) only appears when Predbat is set as the other battery controller (with an older app: only when Predbat's own entities exist in Home Assistant). Everyone else sees nothing in its place.
+- **Config page, Inverter control:** a new choice, **Other battery controller** (none, Predbat or another controller). Until you save a choice it shows the one PowerEngine is using, worked out from your guards. The three guard entities show only when Predbat or another controller is chosen, and they no longer count as "needed to go live" otherwise. If nothing is chosen and no guard is mapped, a prompt (and the setup checklist) asks you to choose, because PowerEngine won't go Active until you do.
+- The handover card no longer checks or lists a built-in set of personal charge and discharge automations.
+- The Tests page's first step mentions Predbat only when Predbat is in use.
+
 ## 0.9.107
 
 ### Behaviour changes
