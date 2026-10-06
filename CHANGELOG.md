@@ -3,6 +3,17 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.112
+
+### Behaviour changes
+
+- None.
+
+### Fixes
+
+- **The engine tab icons show their 1 and 2.** The digit was cut out with a drawing rule Home Assistant's icons don't use, so
+  both tabs showed the same plain engine. The digits are now drawn so they cut out the way Home Assistant draws icons.
+
 ## 0.9.111
 
 ### Behaviour changes

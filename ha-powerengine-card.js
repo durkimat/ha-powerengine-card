@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.111";
+const CARD_VERSION = "0.9.112";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -6711,13 +6711,14 @@ class PowerEngineV2HealthCard extends PowerEngineV2Card {
 }
 
 // ---- engine pages: icons, badge, v2 history, same-day comparison (docs/plans/engine-pages-and-comparison.md) ---------
-// Custom icons for the two engine tabs: `pe:engine-v1` and `pe:engine-v2`. One 24x24 path each, filled even-odd: an engine
-// outline (intake on top, shaft and flywheel at the sides) with the digit cut out of the block. HA looks them up through
-// window.customIcons; with this file not loaded a tab shows no icon, as for any custom icon.
+// Custom icons for the two engine tabs: `pe:engine-v1` and `pe:engine-v2`. One 24x24 path each: an engine
+// outline (intake on top, shaft and flywheel at the sides) with the digit cut out of the block. The digit is traced the
+// opposite way round to the outline, so it is a hole under the default (non-zero) fill rule HA's ha-svg-icon uses.
+// HA looks them up through window.customIcons; with this file not loaded a tab shows no icon, as for any custom icon.
 const ENGINE_OUTLINE = "M6 3.5H12V5H10.5V7H14.5V5.5H17.5V7H19V10H23V17H19V20H4V17H1V10H4V7H7.5V5H6Z";
 const ENGINE_ICONS = {
-  "engine-v1": `${ENGINE_OUTLINE}M12.2 9.5H14V17.5H12.2V11.6L10.5 12.3V10.6Z`,
-  "engine-v2": `${ENGINE_OUTLINE}M9.5 9.5H14.5V14.2H11.2V15.8H14.5V17.5H9.5V12.5H12.8V11.2H9.5Z`,
+  "engine-v1": `${ENGINE_OUTLINE}M10.5 10.6L10.5 12.3L12.2 11.6L12.2 17.5L14 17.5L14 9.5L12.2 9.5Z`,
+  "engine-v2": `${ENGINE_OUTLINE}M9.5 11.2L12.8 11.2L12.8 12.5L9.5 12.5L9.5 17.5L14.5 17.5L14.5 15.8L11.2 15.8L11.2 14.2L14.5 14.2L14.5 9.5L9.5 9.5Z`,
 };
 function engineIcon(name) { return ENGINE_ICONS[name] ? { path: ENGINE_ICONS[name] } : null; }
 if (typeof window !== "undefined") {
