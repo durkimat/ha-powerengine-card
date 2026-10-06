@@ -3,6 +3,20 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.110
+
+### Behaviour changes
+
+- **Engine icons and badges:** the two engine pages get an engine icon with 1 or 2 on it, and a badge saying whether that engine is
+  Active, Paused or Passive.
+
+### New
+
+- **Engine v2 history card** with a day picker (level as run against expected, modes, prices, value of a stored kWh, mode changes).
+- **Engines compared, same day** card for the Costs page: savings of engine v1, engine v2 and the best possible for the last 7 days,
+  the better engine marked, the difference, which engine was in control, totals and the calibration line.
+- The setting "Engine comparison (Costs page)" on the Config page.
+
 ## 0.9.109
 
 ### Behaviour changes
