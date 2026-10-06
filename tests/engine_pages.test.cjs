@@ -211,3 +211,23 @@ test("refreshEngineIcons re-looks-up pe: icons stuck in legacy mode, inside shad
   assert.deepEqual(other.sets, []);
   assert.deepEqual(unknown.sets, []);
 });
+
+test("engine icon digits are traced opposite to the outline, so they cut out under the non-zero fill rule", () => {
+  const { ENGINE_ICONS } = require("../ha-powerengine-card.js");
+  const area = (d) => {
+    const pts = []; let x = 0, y = 0;
+    for (const [, c, a] of d.matchAll(/([MLHVZ])([^MLHVZ]*)/g)) {
+      const n = (a.match(/-?[\d.]+/g) || []).map(Number);
+      if (c === "M" || c === "L") { x = n[0]; y = n[1]; pts.push([x, y]); }
+      if (c === "H") { x = n[0]; pts.push([x, y]); }
+      if (c === "V") { y = n[0]; pts.push([x, y]); }
+    }
+    return pts.reduce((s, p, i) => s + p[0] * pts[(i + 1) % pts.length][1] - pts[(i + 1) % pts.length][0] * p[1], 0) / 2;
+  };
+  for (const d of Object.values(ENGINE_ICONS)) {
+    const parts = d.split(/(?=M)/);
+    assert.ok(parts.length >= 2);
+    const outline = area(parts[0]);
+    parts.slice(1).forEach((p) => assert.ok(Math.sign(area(p)) === -Math.sign(outline), p));
+  }
+});
