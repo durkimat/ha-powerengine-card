@@ -687,8 +687,12 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     this._v2 = v2Supported(s) ? s[V2_SETTINGS].attributes : null;
     if (this._v2) { draft.engine_v2 = Object.assign({}, this._saved.engine_v2 || {}); draft.system.engine = engineInUse(s, this._saved); this._engine = draft.system.engine; }
     else { delete draft.engine_v2; this._engine = null; }
-    // no choice made yet: the draft carries none (the catalogue default must not be saved by accident)
-    if (otherControllerValue(s) === "unset" && !((this._saved.system || {}).other_controller)) delete draft.system.other_controller;
+    // no choice saved yet: the draft shows what the app is using (derived from the mapped guards), or carries none when
+    // that is "unset", so the catalogue's empty default is never shown as a real choice or saved by accident
+    if (!((this._saved.system || {}).other_controller)) {
+      const used = otherControllerValue(s);
+      if (used && used !== "unset") draft.system.other_controller = used; else delete draft.system.other_controller;
+    }
     this._draft = draft;
     this._prefilled = fresh;
     this._build();
