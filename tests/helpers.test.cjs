@@ -229,45 +229,39 @@ const hs = (v, a) => ({ state: v, attributes: a || {} });
 test("handoverRows: PowerEngine live", () => {
   const r = h.handoverRows({
     "input_select.battery_controller": hs("PowerEngine"), "switch.predbat_set_read_only": hs("on"),
-    "switch.pe_ctl_pause": hs("off"), "sensor.pe_state_operation_mode": hs("active"),
-    "automation.charge_house_battery_on": hs("off") });
-  assert.deepEqual(r.rows.map((x) => x.ok), [true, true, true, true]);
+    "switch.pe_ctl_pause": hs("off"), "sensor.pe_state_operation_mode": hs("active") });
+  assert.deepEqual(r.rows.map((x) => x.ok), [true, true, true]);
   assert.equal(r.status, "live");
 });
 
 test("handoverRows: PowerEngine selected but Passive is not live", () => {
   const r = h.handoverRows({
     "input_select.battery_controller": hs("PowerEngine"), "switch.predbat_set_read_only": hs("on"),
-    "switch.pe_ctl_pause": hs("off"), "sensor.pe_state_operation_mode": hs("passive", { reason: "Passive: watching" }),
-    "automation.charge_house_battery_on": hs("off") });
-  assert.equal(r.rows[3].ok, false);
+    "switch.pe_ctl_pause": hs("off"), "sensor.pe_state_operation_mode": hs("passive", { reason: "Passive: watching" }) });
+  assert.equal(r.rows[2].ok, false);
   assert.equal(r.status, "not_live");
 });
 
 test("handoverRows: paused for testing is not a fault", () => {
   const r = h.handoverRows({
     "input_select.battery_controller": hs("PowerEngine"), "switch.predbat_set_read_only": hs("on"),
-    "switch.pe_ctl_pause": hs("on"), "sensor.pe_state_operation_mode": hs("paused"),
-    "automation.charge_house_battery_on": hs("off") });
-  assert.deepEqual(r.rows.map((x) => x.ok), [true, true, null, null]);
+    "switch.pe_ctl_pause": hs("on"), "sensor.pe_state_operation_mode": hs("paused") });
+  assert.deepEqual(r.rows.map((x) => x.ok), [true, null, null]);
   assert.equal(r.status, "paused");
 });
 
-test("handoverRows: Predbat selected with leftovers", () => {
+test("handoverRows: Predbat selected but still active", () => {
   const r = h.handoverRows({
     "input_select.battery_controller": hs("Predbat"), "switch.predbat_set_read_only": hs("on"),
-    "switch.pe_ctl_pause": hs("off"), "sensor.pe_state_operation_mode": hs("active"),
-    "automation.house_battery_start_charging": hs("on") });
-  assert.deepEqual(r.rows.map((x) => x.ok), [false, false, true, false]);
-  assert.equal(r.rows[1].have, "1 on");
+    "switch.pe_ctl_pause": hs("off"), "sensor.pe_state_operation_mode": hs("active") });
+  assert.deepEqual(r.rows.map((x) => x.ok), [false, true, false]);
   assert.equal(r.status, "not_live");
 });
 
 test("handoverRows: a missing Predbat switch is not live", () => {
   const r = h.handoverRows({
     "input_select.battery_controller": hs("Predbat"),
-    "switch.pe_ctl_pause": hs("off"), "sensor.pe_state_operation_mode": hs("passive"),
-    "automation.charge_house_battery_on": hs("off") });
+    "switch.pe_ctl_pause": hs("off"), "sensor.pe_state_operation_mode": hs("passive") });
   assert.equal(r.rows[0].ok, null);
   assert.match(r.rows[0].note, /doesn't have this entity/);
   assert.equal(r.status, "not_live");
@@ -334,8 +328,7 @@ test("matchesSearch", () => {
 test("handoverRows: Predbat missing is safe under PowerEngine", () => {
   const r = h.handoverRows({
     "input_select.battery_controller": hs("PowerEngine"),
-    "switch.pe_ctl_pause": hs("off"), "sensor.pe_state_operation_mode": hs("active"),
-    "automation.charge_house_battery_on": hs("off") });
+    "switch.pe_ctl_pause": hs("off"), "sensor.pe_state_operation_mode": hs("active") });
   assert.equal(r.rows[0].ok, true);
   assert.match(r.rows[0].note, /isn't connected/);
   assert.equal(r.status, "live");

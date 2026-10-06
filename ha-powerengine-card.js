@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.107";
+const CARD_VERSION = "0.9.108";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -267,7 +267,7 @@ const TOPICS = [
       "timed_charge_current", "timed_discharge_start_hour", "timed_discharge_start_minute", "timed_discharge_end_hour",
       "timed_discharge_end_minute", "timed_discharge_current", "timed_update_button", "storage_mode",
       "inverter_clock", "inverter_clock_sync", "guard_read_only", "guard_off_1", "guard_off_2"],
-    system: ["control_method"], settings: ["max_writes_per_day", "ram_refresh_min", "ram_switch_cost_p", "ram_max_power_w", "inverter_max_output_w"] },
+    system: ["other_controller", "control_method"], settings: ["max_writes_per_day", "ram_refresh_min", "ram_switch_cost_p", "ram_max_power_w", "inverter_max_output_w"] },
   { key: "damping", title: "Dampening tuning",
     note: "Holding inverter writes back briefly when the settings are likely to change again, to save writes. Health tab, Inverter writes today, shows how many changes were held back.",
     features: ["damp_restart", "damp_bursts"],
@@ -317,7 +317,7 @@ function topicPlan(roleKeys, settingKeys, featureKeys, systemKeys) {
 
 /** How much a role matters right now: "req" (required), "cond" (required only for something not in use),
  *  "opt" (optional) or "unused"; with the badge text. */
-function roleNeed(role, draft, pairMapped) {
+function roleNeed(role, draft, pairMapped, other) {
   const r = effectiveRole(role, pairMapped);
   const features = (draft && draft.features) || {};
   const live = ((draft && draft.operation) || {}).mode === "active";
@@ -328,6 +328,7 @@ function roleNeed(role, draft, pairMapped) {
     const label = T((FEATURES.find((x) => x[0] === f) || [0, f])[1]);
     return features[f] ? { level: "req", badge: `Required for ${label}` } : { level: "cond", badge: `Needed for ${label}` };
   }
+  if (GUARD_ROLES.includes(r.key) && guardRolesShown(other).length === 0) return { level: "unused", badge: "Not used" };
   if (GO_LIVE.includes(r.key)) return live ? { level: "req", badge: "Required to go live" } : { level: "cond", badge: "Needed to go live" };
   return { level: "opt", badge: "Optional" };
 }
@@ -686,6 +687,12 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     this._v2 = v2Supported(s) ? s[V2_SETTINGS].attributes : null;
     if (this._v2) { draft.engine_v2 = Object.assign({}, this._saved.engine_v2 || {}); draft.system.engine = engineInUse(s, this._saved); this._engine = draft.system.engine; }
     else { delete draft.engine_v2; this._engine = null; }
+    // no choice saved yet: the draft shows what the app is using (derived from the mapped guards), or carries none when
+    // that is "unset", so the catalogue's empty default is never shown as a real choice or saved by accident
+    if (!((this._saved.system || {}).other_controller)) {
+      const used = otherControllerValue(s);
+      if (used && used !== "unset") draft.system.other_controller = used; else delete draft.system.other_controller;
+    }
     this._draft = draft;
     this._prefilled = fresh;
     this._build();
@@ -941,9 +948,10 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       if (t.key === "damping") body.append(el("div", { class: "note" }, dampingNote(this._hass && this._hass.states)));
       if (t.main) body.append(this._sections[`topic_${t.key}`].offNote = el("div", { class: "offnote" },
         "Switched off: the inputs and settings below aren't used."));
-      const inTopic = t.roles.map((k) => byKey[k]).filter(Boolean);
+      const guardsOk = guardRolesShown(this._otherEffective());
+      const inTopic = t.roles.map((k) => byKey[k]).filter(Boolean).filter((r) => !GUARD_ROLES.includes(r.key) || guardsOk.includes(r.key));
       const pair = BATTERY_PAIR.every((k) => (this._draft.inputs[k] || {}).entity);
-      const need = (r) => roleNeed(r, this._draft, pair).level;
+      const need = (r) => roleNeed(r, this._draft, pair, this._otherEffective()).level;
       const firstly = inTopic.filter((r) => need(r) !== "opt");
       const optional = inTopic.filter((r) => need(r) === "opt");
       const suggestable = inTopic.filter((r) => this._suggestion(r));
@@ -964,6 +972,10 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
         sub(body, "Settings");
         t.system.forEach((k) => {
           const r = systemRow(k);
+          if (r && k === "other_controller") {
+            const prompt = otherControllerPrompt(this._otherEffective());
+            if (prompt) body.append(el("div", { class: "warning" }, prompt));
+          }
           if (r) body.append(r);
           if (r && k === "overnight_window") { const o = this._overnightRow(); if (o) body.append(o); }
         });
@@ -1179,10 +1191,20 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       view.notes.map((n) => el("div", { class: "muted" }, n)));
   }
 
+  _otherEffective() {
+    const sys = (this._draft && this._draft.system) || {};
+    return effectiveOtherController(otherControllerValue(this._hass && this._hass.states), sys.other_controller);
+  }
+
   _choiceRow(st) {
-    const sel = el("select", { onchange: (ev) => { this._draft.system[st.key] = ev.target.value; this._refresh(); } });
+    const sel = el("select", { onchange: (ev) => {
+      this._draft.system[st.key] = ev.target.value;
+      if (st.key === "other_controller") this._build(); else this._refresh();
+    } });
+    const undecided = st.key === "other_controller" && this._draft.system[st.key] === undefined;
+    if (undecided) sel.append(el("option", { value: "" }, "Choose…"));
     st.options.forEach(([value, label]) => sel.append(el("option", { value }, label)));
-    sel.value = this._draft.system[st.key] !== undefined ? this._draft.system[st.key] : st.default;
+    sel.value = undecided ? "" : this._draft.system[st.key] !== undefined ? this._draft.system[st.key] : st.default;
     return el("div", { class: "row" },
       el("div", { class: "head" }, el("span", { class: "label" }, st.label)),
       el("div", { class: "desc" }, st.help), el("div", { class: "ctl" }, sel));
@@ -1343,7 +1365,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const pair = BATTERY_PAIR.every((k) => (this._draft.inputs[k] || {}).entity);
     this._rows.forEach(({ role: baseRole, spec, live, problem, status, section, badgeBox, signNote, invertCb, row, item }) => {
       const s = spec();
-      const need = roleNeed(baseRole, this._draft, pair);
+      const need = roleNeed(baseRole, this._draft, pair, this._otherEffective());
       const role = Object.assign({}, effectiveRole(baseRole, pair), need.level === "req" ? { required: "yes" } : {});
       const unused = need.level === "unused";
       badgeBox.replaceChildren(el("span", { class: `badge ${need.level}` }, need.badge));
@@ -1550,6 +1572,54 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-to
   window.customCards.push({ type: "powerengine-toggle-card", name: "PowerEngine toggle", description: "A discreet title + switch row." });
 }
 
+// --- Other battery controller (Predbat optional) --------------------------------------------------------------
+// The app publishes `other_controller` on sensor.pe_diag_version: none | predbat | other | unset (app 0.9.108+).
+// Older apps publish nothing, so the card falls back to looking for Predbat's own entities.
+const OTHER_CONTROLLERS = ["none", "predbat", "other"];
+const GUARD_ROLES = ["guard_read_only", "guard_off_1", "guard_off_2"];
+const OTHER_UNSET_PROMPT = "Choose whether another battery controller is installed. PowerEngine won't go Active until you do.";
+const PREDBAT_ENTITIES = ["switch.predbat_set_read_only", "input_select.battery_controller"];
+
+/** The published value (null for an older app that doesn't publish it). */
+function otherControllerValue(states) {
+  const a = (((states || {})[VERSION_SENSOR] || {}).attributes) || {};
+  return typeof a.other_controller === "string" ? a.other_controller : null;
+}
+
+/** Show the Predbat <-> PowerEngine handover card? Only when Predbat is the other controller; an older app (no
+ *  attribute) shows it when Predbat's entities exist. */
+function handoverVisible(states) {
+  const v = otherControllerValue(states);
+  if (v !== null) return v === "predbat";
+  return PREDBAT_ENTITIES.some((id) => !!(states || {})[id]);
+}
+
+/** The value in force for the config page: what the owner has picked in the form (if different from what's saved),
+ *  else what the app reports (the draft holds no value while it is unset). null = older app (behave as before). */
+function effectiveOtherController(published, draftValue) {
+  if (published === null || published === undefined) return null;
+  if (OTHER_CONTROLLERS.includes(draftValue)) return draftValue;
+  return published;
+}
+
+/** Which guard roles the Inverter control topic shows for a value. */
+function guardRolesShown(value) {
+  return value === null || value === undefined || value === "predbat" || value === "other" ? GUARD_ROLES.slice() : [];
+}
+
+/** The prompt above the choice (empty unless the owner hasn't chosen yet). */
+function otherControllerPrompt(value) { return value === "unset" ? OTHER_UNSET_PROMPT : ""; }
+
+/** Is Predbat the other controller (for hints that name it)? An older app: Predbat's entities exist. */
+function predbatInUse(states) { return handoverVisible(states); }
+
+/** The first step of the Tests card's checklist. */
+function testsPauseHint(states) {
+  return predbatInUse(states)
+    ? "Keep PowerEngine selected in the battery controller switch (Predbat stays read-only), and turn on <b>Pause control</b> on the Monitoring page. Tests are refused while PowerEngine is in control."
+    : "Turn on <b>Pause control</b> on the Monitoring page. Tests are refused while PowerEngine is in control.";
+}
+
 // --- Battery controller handover ---------------------------------------------------------------------------
 // Switches between Predbat and PowerEngine through input_select.battery_controller (docs/ha/
 // powerengine_handover.yaml runs the handover scripts). Shows what each related entity should be for the chosen
@@ -1560,16 +1630,10 @@ const HANDOVER_DEFAULTS = {
   pause: "switch.pe_ctl_pause",
   mode: "sensor.pe_state_operation_mode",
   scripts: { PowerEngine: "script.battery_handover_to_powerengine", Predbat: "script.battery_handover_to_predbat" },
-  legacy: [
-    "automation.charge_house_battery_on", "automation.charge_house_battery_off",
-    "automation.discharge_house_battery_on", "automation.discharge_house_battery_off",
-    "automation.house_battery_start_charging", "automation.house_battery_stop_charging",
-    "automation.house_battery_start_charging_2", "automation.house_battery_stop_charging_2",
-  ],
 };
 const CONTROLLERS = ["Predbat", "PowerEngine"];
 const HANDOVER_STEPS = {
-  PowerEngine: "Predbat goes read-only, the legacy automations stay off, and PowerEngine is set to Active and " +
+  PowerEngine: "Predbat goes read-only, and PowerEngine is set to Active and " +
     "un-paused. About 20 seconds. PowerEngine is then live; you'll get a notification saying so, or why not.",
   Predbat: "PowerEngine is set to Passive and closes its inverter windows (Self-Use), then Predbat leaves read-only " +
     "and takes over at its next update. About 30 seconds. Predbat is then live.",
@@ -1596,12 +1660,6 @@ function handoverRows(states, cfg) {
     add("Predbat read-only", toPE ? "on" : "off", ro, known(ro) ? ro === (toPE ? "on" : "off") : null,
       known(ro) ? "" : "Home Assistant doesn't have this entity right now (Predbat not running, or still starting).");
   }
-
-  const on = c.legacy.filter((id) => val(id) === "on");
-  const found = c.legacy.filter((id) => st(id));
-  add("Legacy automations", "all off", found.length ? (on.length ? `${on.length} on` : "all off") : "not found",
-      found.length ? on.length === 0 : null,
-      on.length ? on.map((id) => id.replace("automation.", "")).join(", ") : "");
 
   const pz = val(c.pause);
   const paused = toPE && pz === "on";
@@ -1716,6 +1774,9 @@ class PowerEngineHandoverCard extends (typeof HTMLElement !== "undefined" ? HTML
     const esc = (t) => String(t).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
     const body = this.shadowRoot.querySelector(".body");
     const states = this._hass ? this._hass.states : {};
+    const show = !this._hass || handoverVisible(states);
+    this.style.display = show ? "" : "none";
+    if (!show) { body.innerHTML = ""; return; }
     const title = `<h2>${esc(this._config.title || "Battery controller")}</h2>`;
     if (!states[this._c.selector]) {
       body.innerHTML = title + `<p>${esc(this._c.selector)} not found. Install docs/ha/powerengine_handover.yaml as a ` +
@@ -1967,8 +2028,7 @@ class PowerEngineTestCard extends (typeof HTMLElement !== "undefined" ? HTMLElem
              hands the inverter back to Self-Use. Run one at a time.</p>
           <h3>Before you start</h3>
           <ol>
-            <li>Keep PowerEngine selected in the battery controller switch (Predbat stays read-only), and turn on
-                <b>Pause control</b> on the Monitoring page. Tests are refused while PowerEngine is in control.</li>
+            <li class="pausehint"></li>
             <li>Best in the evening or at night: no solar, the car not charging, battery between about 30% and 90%
                 so it can both charge and discharge.</li>
             <li>Stand where you can see the inverter screen, or have the ${escHtml(T("<<inverter>>"))} app's live view open.</li>
@@ -2024,6 +2084,7 @@ class PowerEngineTestCard extends (typeof HTMLElement !== "undefined" ? HTMLElem
     const states = this._hass ? this._hass.states : {};
     const sum = testSummary(states[TEST_ENTITY]);
     const running = sum.status === "running" || sum.status === "reverting";
+    q(".pausehint").innerHTML = testsPauseHint(states);
     q(".live").textContent = liveLine(states);
     q(".status").textContent = sum.status + (sum.action && sum.status !== "idle" ? ` (${sum.action}${sum.minutes ? ", " + sum.minutes + " min" : ""})` : "");
     q(".status").className = "status " + sum.status;
@@ -2372,6 +2433,10 @@ function setupRows(facts) {
   rows.push(comps.includes("mqtt") ? { ...mq, status: "ok", detail: "Set up.", action: null }
     : { ...mq, status: "missing", detail: "Not set up.", action: link(SETUP_LINKS.mqtt, "Set up MQTT") });
 
+  // 8. Another battery controller: the app won't go Active until the owner has said whether there is one
+  if (f.otherController === "unset") rows.push({ key: "controller", title: "Other battery controller", needed: true, status: "missing",
+    why: "PowerEngine won't go Active until you choose.", detail: OTHER_UNSET_PROMPT, action: null });
+
   return rows;
 }
 
@@ -2379,7 +2444,7 @@ function setupRows(facts) {
 function setupSummary(facts) {
   const rows = setupRows(facts);
   const ok = (k) => (rows.find((r) => r.key === k) || {}).status === "ok";
-  const allSet = ok("running") && ok("apex") && ok("flow");
+  const allSet = ok("running") && ok("apex") && ok("flow") && !rows.some((r) => r.key === "controller");
   return { allSet, line: allSet ? `All set. PowerEngine is running ${(facts || {}).peVersion}` : null,
     todo: rows.filter((r) => r.needed && r.status !== "ok").length };
 }
@@ -2476,6 +2541,7 @@ class PowerEngineSetupCard extends (typeof HTMLElement !== "undefined" ? HTMLEle
     return { isAdmin: this._isAdmin(), hacs: s.hacs === undefined ? null : s.hacs, hacsReason: s.hacsReason, categories: s.categories,
       addon: s.addon, repos: s.repos, cardsLoaded, components: (hass.config && hass.config.components) || [],
       peVersion: peRunning(hass.states),
+      otherController: otherControllerValue(hass.states),
       setup: (((hass.states || {})[VERSION_SENSOR] || {}).attributes || {}).setup || null };
   }
 
@@ -6527,7 +6593,7 @@ class PowerEngineV2HealthCard extends PowerEngineV2Card {
 });
 
 if (typeof module !== "undefined") {
-  module.exports = { v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
+  module.exports = { roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
