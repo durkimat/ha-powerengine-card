@@ -317,7 +317,7 @@ function topicPlan(roleKeys, settingKeys, featureKeys, systemKeys) {
 
 /** How much a role matters right now: "req" (required), "cond" (required only for something not in use),
  *  "opt" (optional) or "unused"; with the badge text. */
-function roleNeed(role, draft, pairMapped) {
+function roleNeed(role, draft, pairMapped, other) {
   const r = effectiveRole(role, pairMapped);
   const features = (draft && draft.features) || {};
   const live = ((draft && draft.operation) || {}).mode === "active";
@@ -328,6 +328,7 @@ function roleNeed(role, draft, pairMapped) {
     const label = T((FEATURES.find((x) => x[0] === f) || [0, f])[1]);
     return features[f] ? { level: "req", badge: `Required for ${label}` } : { level: "cond", badge: `Needed for ${label}` };
   }
+  if (GUARD_ROLES.includes(r.key) && guardRolesShown(other).length === 0) return { level: "unused", badge: "Not used" };
   if (GO_LIVE.includes(r.key)) return live ? { level: "req", badge: "Required to go live" } : { level: "cond", badge: "Needed to go live" };
   return { level: "opt", badge: "Optional" };
 }
@@ -946,7 +947,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       const guardsOk = guardRolesShown(this._otherEffective());
       const inTopic = t.roles.map((k) => byKey[k]).filter(Boolean).filter((r) => !GUARD_ROLES.includes(r.key) || guardsOk.includes(r.key));
       const pair = BATTERY_PAIR.every((k) => (this._draft.inputs[k] || {}).entity);
-      const need = (r) => roleNeed(r, this._draft, pair).level;
+      const need = (r) => roleNeed(r, this._draft, pair, this._otherEffective()).level;
       const firstly = inTopic.filter((r) => need(r) !== "opt");
       const optional = inTopic.filter((r) => need(r) === "opt");
       const suggestable = inTopic.filter((r) => this._suggestion(r));
@@ -1360,7 +1361,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const pair = BATTERY_PAIR.every((k) => (this._draft.inputs[k] || {}).entity);
     this._rows.forEach(({ role: baseRole, spec, live, problem, status, section, badgeBox, signNote, invertCb, row, item }) => {
       const s = spec();
-      const need = roleNeed(baseRole, this._draft, pair);
+      const need = roleNeed(baseRole, this._draft, pair, this._otherEffective());
       const role = Object.assign({}, effectiveRole(baseRole, pair), need.level === "req" ? { required: "yes" } : {});
       const unused = need.level === "unused";
       badgeBox.replaceChildren(el("span", { class: `badge ${need.level}` }, need.badge));
@@ -2428,6 +2429,10 @@ function setupRows(facts) {
   rows.push(comps.includes("mqtt") ? { ...mq, status: "ok", detail: "Set up.", action: null }
     : { ...mq, status: "missing", detail: "Not set up.", action: link(SETUP_LINKS.mqtt, "Set up MQTT") });
 
+  // 8. Another battery controller: the app won't go Active until the owner has said whether there is one
+  if (f.otherController === "unset") rows.push({ key: "controller", title: "Other battery controller", needed: true, status: "missing",
+    why: "PowerEngine won't go Active until you choose.", detail: OTHER_UNSET_PROMPT, action: null });
+
   return rows;
 }
 
@@ -2435,7 +2440,7 @@ function setupRows(facts) {
 function setupSummary(facts) {
   const rows = setupRows(facts);
   const ok = (k) => (rows.find((r) => r.key === k) || {}).status === "ok";
-  const allSet = ok("running") && ok("apex") && ok("flow");
+  const allSet = ok("running") && ok("apex") && ok("flow") && !rows.some((r) => r.key === "controller");
   return { allSet, line: allSet ? `All set. PowerEngine is running ${(facts || {}).peVersion}` : null,
     todo: rows.filter((r) => r.needed && r.status !== "ok").length };
 }
@@ -2532,6 +2537,7 @@ class PowerEngineSetupCard extends (typeof HTMLElement !== "undefined" ? HTMLEle
     return { isAdmin: this._isAdmin(), hacs: s.hacs === undefined ? null : s.hacs, hacsReason: s.hacsReason, categories: s.categories,
       addon: s.addon, repos: s.repos, cardsLoaded, components: (hass.config && hass.config.components) || [],
       peVersion: peRunning(hass.states),
+      otherController: otherControllerValue(hass.states),
       setup: (((hass.states || {})[VERSION_SENSOR] || {}).attributes || {}).setup || null };
   }
 
@@ -6583,7 +6589,7 @@ class PowerEngineV2HealthCard extends PowerEngineV2Card {
 });
 
 if (typeof module !== "undefined") {
-  module.exports = { otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
+  module.exports = { roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,

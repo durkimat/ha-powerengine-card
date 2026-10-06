@@ -65,3 +65,19 @@ test("no string in the card names the owner's automations", () => {
     "house_battery_stop_charging", "automation.house_battery"]) assert.ok(!src.includes(id), id);
   assert.ok(!/legacy automations/i.test(src));
 });
+
+test("guard roles are not needed to go live without another controller", () => {
+  const role = { key: "guard_read_only", required: "no" };
+  const draft = { features: {}, operation: { mode: "active" } };
+  for (const o of ["none", "unset"]) assert.equal(h.roleNeed(role, draft, false, o).level, "unused", o);
+  for (const o of ["predbat", "other", null, undefined]) assert.equal(h.roleNeed(role, draft, false, o).level, "req", String(o));
+  assert.equal(h.roleNeed({ key: "storage_mode", required: "no" }, draft, false, "none").level, "req");
+});
+
+test("setup checklist asks for the choice only when unset", () => {
+  const base = { peVersion: "0.9.108", cardsLoaded: {}, components: [] };
+  assert.ok(h.setupRows({ ...base, otherController: "unset" }).some((r) => r.key === "controller" && r.status === "missing"));
+  for (const o of ["none", "predbat", "other", null]) assert.ok(!h.setupRows({ ...base, otherController: o }).some((r) => r.key === "controller"));
+  const rows = (o) => h.setupSummary({ ...base, otherController: o, cardsLoaded: { "apexcharts-card": true, "mushroom-card": true } });
+  assert.ok(rows("unset").allSet === false);
+});
