@@ -112,6 +112,11 @@
    "The first change to a window slot, current or the mode goes straight through; another change to the same thing within the Burst window waits until the plan has been steady for the Burst settle time, so several quick changes become one write. Off by default while its effect is evaluated. Safety changes never wait."
   ],
   [
+   "engine_compare",
+   "Compare the two engines each night",
+   "Each night, replay yesterday with engine v1 and engine v2 (using the forecasts as they were) and show on the Costs page what each would have saved. It runs in the background on your PowerEngine and changes nothing."
+  ],
+  [
    "tariff_simulator",
    "Tariff simulator",
    "Each night at 01:30, compare your recorded days on current Octopus and EDF tariffs (fetched from their public tariff lists) and notify you if one would save noticeably. Reads only; changes nothing."
@@ -176,6 +181,11 @@
   {
    "key": "simulator",
    "title": "Tariff simulator",
+   "note": null
+  },
+  {
+   "key": "engine_compare",
+   "title": "Engine comparison (Costs page)",
    "note": null
   }
  ],

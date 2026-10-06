@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.109";
+const CARD_VERSION = "0.9.110";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -95,6 +95,7 @@ const FEATURES = [
   ["cold_learning", "Learn cold behaviour", "Adjust the cold threshold and rate from what's seen: charging slowed at 5°C raises the threshold; charging normally at 3°C lowers it to 3°C."],
   ["damp_restart", "Restart hold-off", "After PowerEngine starts, or control resumes or goes live, write nothing for a few minutes (Restart hold-off setting) while the plan and its inputs settle. The inverter keeps running the windows already set. Safety changes (grid events, free power, the car charging, the reserve) never wait."],
   ["damp_bursts", "Burst damping", "The first change to a window slot, current or the mode goes straight through; another change to the same thing within the Burst window waits until the plan has been steady for the Burst settle time, so several quick changes become one write. Off by default while its effect is evaluated. Safety changes never wait."],
+  ["engine_compare", "Compare the two engines each night", "Each night, replay yesterday with engine v1 and engine v2 (using the forecasts as they were) and show on the Costs page what each would have saved. It runs in the background on your PowerEngine and changes nothing."],
   ["tariff_simulator", "Tariff simulator", "Each night at 01:30, compare your recorded days on current Octopus and EDF tariffs (fetched from their public tariff lists) and notify you if one would save noticeably. Reads only; changes nothing."],
 ];
 const NOTIFY_EVENTS = [
@@ -105,7 +106,7 @@ const NOTIFY_EVENTS = [
   ["daily", "Daily summary", "Each morning at 08:00: yesterday's cost and savings.", false],
   ["simulator", "Tariff opportunities", "When the overnight Simulator finds a tariff that would have cost noticeably less (at least £5 and 5% a month), or new tariffs appear.", true],
 ];
-const FEATURE_DEFAULTS = { auto_cheap_threshold: true, fill_when_cheap: true, smart_charge_optimisation: true, arbitrage: false, axle: true, free_power_days: true, tariff_simulator: true, optimised_plan: true,
+const FEATURE_DEFAULTS = { auto_cheap_threshold: true, fill_when_cheap: true, smart_charge_optimisation: true, arbitrage: false, axle: true, free_power_days: true, tariff_simulator: true, engine_compare: true, optimised_plan: true,
   learn_taper: true, learn_conversion: true, learn_reserve: true, learn_export: true, learn_car: true, learn_car_min: true, cold_caution: true, cold_learning: true,
   damp_restart: true, damp_bursts: false, deep_overnight: true,
   use_check_meter: true, axle_plus_export: true, slots_whole_house: true, smart_skip_full_car: false };
@@ -273,6 +274,7 @@ const TOPICS = [
     features: ["damp_restart", "damp_bursts"],
     settings: ["damp_restart_min", "damp_burst_window_min", "damp_burst_settle_min"] },
   { key: "simulator", title: "Tariff simulator", main: "tariff_simulator", features: ["tariff_simulator"] },
+  { key: "engine_compare", title: "Engine comparison (Costs page)", main: "engine_compare", features: ["engine_compare"] },
 ];
 // needed before PowerEngine can go live (the rest of the control group is optional)
 const GO_LIVE = ["timed_charge_start_hour", "timed_charge_start_minute", "timed_charge_end_hour", "timed_charge_end_minute",
@@ -5728,11 +5730,11 @@ const HISTORY_DAY_EVENT = "pe_history_day";
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 /** The fire_event call for a picked day, or null if it isn't a date inside [earliest, latest] (all YYYY-MM-DD). */
-function historyDayPayload(value, earliest, latest) {
+function historyDayPayload(value, earliest, latest, eventType) {
   if (typeof value !== "string" || !ISO_DAY.test(value)) return null;
   if (ISO_DAY.test(earliest || "") && value < earliest) return null;
   if (ISO_DAY.test(latest || "") && value > latest) return null;
-  return { type: "fire_event", event_type: HISTORY_DAY_EVENT, event_data: { date: value } };
+  return { type: "fire_event", event_type: eventType || HISTORY_DAY_EVENT, event_data: { date: value } };
 }
 
 /** The day `delta` days from `day` (YYYY-MM-DD), or null if that is outside [earliest, latest] or `day` isn't a date. */
@@ -6705,9 +6707,369 @@ class PowerEngineV2HealthCard extends PowerEngineV2Card {
   }
 }
 
+// ---- engine pages: icons, badge, v2 history, same-day comparison (docs/plans/engine-pages-and-comparison.md) ---------
+// Custom icons for the two engine tabs: `pe:engine-v1` and `pe:engine-v2`. One 24x24 path each, filled even-odd: an engine
+// outline (intake on top, shaft and flywheel at the sides) with the digit cut out of the block. HA looks them up through
+// window.customIcons; with this file not loaded a tab shows no icon, as for any custom icon.
+const ENGINE_OUTLINE = "M6 3.5H12V5H10.5V7H14.5V5.5H17.5V7H19V10H23V17H19V20H4V17H1V10H4V7H7.5V5H6Z";
+const ENGINE_ICONS = {
+  "engine-v1": `${ENGINE_OUTLINE}M12.2 9.5H14V17.5H12.2V11.6L10.5 12.3V10.6Z`,
+  "engine-v2": `${ENGINE_OUTLINE}M9.5 9.5H14.5V14.2H11.2V15.8H14.5V17.5H9.5V12.5H12.8V11.2H9.5Z`,
+};
+function engineIcon(name) { return ENGINE_ICONS[name] ? { path: ENGINE_ICONS[name] } : null; }
+if (typeof window !== "undefined") {
+  window.customIcons = window.customIcons || {};
+  window.customIcons.pe = {
+    getIcon: async (name) => engineIcon(name),
+    getIconList: async () => Object.keys(ENGINE_ICONS).map((name) => ({ name })),
+  };
+  window.customIconsets = window.customIconsets || {};         // the older hook, for a Home Assistant that has only this one
+  window.customIconsets.pe = async (name) => engineIcon(name);
+}
+
+// ---- the Active / Paused / Passive badge at the top of each engine page ----
+const PAUSE_SWITCH = "switch.pe_ctl_pause";
+const BADGE_LINES = {
+  active: "Sending commands to the inverter",
+  paused: "Paused: nothing is sent to the inverter",
+  passive: "Working out what it would do; nothing is sent",
+  off: "Not running: preview is off",
+  unknown: "PowerEngine's mode is not available yet",
+};
+/** What the badge on `engine`'s page says. `engine` is "v1" or "v2". Pure.
+ *  Chosen engine + Active (not paused) -> Active; + Active but paused -> Paused; anything else -> Passive.
+ *  kind: "active" | "paused" | "passive" | "unknown"; `line` is the one-sentence meaning. */
+function engineBadge(states, engine) {
+  const st = states || {};
+  const eng = engine === "v2" ? "v2" : "v1";
+  const chosen = v2Engine(st) || "v1";                       // an app that doesn't say has only engine v1
+  const op = st[MODE_SENSOR] && st[MODE_SENSOR].state;
+  const pause = st[PAUSE_SWITCH] && st[PAUSE_SWITCH].state === "on";
+  const label = (kind) => ({ active: "Active", paused: "Paused", passive: "Passive", unknown: "Unknown" }[kind]);
+  const make = (kind, line) => ({ engine: eng, kind, label: label(kind), line: line || BADGE_LINES[kind], chosen });
+  if (chosen !== eng) {
+    if (eng === "v2" && !v2Preview(st)) return make("passive", BADGE_LINES.off);
+    return make("passive");
+  }
+  if (op === "paused") return make("paused");
+  if (op === "active") return make(pause ? "paused" : "active");
+  if (op === "passive") return make("passive");
+  return make("unknown");
+}
+
+class PowerEngineEngineBadgeCard extends PowerEngineV2Card {
+  setConfig(config) {
+    super.setConfig(config);
+    this._engine = (config && config.engine) === "v2" ? "v2" : "v1";
+  }
+  getCardSize() { return 1; }
+  getGridOptions() { return { columns: "full", rows: 1, min_rows: 1 }; }
+  _ids() { return [MODE_SENSOR, PAUSE_SWITCH, V2_MODE]; }
+  _render(states) {
+    const b = engineBadge(states, this._engine);
+    this.shadowRoot.innerHTML = `<style>${V2_CSS}
+      ha-card { flex-direction: row; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 16px; }
+      .badge-chip { font-size: 14px; font-weight: 600; padding: 4px 14px; border-radius: 999px; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+      .badge-chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+      .badge-chip.active { background: rgba(67,160,71,.18); color: var(--v2-good); }
+      .badge-chip.paused { background: rgba(255,167,38,.2); color: var(--v2-warn); }
+      .badge-chip.passive, .badge-chip.unknown { background: var(--secondary-background-color); color: var(--secondary-text-color); }
+      .eng { font-size: 16px; font-weight: 500; }
+    </style>
+    <ha-card><span class="eng">Engine ${this._engine}</span><span class="badge-chip ${b.kind}" role="status">${escHtml(b.label)}</span><span class="muted">${escHtml(b.line)}</span></ha-card>`;
+  }
+}
+
+// ---- engine v2 history: one day of what v2 did (sensor.pe_v2_history) ----
+const V2_HISTORY_SENSOR = "sensor.pe_v2_history";
+const V2_HISTORY_DAY_EVENT = "pe_v2_history_day";
+const V2_HISTORY_NONE = "Engine v2's history has not been recorded yet.";
+/** The day-picker call for the v2 history: the same rules as the plan history's (a date inside earliest to latest). */
+function v2HistoryDayPayload(value, earliest, latest) {
+  return historyDayPayload(value, earliest, latest, V2_HISTORY_DAY_EVENT);
+}
+/** Split points {h, y} at nulls into runs of at least one point. */
+function runsOf(points) {
+  const out = []; let cur = [];
+  points.forEach((p) => { if (p.y === null) { if (cur.length) out.push(cur); cur = []; } else cur.push(p); });
+  if (cur.length) out.push(cur);
+  return out;
+}
+/** Everything the history card draws, from the attributes of sensor.pe_v2_history. kind: "none" | "empty" | "ok".
+ *  Hours are from the start of the first half-hour. Pure. */
+function v2HistoryView(attrs) {
+  const a = attrs && typeof attrs === "object" ? attrs : null;
+  if (!a) return { kind: "none", text: V2_HISTORY_NONE };
+  const date = typeof a.date === "string" ? a.date : "";
+  const raw = (Array.isArray(a.series) ? a.series : []).filter((p) => p && v2Ms(p.t) !== null).sort((p, q) => v2Ms(p.t) - v2Ms(q.t));
+  const base = { date, earliest: a.earliest || "", latest: a.latest || "", note: a.note ? String(a.note) : "" };
+  if (!raw.length) return Object.assign(base, { kind: "empty", text: date ? `Engine v2 has no record for ${date}.` : V2_HISTORY_NONE });
+  const t0 = v2Ms(raw[0].t);
+  const gaps = raw.slice(1).map((p, i) => v2Ms(p.t) - v2Ms(raw[i].t)).filter((g) => g > 0);
+  const stepMs = gaps.length ? Math.min(...gaps) : 30 * 60000;
+  const h = (ms) => (ms - t0) / HOUR_MS;
+  const spanH = h(v2Ms(raw[raw.length - 1].t) + stepMs);
+  const sentOf = (p) => p.sent !== false;
+  const bandsRaw = raw.map((p) => ({ mode: p.mode || "none", a: h(v2Ms(p.t)), b: h(v2Ms(p.t) + stepMs), preview: !sentOf(p) }));
+  const bands = [];
+  bandsRaw.forEach((b) => {
+    const last = bands[bands.length - 1];
+    if (last && last.mode === b.mode && last.preview === b.preview && Math.abs(last.b - b.a) < 1e-6) last.b = b.b; else bands.push(Object.assign({}, b));
+  });
+  const pts = (key) => raw.map((p) => ({ h: h(v2Ms(p.t) + stepMs), y: toNumber(p[key]) }));     // level and value are at the half-hour's end
+  const stepPts = (key) => raw.map((p) => ({ a: h(v2Ms(p.t)), b: h(v2Ms(p.t) + stepMs), y: toNumber(p[key]) })).filter((s) => s.y !== null);
+  const sentCount = raw.filter(sentOf).length;
+  const control = a.in_control === "v1" || a.in_control === "v2" || a.in_control === "mixed" ? a.in_control : (sentCount === 0 ? "v1" : sentCount === raw.length ? "v2" : "mixed");
+  const previewOnly = sentCount === 0;
+  const partlyPreview = sentCount > 0 && sentCount < raw.length;
+  const changes = (Array.isArray(a.changes) ? a.changes : []).filter((c) => c && v2Ms(c.at) !== null).map((c) => ({
+    at: v2Hm(c.at), mode: v2Mode(c.mode).name, modeKey: c.mode || "none", reason: c.reason ? String(c.reason) : "",
+  }));
+  const priceMax = Math.max(10, Math.ceil(Math.max(0, ...stepPts("import_p").map((s) => s.y), ...stepPts("export_p").map((s) => s.y)) / 5) * 5);
+  const valueVals = pts("value_p").filter((p) => p.y !== null).map((p) => p.y);
+  return Object.assign(base, {
+    kind: "ok", t0, spanH, stepMs, bands, previewOnly, partlyPreview, control,
+    banner: previewOnly ? "Preview only: engine v1 was in control on this day, so nothing was sent to the inverter. The modes below are what engine v2 would have chosen."
+      : partlyPreview ? "Control changed during the day: the dimmed bands are where engine v2 was only previewing." : "",
+    level: runsOf(pts("level")), expected: runsOf(pts("expected")), value: runsOf(pts("value_p")),
+    importSteps: stepPts("import_p"), exportSteps: stepPts("export_p"), priceMax,
+    valueMax: valueVals.length ? Math.max(...valueVals) : 0,
+    changes, ticks: (() => {
+      const out = []; const d = new Date(t0); d.setMinutes(0, 0, 0);
+      while (d.getTime() < t0 || d.getHours() % 3 !== 0) d.setTime(d.getTime() + HOUR_MS);
+      for (let t = d.getTime(); t <= t0 + spanH * HOUR_MS + 1; t += 3 * HOUR_MS) out.push({ h: h(t), ms: t });
+      return out;
+    })(),
+  });
+}
+
+class PowerEngineV2HistoryCard extends PowerEngineV2Card {
+  setConfig(config) {
+    super.setConfig(Object.assign({ entity: V2_HISTORY_SENSOR }, config || {}));
+    this._built = false;
+  }
+  getCardSize() { return 9; }
+  _ids() { return [(this._config && this._config.entity) || V2_HISTORY_SENSOR]; }
+  _entity() { return (this._config && this._config.entity) || V2_HISTORY_SENSOR; }
+  _attrs(states) { return v2Attrs(states, this._entity()); }
+  _admin() { return !!(this._hass && this._hass.user && this._hass.user.is_admin); }
+  _draw() {
+    if (this.shadowRoot && this.shadowRoot.activeElement && this.shadowRoot.activeElement.tagName === "INPUT") return;   // don't close the date box
+    super._draw();
+  }
+  _day(a) {
+    if (this._pending && Date.now() - this._pending.at < 8000 && (a || {}).date !== this._pending.day) return this._pending.day;
+    this._pending = null;
+    return (a || {}).date;
+  }
+  async _pick(value) {
+    const a = this._attrs((this._hass || {}).states) || {};
+    const payload = v2HistoryDayPayload(value, a.earliest, a.latest);
+    const note = this.shadowRoot.querySelector(".pick-note");
+    if (!payload) { if (note) note.textContent = "That day isn't available."; return; }
+    this._pending = { day: value, at: Date.now() };
+    this._sig = null; this._draw();
+    try { await this._hass.callWS(payload); }
+    catch (err) { this._pending = null; this._sig = null; this._draw(); const n = this.shadowRoot.querySelector(".pick-note"); if (n) n.textContent = `Couldn't change the day (${err && err.message ? err.message : err}).`; }
+  }
+  _pickerHtml(a) {
+    const admin = this._admin();
+    const day = this._day(a) || "";
+    const prev = shiftHistoryDay(day, -1, a.earliest, a.latest), next = shiftHistoryDay(day, 1, a.earliest, a.latest);
+    const why = admin ? "" : "Only an admin user can change the day here";
+    return `<div class="picker"><button class="prev" type="button" aria-label="Previous day" ${!admin || !prev ? "disabled" : ""} title="${escHtml(why || "Previous day")}">&#8249;</button>
+      <input type="date" aria-label="Day" value="${escHtml(day)}" min="${escHtml(a.earliest || "")}" max="${escHtml(a.latest || "")}" ${admin ? "" : "disabled"} title="${escHtml(why || "Show this day")}">
+      <button class="next" type="button" aria-label="Next day" ${!admin || !next ? "disabled" : ""} title="${escHtml(why || "Next day")}">&#8250;</button><span class="muted small pick-note"></span></div>`;
+  }
+  _wirePicker(a) {
+    const root = this.shadowRoot;
+    const input = root.querySelector(".picker input");
+    if (!input) return;
+    input.addEventListener("change", (ev) => this._pick(ev.target.value));
+    const day = this._day(a);
+    root.querySelector(".prev").addEventListener("click", () => { const n = shiftHistoryDay(day, -1, a.earliest, a.latest); if (n) this._pick(n); });
+    root.querySelector(".next").addEventListener("click", () => { const n = shiftHistoryDay(day, 1, a.earliest, a.latest); if (n) this._pick(n); });
+  }
+  _render(states) {
+    const attrs = this._attrs(states);
+    const v = v2HistoryView(attrs);
+    const css = `<style>${V2_CSS}
+      .picker { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .picker input, .picker button { font: inherit; color: var(--primary-text-color); background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 6px; }
+      .picker input { padding: 6px 8px; }
+      .picker button { min-width: 40px; padding: 6px 10px; font-size: 1.2em; line-height: 1; cursor: pointer; }
+      .picker button:disabled, .picker input:disabled { opacity: .45; cursor: default; }
+      .changes { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 4px 12px; font-size: 13px; align-items: baseline; max-height: 320px; overflow-y: auto; }
+      .changes .mode { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+      @media (max-width: 520px) { .chart svg { min-width: 460px; } .changes { grid-template-columns: auto minmax(0, 1fr); } .changes .num { grid-column: 1 / -1; margin-top: 4px; } }
+    </style>`;
+    if (v.kind === "none") { this._message("Engine v2 history", v.text); return; }
+    const legend = (items) => items.map(([c, t]) => `<span><i class="sw" style="background:${c}"></i>${escHtml(t)}</span>`).join("");
+    const modesUsed = Array.from(new Set(v.bands.map((b) => b.mode)));
+    this.shadowRoot.innerHTML = `${css}<ha-card>
+      <div class="head"><span class="title">Engine v2 history${v.date ? ` · ${escHtml(v.date)}` : ""}</span>${v.kind === "ok" ? `<span class="chip${v.control === "v2" ? "" : " muted"}">${v.control === "v2" ? "Engine v2 in control" : v.control === "v1" ? "Preview" : "Control changed"}</span>` : ""}</div>
+      ${this._pickerHtml(attrs || {})}
+      ${v.kind === "empty" ? `<p class="muted">${escHtml(v.text)}</p>` : `${v.banner ? `<p class="preview-line" role="note">${escHtml(v.banner)}</p>` : ""}
+      <div class="chart" id="hist"></div>
+      <div class="legend">${legend(modesUsed.map((k) => [`var(${v2Mode(k).colour})`, v2Mode(k).name]).concat([["var(--v2-battery)", "Battery as it ran (dashed: expected at the start of the day)"], ["var(--v2-price)", "Import price"], ["var(--m-export)", "Export price (dotted)"], ["var(--v2-good)", "Value of a stored kWh"]]))}</div>
+      ${v.partlyPreview || v.previewOnly ? '<p class="muted small">Dimmed bands: engine v2 was only previewing, nothing was sent.</p>' : ""}
+      ${v.changes.length ? `<div><h3>Mode changes</h3><div class="changes">${v.changes.map((c) => `<span class="num muted">${escHtml(c.at)}</span><span class="mode"><i class="sw" style="background:var(${v2Mode(c.modeKey).colour})"></i>${escHtml(c.mode)}</span><span>${escHtml(c.reason)}</span>`).join("")}</div></div>` : '<p class="muted small">No mode changes recorded for this day.</p>'}
+      ${v.note ? `<p class="muted small">${escHtml(v.note)}</p>` : ""}`}
+    </ha-card>`;
+    this._wirePicker(attrs || {});
+    if (v.kind === "ok") this._drawChart(this.shadowRoot.getElementById("hist"), v);
+  }
+  _drawChart(host, v) {
+    const G = { W: 900, L: 40, R: 46, T: 12, bandH: 26 };
+    const topY = G.T + G.bandH + 10, levelH = 150, gap = 34, priceTop = topY + levelH + gap, priceH = 110, H = priceTop + priceH + 28;
+    const svg = svgEl("svg", { viewBox: `0 0 ${G.W} ${H}`, role: "img", "aria-label": "Engine v2's modes, battery level, prices and the value of a stored kWh over the day" }, host);
+    const x = (hr) => G.L + (hr / v.spanH) * (G.W - G.L - G.R);
+    const yL = (p) => topY + (1 - p / 100) * levelH;
+    const yP = (p) => priceTop + (1 - Math.min(p, v.priceMax) / v.priceMax) * priceH;
+    const muted = "var(--secondary-text-color)";
+    for (let p = 0; p <= 100; p += 25) {
+      svgEl("line", { x1: G.L, x2: G.W - G.R, y1: yL(p), y2: yL(p), stroke: "var(--divider-color)" }, svg);
+      svgEl("text", { x: G.L - 6, y: yL(p) + 4, "text-anchor": "end", "font-size": 11, fill: muted }, svg, `${p}%`);
+    }
+    for (let p = 0; p <= v.priceMax; p += v.priceMax <= 20 ? 5 : 10) {
+      svgEl("line", { x1: G.L, x2: G.W - G.R, y1: yP(p), y2: yP(p), stroke: "var(--divider-color)", "stroke-opacity": 0.6 }, svg);
+      svgEl("text", { x: G.L - 6, y: yP(p) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--v2-price)" }, svg, `${p}p`);
+    }
+    v.ticks.forEach((t) => {
+      svgEl("text", { x: x(t.h), y: H - 8, "text-anchor": "middle", "font-size": 11, fill: muted }, svg, v2Hm(new Date(t.ms).toISOString()));
+      svgEl("line", { x1: x(t.h), x2: x(t.h), y1: topY, y2: topY + levelH, stroke: "var(--divider-color)", "stroke-opacity": 0.5 }, svg);
+    });
+    v.bands.forEach((b) => {
+      const col = `var(${v2Mode(b.mode).colour})`;
+      svgEl("rect", { x: x(b.a), y: G.T, width: Math.max(0, x(b.b) - x(b.a) - 1), height: G.bandH, rx: 4, fill: col, "fill-opacity": b.preview ? 0.4 : 1 }, svg);
+      const label = bandLabel({ mode: b.mode, until: "" }, x(b.b) - x(b.a)) + (b.preview && x(b.b) - x(b.a) > 120 ? " · Preview" : "");
+      if (label) svgEl("text", { x: x(b.a) + 6, y: G.T + 17, "font-size": 11.5, "font-weight": 500, fill: b.preview ? "var(--primary-text-color)" : "#fff" }, svg, label);
+    });
+    const line = (runs, f, attrs) => runs.forEach((r) => {
+      if (r.length > 1) svgEl("polyline", Object.assign({ points: r.map((p) => `${x(p.h)},${f(p.y)}`).join(" "), fill: "none" }, attrs), svg);
+      else svgEl("circle", { cx: x(r[0].h), cy: f(r[0].y), r: 2.5, fill: attrs.stroke }, svg);
+    });
+    line(v.expected, yL, { stroke: "var(--v2-battery)", "stroke-width": 2, "stroke-dasharray": "6 4", "stroke-opacity": 0.8 });
+    line(v.level, yL, { stroke: "var(--v2-battery)", "stroke-width": 2.5 });
+    v.importSteps.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: yP(s.y), y2: yP(s.y), stroke: "var(--v2-price)", "stroke-width": 2 }, svg));
+    v.exportSteps.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: yP(s.y), y2: yP(s.y), stroke: "var(--m-export)", "stroke-width": 1.5, "stroke-dasharray": "2 3" }, svg));
+    line(v.value, yP, { stroke: "var(--v2-good)", "stroke-width": 2.2 });
+    svgEl("text", { x: G.L, y: priceTop - 8, "font-size": 11, fill: muted }, svg, "Prices and the value of a stored kWh (pence per kWh)");
+  }
+}
+
+// ---- engines compared, same day (sensor.pe_cost_engines) ----
+const ENGINE_COMPARE_SENSOR = "sensor.pe_cost_engines";
+const COMPARE_WAITING = "Waiting for the first comparison. Each night PowerEngine replays yesterday with both engines, using the forecasts as they were. It needs one full day of forecast records first, so the first result comes the morning after the first full day of records.";
+const COMPARE_OFF = "The same-day comparison is switched off (the Engine comparison switch on the Configuration page).";
+const COMPARE_REASONS = { no_snapshot: "no forecast record yet", incomplete: "records incomplete", failed: "replay failed" };
+function gbp(n, signed) {
+  const v = toNumber(n);
+  if (v === null) return "–";
+  const r = Math.round(Math.abs(v) * 100) / 100;
+  const sign = v < -0.005 ? "−" : signed && v > 0.005 ? "+" : "";
+  return `${sign}£${r.toFixed(2)}`;
+}
+function compareDayLabel(date) {
+  if (typeof date !== "string" || !ISO_DAY.test(date)) return String(date || "");
+  const d = new Date(`${date}T12:00:00Z`);
+  return Number.isNaN(d.getTime()) ? date : d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
+}
+function compareBest(v1, v2) {
+  const a = toNumber(v1), b = toNumber(v2);
+  if (a === null || b === null) return null;
+  return Math.abs(a - b) < 0.01 ? "tie" : a > b ? "v1" : "v2";
+}
+function calibrationLine(c) {
+  const n = toNumber((c || {}).days), diff = toNumber((c || {}).mean_abs_diff), pct = toNumber((c || {}).mean_abs_pct);
+  if (!c || !n || diff === null) return "No day yet where one engine was in control all day and its replay could be checked against the metered cost.";
+  const size = diff >= 1 ? gbp(diff) : `${Math.round(diff * 100)}p`;
+  return `On ${n === 1 ? "the day" : `${n} days`} engine ${c.engine === "v2" ? "v2" : "v1"} was in control, its replay came within ${size}${pct === null ? "" : ` (${Math.round(pct * 10) / 10}%)`} of the metered cost${n === 1 ? "" : ", on average"}.`;
+}
+/** The table the compare card draws, from the sensor's attributes (and its state: ok, waiting, running, off, error).
+ *  kind: "none" | "off" | "waiting" | "error" | "ok". Pure. */
+function engineCompareView(attrs, state) {
+  const a = attrs && typeof attrs === "object" ? attrs : null;
+  if (!a && !state) return { kind: "none", text: "The engine comparison has not published anything yet." };
+  const x = a || {};
+  const days = Array.isArray(x.days) ? x.days.filter((d) => d && typeof d.date === "string") : [];
+  const lastRun = x.last_run && typeof x.last_run === "object" ? x.last_run : null;
+  const common = { note: x.note ? String(x.note) : "", running: state === "running", lastRun: lastRun && lastRun.at ? `Last run: ${lastRun.day || ""}${lastRun.status ? `, ${lastRun.status}` : ""}${lastRun.took_s ? ` (${Math.round(lastRun.took_s / 60)} min)` : ""}`.replace(/^Last run: ,/, "Last run:") : "" };
+  if (state === "off") return Object.assign(common, { kind: "off", text: COMPARE_OFF });
+  const rows = days.map((d) => {
+    const ok = d.status === "ok" || (d.status === undefined && d.v1 !== undefined && d.v1 !== null);
+    const best = ok ? (d.best === "v1" || d.best === "v2" || d.best === "tie" ? d.best : compareBest(d.v1, d.v2)) : null;
+    const diff = toNumber(d.diff) !== null ? toNumber(d.diff) : (toNumber(d.v1) !== null && toNumber(d.v2) !== null ? toNumber(d.v2) - toNumber(d.v1) : null);
+    const control = d.in_control === "v1" || d.in_control === "v2" || d.in_control === "mixed" ? d.in_control : "";
+    const c = d.calib && typeof d.calib === "object" ? d.calib : null;
+    return {
+      date: d.date, label: compareDayLabel(d.date), ok, best,
+      reason: ok ? "" : (d.reason ? String(d.reason) : COMPARE_REASONS[d.status] || "not compared"),
+      v1: gbp(d.v1), v2: gbp(d.v2), bound: gbp(d.bound), diff: diff === null ? "–" : gbp(diff, true), diffN: diff,
+      control, controlText: control ? `${control === "mixed" ? "mixed" : `engine ${control}`}${d.live === false ? " (passive)" : ""}` : "–",
+      calib: c && toNumber(c.diff) !== null ? `Engine ${c.engine}'s replay against the metered cost: ${gbp(c.diff, true)}${toNumber(c.diff_pct) === null ? "" : ` (${Math.round(toNumber(c.diff_pct) * 10) / 10}%)`}` : "",
+    };
+  });
+  const compared = rows.filter((r) => r.ok);
+  if (!compared.length) {
+    if (state === "error") return Object.assign(common, { kind: "error", text: `The last comparison failed${lastRun && lastRun.message ? `: ${lastRun.message}` : "."}`, rows });
+    return Object.assign(common, { kind: "waiting", text: COMPARE_WAITING, rows });
+  }
+  const t = x.totals && typeof x.totals === "object" ? x.totals : null;
+  const totals = t ? { days: toNumber(t.days) || compared.length, v1: gbp(t.v1), v2: gbp(t.v2), bound: gbp(t.bound), diff: gbp(t.diff, true), best: compareBest(t.v1, t.v2) } : null;
+  return Object.assign(common, { kind: "ok", rows, totals, calibration: calibrationLine(x.calib), problem: state === "error" && lastRun && lastRun.message ? `The last run failed: ${lastRun.message}` : "" });
+}
+
+class PowerEngineEngineCompareCard extends PowerEngineV2Card {
+  setConfig(config) { super.setConfig(Object.assign({ entity: ENGINE_COMPARE_SENSOR }, config || {})); }
+  getCardSize() { return 8; }
+  _ids() { return [(this._config && this._config.entity) || ENGINE_COMPARE_SENSOR]; }
+  _render(states) {
+    const s = (states || {})[(this._config && this._config.entity) || ENGINE_COMPARE_SENSOR];
+    const v = engineCompareView(s && s.attributes, s && s.state !== "unavailable" && s.state !== "unknown" ? s.state : undefined);
+    if (v.kind === "none" || v.kind === "off" || v.kind === "error" || v.kind === "waiting") {
+      this.shadowRoot.innerHTML = `<style>${V2_CSS}</style><ha-card><div class="head"><span class="title">Engines compared, same day</span>${v.running ? '<span class="chip muted">Running now</span>' : ""}</div>
+        <p class="${v.kind === "error" ? "" : "muted"}">${escHtml(v.text)}</p>${v.note && v.kind === "waiting" ? `<p class="muted small">${escHtml(v.note)}</p>` : ""}</ha-card>`;
+      return;
+    }
+    const cell = (txt, best) => `<td class="num${best ? " best" : ""}">${best ? '<span class="mark" aria-label="best">✓</span> ' : ""}${escHtml(txt)}</td>`;
+    const body = v.rows.map((r) => r.ok
+      ? `<tr><th scope="row">${escHtml(r.label)}</th>${cell(r.v1, r.best === "v1")}${cell(r.v2, r.best === "v2")}${cell(r.bound)}<td class="num">${escHtml(r.diff)}</td><td title="${escHtml(r.calib)}">${escHtml(r.controlText)}</td></tr>`
+      : `<tr class="skip"><th scope="row">${escHtml(r.label)}</th><td colspan="5" class="muted">Not compared: ${escHtml(lowerFirst(r.reason))}</td></tr>`).join("");
+    const foot = v.totals ? `<tfoot><tr><th scope="row">${v.totals.days} day${v.totals.days === 1 ? "" : "s"}</th>${cell(v.totals.v1, v.totals.best === "v1")}${cell(v.totals.v2, v.totals.best === "v2")}${cell(v.totals.bound)}<td class="num">${escHtml(v.totals.diff)}</td><td></td></tr></tfoot>` : "";
+    this.shadowRoot.innerHTML = `<style>${V2_CSS}
+      .wrap { overflow-x: auto; }
+      table { border-collapse: collapse; width: 100%; font-size: 14px; }
+      th, td { padding: 6px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--divider-color); }
+      thead th { font-size: 12px; font-weight: 500; color: var(--secondary-text-color); text-transform: uppercase; letter-spacing: .04em; vertical-align: bottom; white-space: normal; }
+      th:first-child, td:last-child, thead th:last-child { text-align: left; }
+      tbody th, tfoot th { font-weight: 500; }
+      td.best { font-weight: 700; color: var(--v2-good); }
+      .mark { font-weight: 700; }
+      tr.skip td { text-align: left; font-size: 13px; white-space: normal; }
+      tfoot td, tfoot th { border-top: 2px solid var(--divider-color); border-bottom: 0; }
+      @media (max-width: 520px) { table { font-size: 12.5px; } th, td { padding: 6px 5px; } thead th { font-size: 10.5px; } ha-card { padding: 12px; } }
+    </style>
+    <ha-card>
+      <div class="head"><span class="title">Engines compared, same day</span>${v.running ? '<span class="chip muted">Running now</span>' : ""}</div>
+      ${v.problem ? `<p class="muted small">${escHtml(v.problem)}</p>` : ""}
+      <p class="muted small">What each engine saved against plain self-use, per day (£). ✓ marks the better engine; best possible is perfect hindsight.</p>
+      <div class="wrap"><table>
+        <thead><tr><th>Day</th><th>Engine v1</th><th>Engine v2</th><th>Best possible</th><th>v2 − v1</th><th>In control</th></tr></thead>
+        <tbody>${body}</tbody>${foot}</table></div>
+      <p>${escHtml(v.calibration)}</p>
+      ${v.note ? `<p class="muted small">${escHtml(v.note)}</p>` : ""}
+      ${v.lastRun ? `<p class="muted small">${escHtml(v.lastRun)}</p>` : ""}
+    </ha-card>`;
+  }
+}
+
 [["powerengine-engine-card", PowerEngineEngineCard, "PowerEngine engine v2", "Engine v2's mode, why, the value of a stored kWh against the buy and sell lines, and what ends the mode."],
   ["powerengine-v2-plan-card", PowerEngineV2PlanCard, "PowerEngine engine v2 plan", "Engine v2's expected timeline and the value map."],
   ["powerengine-v2-health-card", PowerEngineV2HealthCard, "PowerEngine engine v2 health", "Engine v2's recalculations, flip-flops, comfort band and learned weights."],
+  ["powerengine-engine-badge-card", PowerEngineEngineBadgeCard, "PowerEngine engine badge", "Active, Paused or Passive for one engine, with what that means (engine: v1 or v2)."],
+  ["powerengine-v2-history-card", PowerEngineV2HistoryCard, "PowerEngine engine v2 history", "A day of engine v2: level as it ran against the expected level, the modes, prices and value, with a day picker."],
+  ["powerengine-engine-compare-card", PowerEngineEngineCompareCard, "PowerEngine engines compared", "What engine v1, engine v2 and the best possible would have saved on each of the last days."],
 ].forEach(([tag, cls, name, description]) => {
   if (typeof customElements !== "undefined" && !customElements.get(tag)) {
     customElements.define(tag, cls);
@@ -6723,5 +7085,6 @@ if (typeof module !== "undefined") {
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
   ENGINE_SENSOR, V2_NOT_RUNNING, V2_NO_DATA, V2_MODES, v2Engine, v2Supported, v2Gate, valueBarGeometry, modeSubtitle, exitRows, engineCardView, timelineLayout, levelAtHour, bandLabel,
   heatColour, valueMapGrid, mapCellAt, interpValue, pathValueSeries, pathLines, mapReadoutText, planCardView, causeBars, causeLabel, comfortSummary, healthCardView,
+  ENGINE_ICONS, engineIcon, engineBadge, BADGE_LINES, V2_HISTORY_DAY_EVENT, v2HistoryDayPayload, v2HistoryView, engineCompareView, calibrationLine, gbp, COMPARE_WAITING,
   V1_SECTIONS, v2Same, engineGrouping, engineInUse, engineConfirm, cleanV2Block, engineFields, v2Problem, v2Contradictions, v2Values, comfortReadout, weightsReadout, floorsReadout };
 }
