@@ -3,6 +3,18 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.111
+
+### Behaviour changes
+
+- **Saving waits longer for PowerEngine's answer** (45 seconds, was 15), and if none comes it says the change may still go
+  through and to refresh in a minute, instead of reporting an error. A late answer still replaces the message.
+
+### Fixes
+
+- **Engine tab icons now draw.** Home Assistant draws the dashboard's tabs before the card file has loaded, so the engine icons
+  were treated as unknown and left blank for good. Once the card has registered them it now has Home Assistant look them up again.
+
 ## 0.9.110
 
 ### Behaviour changes
