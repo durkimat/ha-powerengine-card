@@ -400,3 +400,32 @@ test("preview: off, stale or absent keeps the old message; a live v2 is never a 
   // preview flag but no v2 mode data
   assert.strictEqual(card.v2Preview({ [card.ENGINE_SENSOR]: st("v1", { v2_preview: true }) }), false);
 });
+
+test("timeline layout: the sun and house forecast become levels in hours from the left edge", () => {
+  const tl = timeline();
+  tl.sun = { start: iso(2), step_min: 30, low: [0, 0.5, 1], mid: [0, 1, 2], high: [0, 1.5, 3], house: [0.4, 0.4, 0.5] };
+  const L = card.timelineLayout(tl);
+  assert.deepStrictEqual(L.sun.mid.map((p) => [p.h, p.kw]), [[2, 0], [2.5, 0], [2.5, 1], [3, 1], [3, 2], [3.5, 2]]);
+  assert.strictEqual(L.sun.peak, 2);
+  assert.strictEqual(L.sun.max, 3);                    // the high figure sets the scale, in half kW
+  assert.strictEqual(L.sun.house.length, 6);
+});
+
+test("timeline layout: no sun series, or one of nothing, draws no sun", () => {
+  assert.strictEqual(card.timelineLayout(timeline()).sun, null);
+  const tl = timeline();
+  tl.sun = { start: iso(0), step_min: 30, low: [0, 0], mid: [0, 0], high: [0, 0], house: [0.3, 0.3] };
+  assert.strictEqual(card.timelineLayout(tl).sun, null);
+  tl.sun = { start: "nope", mid: [1] };
+  assert.strictEqual(card.timelineLayout(tl).sun, null);
+});
+
+test("timeline layout: sun outside the span is clipped", () => {
+  const tl = timeline();
+  tl.sun = { start: iso(-1), step_min: 60, low: [1, 1, 1], mid: [1, 1, 1], high: [1, 1, 1] };
+  let L = card.timelineLayout(tl);
+  assert.deepStrictEqual(L.sun.mid.map((p) => p.h), [0, 1, 1, 2]);       // the hour before the left edge is dropped
+  tl.sun = { start: iso(7), step_min: 60, low: [1, 1], mid: [1, 1], high: [1, 1] };
+  L = card.timelineLayout(tl);
+  assert.deepStrictEqual(L.sun.mid.map((p) => p.h), [7, 8]);             // the hour after the span (8 h) is dropped
+});
