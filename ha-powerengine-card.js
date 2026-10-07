@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.115";
+const CARD_VERSION = "0.9.117";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -6099,6 +6099,37 @@ function levelAtHour(points, hour) {
   }
   return points[points.length - 1].level;
 }
+/** What the timeline says at `hour` (hours from the left edge), for the hover text: a heading with the clock time and
+ *  the lines for the mode band, battery (with its likely range), import price, sun and house under it. Pure; `clock(h)` -> "HH:MM". */
+function timelineHover(L, hour, clock) {
+  const lines = [];
+  const band = L.bands.find((b) => hour >= b.a && hour < b.b) || L.bands.find((b) => hour >= b.a && hour <= b.b);
+  if (band) {
+    const when = band.state === "past" ? "happened" : band.state === "now" ? "now" : "expected";
+    lines.push(`${v2Mode(band.mode).name} (${when}, ${clock(band.a)} to ${clock(band.b)})`);
+    if (band.until) lines.push(`Until: ${band.until}`);
+    if (band.reason) lines.push(band.reason);
+    if (band.levelStart !== null && band.levelEnd !== null) lines.push(`Battery over the band: ${v2Pct(band.levelStart)} to ${v2Pct(band.levelEnd)}`);
+  }
+  const lvl = levelAtHour(L.mid, hour);
+  if (lvl !== null) {
+    const lo = hour >= L.nowH ? levelAtHour(L.low, hour) : null, hi = hour >= L.nowH ? levelAtHour(L.high, hour) : null;
+    lines.push(`Battery: ${v2Pct(lvl)}${lo !== null && hi !== null ? ` (likely ${v2Pct(lo)} to ${v2Pct(hi)})` : ""}`);
+  }
+  const step = L.steps.find((s) => hour >= s.a && hour < s.b);
+  if (step) {
+    const tag = step.event ? ", grid event" : step.free ? ", free power" : step.slot ? `, smart slot${step.slotProb !== null ? ` (${Math.round(step.slotProb * 100)}% likely to come)` : " that may not come"}` : step.estimated ? ", estimated" : "";
+    lines.push(`Import price: ${v2P(step.importP, 2)}${tag}`);
+  }
+  if (L.sun) {
+    const at = (pts) => { const p = pts.find((q) => q.h >= hour); return p ? p.kw : null; };
+    const kw = (n) => `${Math.round(n * 100) / 100} kW`;
+    const sun = at(L.sun.mid), house = at(L.sun.house), lo = at(L.sun.low), hi = at(L.sun.high);
+    if (sun !== null) lines.push(`Sun forecast: ${kw(sun)}${lo !== null && hi !== null ? ` (${kw(lo)} to ${kw(hi)})` : ""}`);
+    if (house !== null) lines.push(`House use expected: ${kw(house)}`);
+  }
+  return { title: clock(hour), lines };
+}
 /** The text on a mode band, by how wide it is on screen. */
 function bandLabel(band, widthPx) {
   const name = v2Mode(band.mode).name;
@@ -6275,7 +6306,7 @@ function healthCardView(states) {
   const weights = WEIGHT_PARTS.map(([key, label]) => ({ label, pct: weightPct(solar[key]) })).filter((r) => r.pct);
   const start = w.start && w.start.solar ? weightPct(w.start.solar) : null;
   const off = diag.soc_offset || {};
-  const recent = (Array.isArray(trig.recent) ? trig.recent : []).slice(-6).reverse().map((r) => ({
+  const recent = (Array.isArray(trig.recent) ? trig.recent : []).filter((r) => r && v2Ms(r.at) !== null).sort((a, b) => v2Ms(b.at) - v2Ms(a.at)).slice(0, 30).map((r) => ({
     at: v2Hm(r.at), text: r.text || causeLabel(r.kind), effect: r.effect || "" }));
   const filter = [];
   [["charging", "while charging"], ["holding", "while holding"], ["discharging", "while discharging"]].forEach(([k, label]) => {
@@ -6562,6 +6593,9 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
       .seg button[aria-pressed="true"] { background: var(--card-background-color); color: var(--primary-text-color); box-shadow: 0 1px 2px rgba(0,0,0,.2); }
       .readout { font-size: 13px; min-height: 2.6em; background: var(--secondary-background-color); border-radius: 8px; padding: 8px 12px; }
       .gap { display: flex; flex-direction: column; gap: 14px; }
+      .chart { position: relative; }
+      .tip { position: absolute; z-index: 2; pointer-events: none; max-width: 280px; font-size: 12px; line-height: 1.4; background: var(--card-background-color, #fff); color: var(--primary-text-color); border: 1px solid var(--divider-color); border-radius: 8px; padding: 6px 10px; box-shadow: 0 2px 8px rgba(0,0,0,.25); }
+      .tip b { display: block; margin-bottom: 2px; }
     </style>
     <div class="gap">
     ${L ? `<ha-card>
@@ -6640,6 +6674,36 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     svgEl("line", { x1: x(L.nowH), x2: x(L.nowH), y1: G.T - 4, y2: G.H - G.B + 4, stroke: "var(--primary-text-color)", "stroke-width": 1.2 }, svg);
     svgEl("text", { x: x(L.nowH) + 4, y: G.H - G.B - 4, "font-size": 11, "font-weight": 500, fill: "var(--primary-text-color)" }, svg, `now ${v2Hm(new Date(L.now).toISOString())}`);
     if (L.nowLevel !== null) svgEl("circle", { cx: x(L.nowH), cy: yL(L.nowLevel), r: 4.5, fill: "var(--v2-battery)" }, svg);
+    this._hoverTimeline(host, svg, v, G);
+  }
+  /** Hover (and touch) text for the timeline: a guide line and a tip with what the bands, battery, price and sun say at that time,
+   *  for the values and the status the bars have no room to print. */
+  _hoverTimeline(host, svg, v, G) {
+    const L = v.layout;
+    const guide = svgEl("line", { y1: G.T - 4, y2: G.H - G.B + 4, stroke: "var(--primary-text-color)", "stroke-opacity": 0.5, "stroke-dasharray": "3 3", visibility: "hidden", "pointer-events": "none" }, svg);
+    const tip = document.createElement("div");
+    tip.className = "tip"; tip.hidden = true;
+    host.appendChild(tip);
+    const cover = svgEl("rect", { x: G.L, y: 0, width: G.W - G.L - G.R, height: G.H - G.B + 4, fill: "transparent", style: "cursor:crosshair" }, svg);
+    const clock = (h) => v2Hm(new Date(L.t0 + h * HOUR_MS).toISOString());
+    const hide = () => { tip.hidden = true; guide.setAttribute("visibility", "hidden"); };
+    const show = (ev) => {
+      const r = svg.getBoundingClientRect();
+      if (!r.width) return;
+      const px = ((ev.clientX - r.left) / r.width) * G.W;
+      const h = Math.min(L.spanH, Math.max(0, ((px - G.L) / (G.W - G.L - G.R)) * L.spanH));
+      const t = timelineHover(L, h, clock);
+      tip.innerHTML = `<b>${escHtml(t.title)}</b>${t.lines.map(escHtml).join("<br>")}`;
+      tip.hidden = false;
+      const gx = G.L + (h / L.spanH) * (G.W - G.L - G.R);
+      guide.setAttribute("x1", gx); guide.setAttribute("x2", gx); guide.setAttribute("visibility", "visible");
+      const hr = host.getBoundingClientRect(), left = ev.clientX - hr.left + host.scrollLeft;
+      const flip = ev.clientX - hr.left > hr.width / 2;
+      tip.style.left = flip ? `${Math.max(0, left - tip.offsetWidth - 12)}px` : `${left + 12}px`;
+      tip.style.top = `${Math.max(0, ev.clientY - hr.top - 8)}px`;
+    };
+    cover.addEventListener("pointermove", show); cover.addEventListener("pointerdown", show);
+    cover.addEventListener("pointerleave", hide);
   }
   _renderValue() {
     const v = this._v;
@@ -6729,7 +6793,7 @@ class PowerEngineV2HealthCard extends PowerEngineV2Card {
       .bar.backstop .fill { background: var(--v2-warn); }
       .wts { display: grid; grid-template-columns: 90px repeat(3, minmax(0, 1fr)); gap: 6px; font-size: 13px; align-items: center; }
       .wts .h { color: var(--secondary-text-color); font-size: 12px; }
-      .recent { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 10px; font-size: 13px; }
+      .recent { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 10px; font-size: 13px; max-height: 320px; overflow-y: auto; align-content: start; }
       @media (max-width: 520px) { .bar { grid-template-columns: 110px minmax(0, 1fr) 28px; } }
     </style>
     <ha-card>
@@ -6739,7 +6803,7 @@ class PowerEngineV2HealthCard extends PowerEngineV2Card {
       <div class="figs">${v.figs.map((f) => `<div class="fig"><span class="k">${escHtml(f.k)}</span><span class="v${f.bad ? " bad" : f.k === "Flip-flops" && f.v !== "–" ? " good" : ""}">${escHtml(f.v)}</span></div>`).join("")}</div>
       ${v.comfort ? `<div><h3>${escHtml(v.comfort.title)}</h3><p>${escHtml(v.comfort.text)}</p></div>` : ""}
       ${weights}${filter}
-      ${v.recent.length ? `<div><h3>Latest</h3><div class="recent">${v.recent.map((r) => `<span class="num muted">${escHtml(r.at)}</span><span>${escHtml(r.text)}</span><span class="muted">${escHtml(r.effect)}</span>`).join("")}</div></div>` : ""}
+      ${v.recent.length ? `<div><h3>Latest (newest first)</h3><div class="recent">${v.recent.map((r) => `<span class="num muted">${escHtml(r.at)}</span><span>${escHtml(r.text)}</span><span class="muted">${escHtml(r.effect)}</span>`).join("")}</div></div>` : ""}
     </ha-card>`;
   }
 }
@@ -6898,7 +6962,7 @@ function v2HistoryView(attrs) {
   const control = a.in_control === "v1" || a.in_control === "v2" || a.in_control === "mixed" ? a.in_control : (sentCount === 0 ? "v1" : sentCount === raw.length ? "v2" : "mixed");
   const previewOnly = sentCount === 0;
   const partlyPreview = sentCount > 0 && sentCount < raw.length;
-  const changes = (Array.isArray(a.changes) ? a.changes : []).filter((c) => c && v2Ms(c.at) !== null).map((c) => ({
+  const changes = (Array.isArray(a.changes) ? a.changes : []).filter((c) => c && v2Ms(c.at) !== null).sort((a, b) => v2Ms(b.at) - v2Ms(a.at)).map((c) => ({
     at: v2Hm(c.at), mode: v2Mode(c.mode).name, modeKey: c.mode || "none", reason: c.reason ? String(c.reason) : "",
   }));
   const priceMax = Math.max(10, Math.ceil(Math.max(0, ...stepPts("import_p").map((s) => s.y), ...stepPts("export_p").map((s) => s.y)) / 5) * 5);
@@ -6989,7 +7053,7 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
       <div class="chart" id="hist"></div>
       <div class="legend">${legend(modesUsed.map((k) => [`var(${v2Mode(k).colour})`, v2Mode(k).name]).concat([["var(--v2-battery)", "Battery as it ran (dashed: expected at the start of the day)"], ["var(--v2-price)", "Import price"], ["var(--m-export)", "Export price (dotted)"], ["var(--v2-good)", "Value of a stored kWh"]]))}</div>
       ${v.partlyPreview || v.previewOnly ? '<p class="muted small">Dimmed bands: engine v2 was only previewing, nothing was sent.</p>' : ""}
-      ${v.changes.length ? `<div><h3>Mode changes</h3><div class="changes">${v.changes.map((c) => `<span class="num muted">${escHtml(c.at)}</span><span class="mode"><i class="sw" style="background:var(${v2Mode(c.modeKey).colour})"></i>${escHtml(c.mode)}</span><span>${escHtml(c.reason)}</span>`).join("")}</div></div>` : '<p class="muted small">No mode changes recorded for this day.</p>'}
+      ${v.changes.length ? `<div><h3>Mode changes (newest first)</h3><div class="changes">${v.changes.map((c) => `<span class="num muted">${escHtml(c.at)}</span><span class="mode"><i class="sw" style="background:var(${v2Mode(c.modeKey).colour})"></i>${escHtml(c.mode)}</span><span>${escHtml(c.reason)}</span>`).join("")}</div></div>` : '<p class="muted small">No mode changes recorded for this day.</p>'}
       ${v.note ? `<p class="muted small">${escHtml(v.note)}</p>` : ""}`}
     </ha-card>`;
     this._wirePicker(attrs || {});
@@ -7159,7 +7223,7 @@ if (typeof module !== "undefined") {
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
-  ENGINE_SENSOR, V2_NOT_RUNNING, V2_NO_DATA, V2_MODES, v2Engine, v2Supported, v2Gate, valueBarGeometry, modeSubtitle, exitRows, engineCardView, timelineLayout, sunLayout, levelAtHour, bandLabel,
+  ENGINE_SENSOR, V2_NOT_RUNNING, V2_NO_DATA, V2_MODES, v2Engine, v2Supported, v2Gate, valueBarGeometry, modeSubtitle, exitRows, engineCardView, timelineLayout, sunLayout, levelAtHour, bandLabel, timelineHover,
   heatColour, valueMapGrid, mapCellAt, interpValue, pathValueSeries, pathLines, mapReadoutText, planCardView, causeBars, causeLabel, comfortSummary, healthCardView,
   ENGINE_ICONS, engineIcon, refreshEngineIcons, engineBadge, BADGE_LINES, V2_HISTORY_DAY_EVENT, v2HistoryDayPayload, v2HistoryView, engineCompareView, calibrationLine, gbp, COMPARE_WAITING,
   V1_SECTIONS, v2Same, engineGrouping, engineInUse, engineConfirm, cleanV2Block, engineFields, v2Problem, v2Contradictions, v2Values, comfortReadout, weightsReadout, floorsReadout };

@@ -96,8 +96,8 @@ test("v2HistoryView: bands merge by mode, levels split at gaps, steps and axes",
   assert.strictEqual(v.priceMax, 30);
   assert.strictEqual(v.valueMax, 20);
   assert.strictEqual(v.control, "v2"); assert.strictEqual(v.banner, ""); assert.strictEqual(v.previewOnly, false);
-  assert.deepStrictEqual(v.changes.map((c) => c.mode), ["Self-use", "Charge"]);   // the change with a bad time is dropped
-  assert.strictEqual(v.changes[1].reason, "Cheap rate");
+  assert.deepStrictEqual(v.changes.map((c) => c.mode), ["Charge", "Self-use"]);   // newest first; the change with a bad time is dropped
+  assert.strictEqual(v.changes[0].reason, "Cheap rate");
 });
 test("v2HistoryView: a preview day and a mixed day say so", () => {
   const prev = histAttrs({ in_control: "v1", series: histAttrs().series.map((p) => Object.assign({}, p, { sent: false })) });
