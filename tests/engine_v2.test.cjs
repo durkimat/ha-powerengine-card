@@ -411,11 +411,13 @@ test("timeline layout: the sun and house forecast become levels in hours from th
   assert.strictEqual(L.sun.house.length, 6);
 });
 
-test("timeline layout: no sun series, or one of nothing, draws no sun", () => {
+test("timeline layout: no sun series, or one of nothing, draws no strip", () => {
   assert.strictEqual(card.timelineLayout(timeline()).sun, null);
   const tl = timeline();
-  tl.sun = { start: iso(0), step_min: 30, low: [0, 0], mid: [0, 0], high: [0, 0], house: [0.3, 0.3] };
+  tl.sun = { start: iso(0), step_min: 30, low: [0, 0], mid: [0, 0], high: [0, 0], house: [0, 0] };
   assert.strictEqual(card.timelineLayout(tl).sun, null);
+  tl.sun = { start: iso(0), step_min: 30, low: [0, 0], mid: [0, 0], high: [0, 0], house: [0.3, 0.3] };   // no sun but a house: the strip stays
+  assert.strictEqual(card.timelineLayout(tl).sun.peak, 0);
   tl.sun = { start: "nope", mid: [1] };
   assert.strictEqual(card.timelineLayout(tl).sun, null);
 });
