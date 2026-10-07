@@ -3,6 +3,20 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.118
+
+### Changed
+
+- **The expected-timeline hover text is now a box under the chart**, like the value map's, which reads better on a phone. Move
+  over the chart, or tap it, and a guide line marks the time while the box shows the mode and what ends it, the battery
+  level (with its likely range), the import price, the sun forecast and the house use expected.
+
+### Fixed
+
+- **The sun and house strip no longer vanishes when no sun is expected.** When the plan's window has no sun in it (for
+  example in the evening, before sunrise), the whole strip was left out. It now stays with the house line, and the legend says
+  no sun is expected in this window.
+
 ## 0.9.117
 
 ### New

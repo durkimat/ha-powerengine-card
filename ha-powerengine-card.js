@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.117";
+const CARD_VERSION = "0.9.118";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -6065,7 +6065,7 @@ function timelineLayout(tl, opts) {
     floor: toNumber(a.floor_soc), reserve: toNumber(a.reserve_soc), nowLevel: levelAtHour(mid, nowH) };
 }
 /** The sun and house forecast the plan used (`sun` on the timeline sensor: average kW per step_min from `start`), as points in
- *  hours from the left edge: {mid, low, high, house, max}. Null when the app publishes none (an older app) or all of it is 0. */
+ *  hours from the left edge: {mid, low, high, house, max}. Null when the app publishes none (an older app) or the sun and the house are all 0. */
 function sunLayout(sun, hourOf, spanH) {
   if (!sun || v2Ms(sun.start) === null || !Array.isArray(sun.mid)) return null;
   const step = (toNumber(sun.step_min) > 0 ? toNumber(sun.step_min) : 30) * 60000;
@@ -6084,7 +6084,8 @@ function sunLayout(sun, hourOf, spanH) {
   };
   const r = { mid: pts(sun.mid), low: pts(sun.low), high: pts(sun.high), house: pts(sun.house) };
   const top = Math.max(0, ...r.mid.concat(r.high, r.house).map((p) => p.kw));
-  if (!r.mid.length || !(Math.max(0, ...r.mid.concat(r.high).map((p) => p.kw)) > 0)) return null;
+  // no sun in the window (an evening plan that ends before sunrise) still draws the house, so the strip does not vanish
+  if (!r.mid.length || !(Math.max(0, ...r.mid.concat(r.high, r.house).map((p) => p.kw)) > 0)) return null;
   return Object.assign(r, { max: Math.max(1, Math.ceil(top * 2) / 2), peak: Math.max(...r.mid.map((p) => p.kw)) });
 }
 /** Battery level at `hour` along a list of {h, level} points (linear), or null outside it. */
@@ -6099,6 +6100,7 @@ function levelAtHour(points, hour) {
   }
   return points[points.length - 1].level;
 }
+const TIMELINE_HINT = "Move over the chart, or tap it, to read the mode, battery level, price and sun at that time.";
 /** What the timeline says at `hour` (hours from the left edge), for the hover text: a heading with the clock time and
  *  the lines for the mode band, battery (with its likely range), import price, sun and house under it. Pure; `clock(h)` -> "HH:MM". */
 function timelineHover(L, hour, clock) {
@@ -6593,18 +6595,17 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
       .seg button[aria-pressed="true"] { background: var(--card-background-color); color: var(--primary-text-color); box-shadow: 0 1px 2px rgba(0,0,0,.2); }
       .readout { font-size: 13px; min-height: 2.6em; background: var(--secondary-background-color); border-radius: 8px; padding: 8px 12px; }
       .gap { display: flex; flex-direction: column; gap: 14px; }
-      .chart { position: relative; }
-      .tip { position: absolute; z-index: 2; pointer-events: none; max-width: 280px; font-size: 12px; line-height: 1.4; background: var(--card-background-color, #fff); color: var(--primary-text-color); border: 1px solid var(--divider-color); border-radius: 8px; padding: 6px 10px; box-shadow: 0 2px 8px rgba(0,0,0,.25); }
-      .tip b { display: block; margin-bottom: 2px; }
+      .readout.tl { min-height: 8.5em; line-height: 1.45; }
     </style>
     <div class="gap">
     ${L ? `<ha-card>
       ${previewBanner(v.preview)}
       <div class="head"><span class="title">Expected timeline · next ${Math.round(L.spanH)} hours</span>${v.chip ? `<span class="chip muted">${escHtml(v.chip)}</span>` : ""}</div>
       <div class="chart" id="timeline"></div>
+      <p class="readout tl" id="treadout" aria-live="polite">${escHtml(TIMELINE_HINT)}</p>
       <div class="legend">${legend(Object.keys(V2_MODES).filter((k) => k !== "none" && k !== "free").map((k) => [`var(${V2_MODES[k].colour})`, V2_MODES[k].name]))
         .concat(legend([["var(--v2-battery)", "Battery (shaded: likely range)"], ["var(--v2-price)", "Import price (dashed: smart slot that may not come)"]]))
-        .concat(L.sun ? legend([["var(--v2-sun)", `Sun forecast (shaded: low to high; peak ${L.sun.peak.toFixed(1)} kW)`], ["var(--v2-house)", "House use expected (strip is 0 to " + L.sun.max + " kW)"]]) : "")}</div>
+        .concat(L.sun ? legend([["var(--v2-sun)", L.sun.peak > 0 ? `Sun forecast (shaded: low to high; peak ${L.sun.peak.toFixed(1)} kW)` : "Sun forecast (none expected in this window)"], ["var(--v2-house)", "House use expected (strip is 0 to " + L.sun.max + " kW)"]]) : "")}</div>
       <p class="muted small">Bands to the left of <b>now</b> are what happened. Bands to the right are expected: each says what ends it, and its edge moves when the condition is met earlier or later.${v.cost ? ` ${escHtml(v.cost)}.` : ""}</p>
     </ha-card>` : ""}
     ${v.grid ? `<ha-card>${L ? "" : previewBanner(v.preview)}
@@ -6676,34 +6677,25 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     if (L.nowLevel !== null) svgEl("circle", { cx: x(L.nowH), cy: yL(L.nowLevel), r: 4.5, fill: "var(--v2-battery)" }, svg);
     this._hoverTimeline(host, svg, v, G);
   }
-  /** Hover (and touch) text for the timeline: a guide line and a tip with what the bands, battery, price and sun say at that time,
-   *  for the values and the status the bars have no room to print. */
+  /** Hover (and touch) text for the timeline, in the box under the chart as the value map does: a guide line and, in the box,
+   *  what the bands, battery, price and sun say at that time, for the values and status the bars have no room to print. */
   _hoverTimeline(host, svg, v, G) {
-    const L = v.layout;
+    const L = v.layout, ro = this.shadowRoot.getElementById("treadout");
+    if (!ro) return;
     const guide = svgEl("line", { y1: G.T - 4, y2: G.H - G.B + 4, stroke: "var(--primary-text-color)", "stroke-opacity": 0.5, "stroke-dasharray": "3 3", visibility: "hidden", "pointer-events": "none" }, svg);
-    const tip = document.createElement("div");
-    tip.className = "tip"; tip.hidden = true;
-    host.appendChild(tip);
     const cover = svgEl("rect", { x: G.L, y: 0, width: G.W - G.L - G.R, height: G.H - G.B + 4, fill: "transparent", style: "cursor:crosshair" }, svg);
     const clock = (h) => v2Hm(new Date(L.t0 + h * HOUR_MS).toISOString());
-    const hide = () => { tip.hidden = true; guide.setAttribute("visibility", "hidden"); };
     const show = (ev) => {
       const r = svg.getBoundingClientRect();
       if (!r.width) return;
       const px = ((ev.clientX - r.left) / r.width) * G.W;
       const h = Math.min(L.spanH, Math.max(0, ((px - G.L) / (G.W - G.L - G.R)) * L.spanH));
       const t = timelineHover(L, h, clock);
-      tip.innerHTML = `<b>${escHtml(t.title)}</b>${t.lines.map(escHtml).join("<br>")}`;
-      tip.hidden = false;
+      ro.innerHTML = `<b>${escHtml(t.title)}</b><br>${t.lines.map(escHtml).join("<br>")}`;
       const gx = G.L + (h / L.spanH) * (G.W - G.L - G.R);
       guide.setAttribute("x1", gx); guide.setAttribute("x2", gx); guide.setAttribute("visibility", "visible");
-      const hr = host.getBoundingClientRect(), left = ev.clientX - hr.left + host.scrollLeft;
-      const flip = ev.clientX - hr.left > hr.width / 2;
-      tip.style.left = flip ? `${Math.max(0, left - tip.offsetWidth - 12)}px` : `${left + 12}px`;
-      tip.style.top = `${Math.max(0, ev.clientY - hr.top - 8)}px`;
     };
     cover.addEventListener("pointermove", show); cover.addEventListener("pointerdown", show);
-    cover.addEventListener("pointerleave", hide);
   }
   _renderValue() {
     const v = this._v;
