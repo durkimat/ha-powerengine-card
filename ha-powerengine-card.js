@@ -6055,13 +6055,37 @@ function timelineLayout(tl, opts) {
   const pts = (arr) => (Array.isArray(arr) ? arr : []).map((v, i) => ({ h: h(v2Ms(path.start) + i * stepMs), level: toNumber(v) }))
     .filter((p) => p.level !== null && p.h >= -1e-9 && p.h <= spanH + 1e-9);
   const mid = path ? pts(path.mid) : [], low = path ? pts(path.low) : [], high = path ? pts(path.high) : [];
+  const sun = sunLayout(a.sun, h, spanH);
   const ticks = [];
   const d = new Date(t0); d.setMinutes(0, 0, 0);
   while (d.getTime() < t0 || d.getHours() % 3 !== 0) d.setTime(d.getTime() + HOUR_MS);
   for (let t = d.getTime(); t <= t1; t += 3 * HOUR_MS) ticks.push({ h: h(t), ms: t });
   const nowH = h(now);
-  return { t0, t1, now, spanH, nowH, bands, steps, mid, low, high, ticks,
+  return { t0, t1, now, spanH, nowH, bands, steps, mid, low, high, sun, ticks,
     floor: toNumber(a.floor_soc), reserve: toNumber(a.reserve_soc), nowLevel: levelAtHour(mid, nowH) };
+}
+/** The sun and house forecast the plan used (`sun` on the timeline sensor: average kW per step_min from `start`), as points in
+ *  hours from the left edge: {mid, low, high, house, max}. Null when the app publishes none (an older app) or all of it is 0. */
+function sunLayout(sun, hourOf, spanH) {
+  if (!sun || v2Ms(sun.start) === null || !Array.isArray(sun.mid)) return null;
+  const step = (toNumber(sun.step_min) > 0 ? toNumber(sun.step_min) : 30) * 60000;
+  const t0 = v2Ms(sun.start);
+  // each value is the average over its step: a point at the step's start and another at its end draws it as a level
+  const pts = (arr) => {
+    const out = [];
+    (Array.isArray(arr) ? arr : []).forEach((v, i) => {
+      const kw = toNumber(v);
+      if (kw === null) return;
+      const a = hourOf(t0 + i * step), b = hourOf(t0 + (i + 1) * step);
+      if (b <= 0 || a >= spanH) return;
+      out.push({ h: Math.max(0, a), kw }, { h: Math.min(spanH, b), kw });
+    });
+    return out;
+  };
+  const r = { mid: pts(sun.mid), low: pts(sun.low), high: pts(sun.high), house: pts(sun.house) };
+  const top = Math.max(0, ...r.mid.concat(r.high, r.house).map((p) => p.kw));
+  if (!r.mid.length || !(Math.max(0, ...r.mid.concat(r.high).map((p) => p.kw)) > 0)) return null;
+  return Object.assign(r, { max: Math.max(1, Math.ceil(top * 2) / 2), peak: Math.max(...r.mid.map((p) => p.kw)) });
 }
 /** Battery level at `hour` along a list of {h, level} points (linear), or null outside it. */
 function levelAtHour(points, hour) {
@@ -6380,9 +6404,9 @@ function floorsReadout(safety, values) {
 // ---- the cards -------------------------------------------------------------------------------------------------
 const V2_CSS = `
   :host { display: block; --m-self: #00897b; --m-hold: #78909c; --m-charge: #43a047; --m-export: #e53935; --m-event: #8e24aa; --m-free: #f9a825;
-    --v2-battery: #1565c0; --v2-price: #fb8c00; --v2-good: #2e7d32; --v2-warn: #ef6c00; }
+    --v2-battery: #1565c0; --v2-price: #fb8c00; --v2-sun: #f2a900; --v2-house: #78909c; --v2-good: #2e7d32; --v2-warn: #ef6c00; }
   :host(.dark) { --m-self: #26a69a; --m-hold: #90a4ae; --m-charge: #66bb6a; --m-export: #ef5350; --m-event: #ba68c8; --m-free: #ffd54f;
-    --v2-battery: #64a6f0; --v2-price: #ffa940; --v2-good: #66bb6a; --v2-warn: #ffa726; }
+    --v2-battery: #64a6f0; --v2-price: #ffa940; --v2-sun: #ffd54f; --v2-house: #b0bec5; --v2-good: #66bb6a; --v2-warn: #ffa726; }
   ha-card { padding: 16px; display: flex; flex-direction: column; gap: 14px; min-width: 0; box-sizing: border-box; }
   .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
   .title { font-size: 16px; font-weight: 500; }
@@ -6545,7 +6569,8 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
       <div class="head"><span class="title">Expected timeline · next ${Math.round(L.spanH)} hours</span>${v.chip ? `<span class="chip muted">${escHtml(v.chip)}</span>` : ""}</div>
       <div class="chart" id="timeline"></div>
       <div class="legend">${legend(Object.keys(V2_MODES).filter((k) => k !== "none" && k !== "free").map((k) => [`var(${V2_MODES[k].colour})`, V2_MODES[k].name]))
-        .concat(legend([["var(--v2-battery)", "Battery (shaded: likely range)"], ["var(--v2-price)", "Import price (dashed: smart slot that may not come)"]]))}</div>
+        .concat(legend([["var(--v2-battery)", "Battery (shaded: likely range)"], ["var(--v2-price)", "Import price (dashed: smart slot that may not come)"]]))
+        .concat(L.sun ? legend([["var(--v2-sun)", `Sun forecast (shaded: low to high; peak ${L.sun.peak.toFixed(1)} kW)`], ["var(--v2-house)", "House use expected (strip is 0 to " + L.sun.max + " kW)"]]) : "")}</div>
       <p class="muted small">Bands to the left of <b>now</b> are what happened. Bands to the right are expected: each says what ends it, and its edge moves when the condition is met earlier or later.${v.cost ? ` ${escHtml(v.cost)}.` : ""}</p>
     </ha-card>` : ""}
     ${v.grid ? `<ha-card>${L ? "" : previewBanner(v.preview)}
@@ -6587,6 +6612,15 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
       if (b.state === "future") svgEl("rect", { x: x(b.a) - 1.5, y: G.T - 3, width: 3, height: bandH + 6, rx: 1, fill: col, "fill-opacity": 0.9 }, svg);
     });
     const future = (pts) => pts.filter((p) => p.h >= L.nowH - 1e-9);
+    if (L.sun) {                                         // the sun and the house in a strip along the bottom, behind the battery
+      const S = L.sun, stripH = Math.min(70, (G.H - top - G.B) * 0.32), base = G.H - G.B;
+      const yS = (kw) => base - (Math.min(kw, S.max) / S.max) * stripH;
+      const area = (pts) => pts.map((p) => `${x(p.h)},${yS(p.kw)}`).join(" ");
+      if (S.high.length && S.low.length) svgEl("polygon", { points: S.high.map((p) => `${x(p.h)},${yS(p.kw)}`).concat(S.low.slice().reverse().map((p) => `${x(p.h)},${yS(p.kw)}`)).join(" "), fill: "var(--v2-sun)", "fill-opacity": 0.28 }, svg);
+      svgEl("polygon", { points: `${x(S.mid[0].h)},${base} ${area(S.mid)} ${x(S.mid[S.mid.length - 1].h)},${base}`, fill: "var(--v2-sun)", "fill-opacity": 0.35 }, svg);
+      svgEl("polyline", { points: area(S.mid), fill: "none", stroke: "var(--v2-sun)", "stroke-width": 1.5 }, svg);
+      if (S.house.length) svgEl("polyline", { points: area(S.house), fill: "none", stroke: "var(--v2-house)", "stroke-width": 1.5, "stroke-dasharray": "3 3" }, svg);
+    }
     if (L.low.length && L.high.length) {
       const hi = future(L.high), lo = future(L.low).slice().reverse();
       if (hi.length && lo.length) svgEl("polygon", { points: hi.concat(lo).map((p) => `${x(p.h)},${yL(p.level)}`).join(" "), fill: "var(--v2-battery)", "fill-opacity": 0.13 }, svg);
@@ -7125,7 +7159,7 @@ if (typeof module !== "undefined") {
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
-  ENGINE_SENSOR, V2_NOT_RUNNING, V2_NO_DATA, V2_MODES, v2Engine, v2Supported, v2Gate, valueBarGeometry, modeSubtitle, exitRows, engineCardView, timelineLayout, levelAtHour, bandLabel,
+  ENGINE_SENSOR, V2_NOT_RUNNING, V2_NO_DATA, V2_MODES, v2Engine, v2Supported, v2Gate, valueBarGeometry, modeSubtitle, exitRows, engineCardView, timelineLayout, sunLayout, levelAtHour, bandLabel,
   heatColour, valueMapGrid, mapCellAt, interpValue, pathValueSeries, pathLines, mapReadoutText, planCardView, causeBars, causeLabel, comfortSummary, healthCardView,
   ENGINE_ICONS, engineIcon, refreshEngineIcons, engineBadge, BADGE_LINES, V2_HISTORY_DAY_EVENT, v2HistoryDayPayload, v2HistoryView, engineCompareView, calibrationLine, gbp, COMPARE_WAITING,
   V1_SECTIONS, v2Same, engineGrouping, engineInUse, engineConfirm, cleanV2Block, engineFields, v2Problem, v2Contradictions, v2Values, comfortReadout, weightsReadout, floorsReadout };
