@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.112";
+const CARD_VERSION = "0.9.113";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -6805,7 +6805,7 @@ class PowerEngineEngineBadgeCard extends PowerEngineV2Card {
     this._engine = (config && config.engine) === "v2" ? "v2" : "v1";
   }
   getCardSize() { return 1; }
-  getGridOptions() { return { columns: "full", rows: 1, min_rows: 1 }; }
+  getGridOptions() { return { columns: "full", rows: "auto" }; }   // the line wraps on a phone: as tall as it needs
   _ids() { return [MODE_SENSOR, PAUSE_SWITCH, V2_MODE]; }
   _render(states) {
     const b = engineBadge(states, this._engine);
