@@ -6099,6 +6099,37 @@ function levelAtHour(points, hour) {
   }
   return points[points.length - 1].level;
 }
+/** What the timeline says at `hour` (hours from the left edge), for the hover text: a heading with the clock time and
+ *  the lines for the mode band, battery (with its likely range), import price, sun and house under it. Pure; `clock(h)` -> "HH:MM". */
+function timelineHover(L, hour, clock) {
+  const lines = [];
+  const band = L.bands.find((b) => hour >= b.a && hour < b.b) || L.bands.find((b) => hour >= b.a && hour <= b.b);
+  if (band) {
+    const when = band.state === "past" ? "happened" : band.state === "now" ? "now" : "expected";
+    lines.push(`${v2Mode(band.mode).name} (${when}, ${clock(band.a)} to ${clock(band.b)})`);
+    if (band.until) lines.push(`Until: ${band.until}`);
+    if (band.reason) lines.push(band.reason);
+    if (band.levelStart !== null && band.levelEnd !== null) lines.push(`Battery over the band: ${v2Pct(band.levelStart)} to ${v2Pct(band.levelEnd)}`);
+  }
+  const lvl = levelAtHour(L.mid, hour);
+  if (lvl !== null) {
+    const lo = hour >= L.nowH ? levelAtHour(L.low, hour) : null, hi = hour >= L.nowH ? levelAtHour(L.high, hour) : null;
+    lines.push(`Battery: ${v2Pct(lvl)}${lo !== null && hi !== null ? ` (likely ${v2Pct(lo)} to ${v2Pct(hi)})` : ""}`);
+  }
+  const step = L.steps.find((s) => hour >= s.a && hour < s.b);
+  if (step) {
+    const tag = step.event ? ", grid event" : step.free ? ", free power" : step.slot ? `, smart slot${step.slotProb !== null ? ` (${Math.round(step.slotProb * 100)}% likely to come)` : " that may not come"}` : step.estimated ? ", estimated" : "";
+    lines.push(`Import price: ${v2P(step.importP, 2)}${tag}`);
+  }
+  if (L.sun) {
+    const at = (pts) => { const p = pts.find((q) => q.h >= hour); return p ? p.kw : null; };
+    const kw = (n) => `${Math.round(n * 100) / 100} kW`;
+    const sun = at(L.sun.mid), house = at(L.sun.house), lo = at(L.sun.low), hi = at(L.sun.high);
+    if (sun !== null) lines.push(`Sun forecast: ${kw(sun)}${lo !== null && hi !== null ? ` (${kw(lo)} to ${kw(hi)})` : ""}`);
+    if (house !== null) lines.push(`House use expected: ${kw(house)}`);
+  }
+  return { title: clock(hour), lines };
+}
 /** The text on a mode band, by how wide it is on screen. */
 function bandLabel(band, widthPx) {
   const name = v2Mode(band.mode).name;
@@ -6562,6 +6593,9 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
       .seg button[aria-pressed="true"] { background: var(--card-background-color); color: var(--primary-text-color); box-shadow: 0 1px 2px rgba(0,0,0,.2); }
       .readout { font-size: 13px; min-height: 2.6em; background: var(--secondary-background-color); border-radius: 8px; padding: 8px 12px; }
       .gap { display: flex; flex-direction: column; gap: 14px; }
+      .chart { position: relative; }
+      .tip { position: absolute; z-index: 2; pointer-events: none; max-width: 280px; font-size: 12px; line-height: 1.4; background: var(--card-background-color, #fff); color: var(--primary-text-color); border: 1px solid var(--divider-color); border-radius: 8px; padding: 6px 10px; box-shadow: 0 2px 8px rgba(0,0,0,.25); }
+      .tip b { display: block; margin-bottom: 2px; }
     </style>
     <div class="gap">
     ${L ? `<ha-card>
@@ -6640,6 +6674,36 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     svgEl("line", { x1: x(L.nowH), x2: x(L.nowH), y1: G.T - 4, y2: G.H - G.B + 4, stroke: "var(--primary-text-color)", "stroke-width": 1.2 }, svg);
     svgEl("text", { x: x(L.nowH) + 4, y: G.H - G.B - 4, "font-size": 11, "font-weight": 500, fill: "var(--primary-text-color)" }, svg, `now ${v2Hm(new Date(L.now).toISOString())}`);
     if (L.nowLevel !== null) svgEl("circle", { cx: x(L.nowH), cy: yL(L.nowLevel), r: 4.5, fill: "var(--v2-battery)" }, svg);
+    this._hoverTimeline(host, svg, v, G);
+  }
+  /** Hover (and touch) text for the timeline: a guide line and a tip with what the bands, battery, price and sun say at that time,
+   *  for the values and the status the bars have no room to print. */
+  _hoverTimeline(host, svg, v, G) {
+    const L = v.layout;
+    const guide = svgEl("line", { y1: G.T - 4, y2: G.H - G.B + 4, stroke: "var(--primary-text-color)", "stroke-opacity": 0.5, "stroke-dasharray": "3 3", visibility: "hidden", "pointer-events": "none" }, svg);
+    const tip = document.createElement("div");
+    tip.className = "tip"; tip.hidden = true;
+    host.appendChild(tip);
+    const cover = svgEl("rect", { x: G.L, y: 0, width: G.W - G.L - G.R, height: G.H - G.B + 4, fill: "transparent", style: "cursor:crosshair" }, svg);
+    const clock = (h) => v2Hm(new Date(L.t0 + h * HOUR_MS).toISOString());
+    const hide = () => { tip.hidden = true; guide.setAttribute("visibility", "hidden"); };
+    const show = (ev) => {
+      const r = svg.getBoundingClientRect();
+      if (!r.width) return;
+      const px = ((ev.clientX - r.left) / r.width) * G.W;
+      const h = Math.min(L.spanH, Math.max(0, ((px - G.L) / (G.W - G.L - G.R)) * L.spanH));
+      const t = timelineHover(L, h, clock);
+      tip.innerHTML = `<b>${escHtml(t.title)}</b>${t.lines.map(escHtml).join("<br>")}`;
+      tip.hidden = false;
+      const gx = G.L + (h / L.spanH) * (G.W - G.L - G.R);
+      guide.setAttribute("x1", gx); guide.setAttribute("x2", gx); guide.setAttribute("visibility", "visible");
+      const hr = host.getBoundingClientRect(), left = ev.clientX - hr.left + host.scrollLeft;
+      const flip = ev.clientX - hr.left > hr.width / 2;
+      tip.style.left = flip ? `${Math.max(0, left - tip.offsetWidth - 12)}px` : `${left + 12}px`;
+      tip.style.top = `${Math.max(0, ev.clientY - hr.top - 8)}px`;
+    };
+    cover.addEventListener("pointermove", show); cover.addEventListener("pointerdown", show);
+    cover.addEventListener("pointerleave", hide);
   }
   _renderValue() {
     const v = this._v;
@@ -7159,7 +7223,7 @@ if (typeof module !== "undefined") {
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
-  ENGINE_SENSOR, V2_NOT_RUNNING, V2_NO_DATA, V2_MODES, v2Engine, v2Supported, v2Gate, valueBarGeometry, modeSubtitle, exitRows, engineCardView, timelineLayout, sunLayout, levelAtHour, bandLabel,
+  ENGINE_SENSOR, V2_NOT_RUNNING, V2_NO_DATA, V2_MODES, v2Engine, v2Supported, v2Gate, valueBarGeometry, modeSubtitle, exitRows, engineCardView, timelineLayout, sunLayout, levelAtHour, bandLabel, timelineHover,
   heatColour, valueMapGrid, mapCellAt, interpValue, pathValueSeries, pathLines, mapReadoutText, planCardView, causeBars, causeLabel, comfortSummary, healthCardView,
   ENGINE_ICONS, engineIcon, refreshEngineIcons, engineBadge, BADGE_LINES, V2_HISTORY_DAY_EVENT, v2HistoryDayPayload, v2HistoryView, engineCompareView, calibrationLine, gbp, COMPARE_WAITING,
   V1_SECTIONS, v2Same, engineGrouping, engineInUse, engineConfirm, cleanV2Block, engineFields, v2Problem, v2Contradictions, v2Values, comfortReadout, weightsReadout, floorsReadout };

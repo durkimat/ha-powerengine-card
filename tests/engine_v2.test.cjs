@@ -429,3 +429,14 @@ test("timeline layout: sun outside the span is clipped", () => {
   L = card.timelineLayout(tl);
   assert.deepStrictEqual(L.sun.mid.map((p) => p.h), [7, 8]);             // the hour after the span (8 h) is dropped
 });
+
+test("timeline hover text: band status, battery, price and the sun at a time", () => {
+  const L = card.timelineLayout(timeline());
+  const clock = (h) => `h${h.toFixed(1)}`;
+  const mid = (L.bands[0].a + L.bands[0].b) / 2;
+  const t = card.timelineHover(L, mid, clock);
+  assert.strictEqual(t.title, clock(mid));
+  assert.ok(t.lines[0].startsWith(card.V2_MODES[L.bands[0].mode].name));
+  assert.ok(t.lines.some((l) => /^Import price: /.test(l)) || L.steps.length === 0);
+  assert.deepStrictEqual(card.timelineHover({ bands: [], steps: [], mid: [], low: [], high: [], sun: null, nowH: 0 }, 1, clock).lines, []);
+});
