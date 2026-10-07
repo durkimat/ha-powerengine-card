@@ -6306,7 +6306,7 @@ function healthCardView(states) {
   const weights = WEIGHT_PARTS.map(([key, label]) => ({ label, pct: weightPct(solar[key]) })).filter((r) => r.pct);
   const start = w.start && w.start.solar ? weightPct(w.start.solar) : null;
   const off = diag.soc_offset || {};
-  const recent = (Array.isArray(trig.recent) ? trig.recent : []).slice(-6).reverse().map((r) => ({
+  const recent = (Array.isArray(trig.recent) ? trig.recent : []).filter((r) => r && v2Ms(r.at) !== null).sort((a, b) => v2Ms(b.at) - v2Ms(a.at)).slice(0, 30).map((r) => ({
     at: v2Hm(r.at), text: r.text || causeLabel(r.kind), effect: r.effect || "" }));
   const filter = [];
   [["charging", "while charging"], ["holding", "while holding"], ["discharging", "while discharging"]].forEach(([k, label]) => {
@@ -6793,7 +6793,7 @@ class PowerEngineV2HealthCard extends PowerEngineV2Card {
       .bar.backstop .fill { background: var(--v2-warn); }
       .wts { display: grid; grid-template-columns: 90px repeat(3, minmax(0, 1fr)); gap: 6px; font-size: 13px; align-items: center; }
       .wts .h { color: var(--secondary-text-color); font-size: 12px; }
-      .recent { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 10px; font-size: 13px; }
+      .recent { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 10px; font-size: 13px; max-height: 320px; overflow-y: auto; align-content: start; }
       @media (max-width: 520px) { .bar { grid-template-columns: 110px minmax(0, 1fr) 28px; } }
     </style>
     <ha-card>
@@ -6803,7 +6803,7 @@ class PowerEngineV2HealthCard extends PowerEngineV2Card {
       <div class="figs">${v.figs.map((f) => `<div class="fig"><span class="k">${escHtml(f.k)}</span><span class="v${f.bad ? " bad" : f.k === "Flip-flops" && f.v !== "–" ? " good" : ""}">${escHtml(f.v)}</span></div>`).join("")}</div>
       ${v.comfort ? `<div><h3>${escHtml(v.comfort.title)}</h3><p>${escHtml(v.comfort.text)}</p></div>` : ""}
       ${weights}${filter}
-      ${v.recent.length ? `<div><h3>Latest</h3><div class="recent">${v.recent.map((r) => `<span class="num muted">${escHtml(r.at)}</span><span>${escHtml(r.text)}</span><span class="muted">${escHtml(r.effect)}</span>`).join("")}</div></div>` : ""}
+      ${v.recent.length ? `<div><h3>Latest (newest first)</h3><div class="recent">${v.recent.map((r) => `<span class="num muted">${escHtml(r.at)}</span><span>${escHtml(r.text)}</span><span class="muted">${escHtml(r.effect)}</span>`).join("")}</div></div>` : ""}
     </ha-card>`;
   }
 }
@@ -6962,7 +6962,7 @@ function v2HistoryView(attrs) {
   const control = a.in_control === "v1" || a.in_control === "v2" || a.in_control === "mixed" ? a.in_control : (sentCount === 0 ? "v1" : sentCount === raw.length ? "v2" : "mixed");
   const previewOnly = sentCount === 0;
   const partlyPreview = sentCount > 0 && sentCount < raw.length;
-  const changes = (Array.isArray(a.changes) ? a.changes : []).filter((c) => c && v2Ms(c.at) !== null).map((c) => ({
+  const changes = (Array.isArray(a.changes) ? a.changes : []).filter((c) => c && v2Ms(c.at) !== null).sort((a, b) => v2Ms(b.at) - v2Ms(a.at)).map((c) => ({
     at: v2Hm(c.at), mode: v2Mode(c.mode).name, modeKey: c.mode || "none", reason: c.reason ? String(c.reason) : "",
   }));
   const priceMax = Math.max(10, Math.ceil(Math.max(0, ...stepPts("import_p").map((s) => s.y), ...stepPts("export_p").map((s) => s.y)) / 5) * 5);
@@ -7053,7 +7053,7 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
       <div class="chart" id="hist"></div>
       <div class="legend">${legend(modesUsed.map((k) => [`var(${v2Mode(k).colour})`, v2Mode(k).name]).concat([["var(--v2-battery)", "Battery as it ran (dashed: expected at the start of the day)"], ["var(--v2-price)", "Import price"], ["var(--m-export)", "Export price (dotted)"], ["var(--v2-good)", "Value of a stored kWh"]]))}</div>
       ${v.partlyPreview || v.previewOnly ? '<p class="muted small">Dimmed bands: engine v2 was only previewing, nothing was sent.</p>' : ""}
-      ${v.changes.length ? `<div><h3>Mode changes</h3><div class="changes">${v.changes.map((c) => `<span class="num muted">${escHtml(c.at)}</span><span class="mode"><i class="sw" style="background:var(${v2Mode(c.modeKey).colour})"></i>${escHtml(c.mode)}</span><span>${escHtml(c.reason)}</span>`).join("")}</div></div>` : '<p class="muted small">No mode changes recorded for this day.</p>'}
+      ${v.changes.length ? `<div><h3>Mode changes (newest first)</h3><div class="changes">${v.changes.map((c) => `<span class="num muted">${escHtml(c.at)}</span><span class="mode"><i class="sw" style="background:var(${v2Mode(c.modeKey).colour})"></i>${escHtml(c.mode)}</span><span>${escHtml(c.reason)}</span>`).join("")}</div></div>` : '<p class="muted small">No mode changes recorded for this day.</p>'}
       ${v.note ? `<p class="muted small">${escHtml(v.note)}</p>` : ""}`}
     </ha-card>`;
     this._wirePicker(attrs || {});
