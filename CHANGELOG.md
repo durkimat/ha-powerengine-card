@@ -3,6 +3,10 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.120
+
+- New **Stop the car charger during grid events** switch on the Config page, under Grid events (on by default). It needs app 0.9.120, so the card now asks for that version or newer.
+
 ## 0.9.118
 
 ### Changed
