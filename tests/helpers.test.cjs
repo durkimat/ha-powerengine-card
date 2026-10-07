@@ -859,28 +859,28 @@ test("versionOlder compares numbers, not text, and says nothing when it can't re
 });
 
 test("MIN_APP_VERSION is a real version no newer than the card", () => {
-  assert.equal(h.MIN_APP_VERSION, "0.9.69");
-  assert.deepEqual(h.parseVersion(h.MIN_APP_VERSION), [0, 9, 69]);
+  assert.equal(h.MIN_APP_VERSION, "0.9.120");
+  assert.deepEqual(h.parseVersion(h.MIN_APP_VERSION), [0, 9, 120]);
   assert.equal(h.versionOlder(h.CARD_VERSION, h.MIN_APP_VERSION), false);
 });
 
 test("versionWarnings warns only when the other side is older than its minimum", () => {
   const st = (state, attrs) => ({ "sensor.pe_diag_version": { state, attributes: attrs || {} } });
   // a different but supported app: no warning, whichever way round
-  assert.deepEqual(h.versionWarnings(st("0.9.69", { min_card_version: "0.9.70" })), []);
-  assert.deepEqual(h.versionWarnings(st("0.9.99", { min_card_version: "0.9.70" })), []);
+  assert.deepEqual(h.versionWarnings(st("0.9.120", { min_card_version: "0.9.110" })), []);
+  assert.deepEqual(h.versionWarnings(st("0.9.130", { min_card_version: "0.9.70" })), []);
   // an app older than the card's minimum
-  const old = h.versionWarnings(st("0.9.68"));
+  const old = h.versionWarnings(st("0.9.119"));
   assert.equal(old.length, 1);
-  assert.match(old[0], /0\.9\.69 or newer.*0\.9\.68/);
+  assert.match(old[0], /0\.9\.120 or newer.*0\.9\.119/);
   // a card older than the app's minimum
-  const oldCard = h.versionWarnings(st("0.9.99", { min_card_version: "99.0.0" }));
+  const oldCard = h.versionWarnings(st("0.9.130", { min_card_version: "99.0.0" }));
   assert.equal(oldCard.length, 1);
   assert.match(oldCard[0], /card 99\.0\.0 or newer/);
   // nothing to compare: no sensor, unavailable, no attribute (an older app)
   assert.deepEqual(h.versionWarnings({}), []);
   assert.deepEqual(h.versionWarnings(st("unavailable")), []);
-  assert.deepEqual(h.versionWarnings(st("0.9.70", {})), []);
+  assert.deepEqual(h.versionWarnings(st("0.9.130", {})), []);
 });
 
 test("history day payload accepts a date inside the range and nothing else", () => {
