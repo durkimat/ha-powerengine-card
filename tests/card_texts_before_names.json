@@ -57,6 +57,11 @@
    "Your supplier pays its normal export rate on grid-event exports as well as the event payment (Axle: £1/kWh; EDF: £1 + 15p). Planning and the event figures count both. Off: the event payment only."
   ],
   [
+   "axle_stop_car",
+   "Stop the car charger during grid events",
+   "While a grid event (Axle) runs, set the car charger (Zappi) to Stopped, so the battery's export isn't charged into the car, and put its mode back when the event ends. Without this, a smart-charge slot or a manual charge can take the whole event's energy and the event earns almost nothing. Needs the Charger mode entity (a select) mapped. Applies in Active mode only."
+  ],
+  [
    "free_power_days",
    "Free-power sessions",
    "Make full use of EDF free-electricity sessions."

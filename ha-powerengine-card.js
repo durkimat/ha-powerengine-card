@@ -7,11 +7,11 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.118";
+const CARD_VERSION = "0.9.120";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
-const MIN_APP_VERSION = "0.9.69";
+const MIN_APP_VERSION = "0.9.120";
 
 /** "0.9.70" -> [0, 9, 70]; null when it isn't a plain dotted number ("?", "unavailable", "0.9.70-beta"). */
 function parseVersion(v) {
@@ -87,6 +87,7 @@ const FEATURES = [
   ["use_check_meter", "Use the check meter", "When a check meter is set and reporting, use it for grid power instead of the inverter's meter, and correct the inverter's house load by the difference (also in the learned usage history). If it stops reporting for 3 minutes, the inverter's meter is used again. Off: the check meter is only compared."],
   ["axle", "Take part in grid events", "Force-discharge during grid events (run by <<event>>) and hold charge beforehand, so the battery is full when one starts."],
   ["axle_plus_export", "Grid events also earn the export rate", "Your supplier pays its normal export rate on grid-event exports as well as the event payment (<<event>>: £1/kWh; <<supplier>>: £1 + 15p). Planning and the event figures count both. Off: the event payment only."],
+  ["axle_stop_car", "Stop the car charger during grid events", "While a grid event (<<event>>) runs, set the car charger (<<ev_charger>>) to Stopped, so the battery's export isn't charged into the car, and put its mode back when the event ends. Without this, a smart-charge slot or a manual charge can take the whole event's energy and the event earns almost nothing. Needs the Charger mode entity (a select) mapped. Applies in Active mode only."],
   ["free_power_days", "Free-power sessions", "Make full use of <<supplier>> free-electricity sessions."],
   ["optimised_plan", "Optimised planning", "The optimiser chooses each half-hour's action for the lowest cost (arbitrage band and safety rules included), with plain-English reasons. Off: the simpler rule-based planner."],
   ["learn_taper", "Learn: charge and discharge slow-down", "Plan with how much charging slows from 90% and 95%, and how much discharging slows below 40%, 30% and 20%, as seen: the overnight charge starts early enough to finish, and deep sales are planned at the speed they really run. Health tab, Learned from use, shows each learned figure and how many half-hours it's based on."],
@@ -112,7 +113,7 @@ const NOTIFY_EVENTS = [
 const FEATURE_DEFAULTS = { auto_cheap_threshold: true, fill_when_cheap: true, smart_charge_optimisation: true, arbitrage: false, axle: true, free_power_days: true, tariff_simulator: true, engine_compare: true, optimised_plan: true,
   learn_taper: true, learn_conversion: true, learn_reserve: true, learn_export: true, learn_car: true, learn_car_min: true, cold_caution: true, cold_learning: true,
   damp_restart: true, damp_bursts: false, deep_overnight: true,
-  use_check_meter: true, axle_plus_export: true, slots_whole_house: true, smart_skip_full_car: false };
+  use_check_meter: true, axle_plus_export: true, axle_stop_car: true, slots_whole_house: true, smart_skip_full_car: false };
 
 /* ------------------------------------------------------------------ helpers
  * Pure functions (no DOM), exported for tests at the bottom of the file.
@@ -256,7 +257,7 @@ const TOPICS = [
     settings: ["export_limit_kw", "battery_wear_p", "arbitrage_min_margin_p", "arbitrage_min_soc", "arbitrage_max_soc",
       "arbitrage_band_penalty_p", "overnight_switch_cost_p"],
     roles: ["inverter_export_limit"], learning: ["learn_export"] },
-  { key: "axle", title: "Grid events", main: "axle", features: ["axle", "axle_plus_export"],
+  { key: "axle", title: "Grid events", main: "axle", features: ["axle", "axle_plus_export", "axle_stop_car"],
     roles: ["axle_event_active", "axle_event_start", "axle_event_end", "axle_direction"],
     settings: ["pre_axle_lookahead_h", "axle_margin_soc"] },
   { key: "free", title: "Free-power sessions", main: "free_power_days", features: ["free_power_days"],
@@ -4544,7 +4545,7 @@ function wizardEnergyDevices(facts, states) {
 const SYSTEM_DRAFT_KEY = "powerengine.system.draft";
 const SYSTEM_GROUPS = ["inverter", "plant", "device", "ev_charger", "tariff", "forecast", "events"];
 // features that only make sense with a part: removing the part switches them off (adding one never switches anything on)
-const SYSTEM_LEFT_OUT_FEATURES = { ev_charger: ["smart_charge_optimisation", "smart_skip_full_car", "learn_car", "learn_car_min"], events: ["axle", "axle_plus_export"] };
+const SYSTEM_LEFT_OUT_FEATURES = { ev_charger: ["smart_charge_optimisation", "smart_skip_full_car", "learn_car", "learn_car_min"], events: ["axle", "axle_plus_export", "axle_stop_car"] };
 const SYSTEM_PLANT_NOTE = "Read only: PowerEngine counts its solar in the totals, but never controls it.";
 
 /** What can be added, in the order shown: the app's parts (title and reason come from the app) plus the card's own two. */
