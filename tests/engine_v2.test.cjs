@@ -479,14 +479,14 @@ test("recentRows: only the last hours, oldest first, bad rows dropped", () => {
   assert.deepStrictEqual(card.recentRows({}, T0, 18), []);
 });
 
-test("with the hours already run: they lie left of now, the plan's own past gives way, the view opens three hours back", () => {
+test("with the hours already run: they lie left of now, the plan's own past gives way, the view opens an hour back", () => {
   const tl = timeline();                                                       // the plan starts at hour 0
   const now = T0 + 3.5 * 3600000;
   const L = card.timelineLayout(tl, { now, recent: recent(3.5, 36) });        // 18 hours up to now (the half-hour running starts at 3.5)
   assert.strictEqual(L.t0, now - 18 * 3600000);                                // reaches back 18 hours
   assert.strictEqual(L.hist, 36);
   assert.strictEqual(L.nowH, 18);
-  assert.strictEqual(L.viewH, 15);                                             // the view opens 3 hours before now
+  assert.strictEqual(L.viewH, 17);                                             // the view opens 1 hour before now
   const ran = L.bands.filter((b) => b.ran);
   assert.deepStrictEqual(ran.map((b) => b.mode), ["self_use", "charge"]);      // 36 half-hours merge into two bands
   assert.ok(ran.every((b) => b.state === "past"));
