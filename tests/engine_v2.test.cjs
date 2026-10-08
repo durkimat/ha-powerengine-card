@@ -442,3 +442,91 @@ test("timeline hover text: band status, battery, price and the sun at a time", (
   assert.ok(t.lines.some((l) => /^Import price: /.test(l)) || L.steps.length === 0);
   assert.deepStrictEqual(card.timelineHover({ bands: [], steps: [], mid: [], low: [], high: [], sun: null, nowH: 0 }, 1, clock).lines, []);
 });
+
+// ---- plan chart: the hours already run, and the clock's "now" -------------------------------------------------------
+const HALF = 1800000;
+/** sensor.pe_v2_recent: half-hours ending at hour `endH` (from T0), `n` of them, level rising 1% a half-hour. */
+const recent = (endH, n, extra = {}) => ({
+  hours: 18, step_min: 30,
+  series: Array.from({ length: n }, (_, i) => {
+    const start = T0 + endH * 3600000 - (n - i) * HALF;
+    return Object.assign({ t: new Date(start).toISOString(), mode: i < n / 2 ? "self_use" : "charge", level: 40 + i, import_p: i < n / 2 ? 28.84 : 6.99, export_p: 15, sent: true }, extra);
+  }),
+});
+
+test("the layout's now is the clock when given, else the plan's own stamp", () => {
+  const tl = timeline();                                                       // stamped at hour 3.5
+  assert.strictEqual(card.timelineLayout(tl).nowH, 3.5);
+  const L = card.timelineLayout(tl, { now: T0 + 4 * 3600000 });
+  assert.strictEqual(L.now, T0 + 4 * 3600000);
+  assert.strictEqual(L.nowH, 4);
+  assert.deepStrictEqual(L.bands.map((b) => b.state), ["past", "now", "future"]);   // 2.5 to 5.5 still running; the hold is still ahead
+  const later = card.timelineLayout(tl, { now: T0 + 6 * 3600000 });
+  assert.deepStrictEqual(later.bands.map((b) => b.state), ["past", "past", "now"]);
+  assert.strictEqual(card.planCardView({ "sensor.pe_v2_timeline": st(iso(3), tl), "sensor.pe_v2_value_curve": st(iso(3), curve()) }, T0 + 5 * 3600000).layout.nowH, 5);
+});
+
+test("recentRows: only the last hours, oldest first, bad rows dropped", () => {
+  const r = recent(3, 4);
+  r.series.push({ t: "nope" }, null);
+  r.series.reverse();
+  const rows = card.recentRows(r, T0 + 3 * 3600000, 18);
+  assert.strictEqual(rows.length, 4);
+  assert.deepStrictEqual(rows.map((x) => x.a), rows.map((x) => x.a).slice().sort((p, q) => p - q));
+  assert.strictEqual(rows[0].b - rows[0].a, HALF);
+  assert.strictEqual(card.recentRows(r, T0 + 3 * 3600000 + 30 * 3600000, 18).length, 0);   // all older than 18 hours
+  assert.deepStrictEqual(card.recentRows(null, T0, 18), []);
+  assert.deepStrictEqual(card.recentRows({}, T0, 18), []);
+});
+
+test("with the hours already run: they lie left of now, the plan's own past gives way, the view opens three hours back", () => {
+  const tl = timeline();                                                       // the plan starts at hour 0
+  const now = T0 + 3.5 * 3600000;
+  const L = card.timelineLayout(tl, { now, recent: recent(3.5, 36) });        // 18 hours up to now (the half-hour running starts at 3.5)
+  assert.strictEqual(L.t0, now - 18 * 3600000);                                // reaches back 18 hours
+  assert.strictEqual(L.hist, 36);
+  assert.strictEqual(L.nowH, 18);
+  assert.strictEqual(L.viewH, 15);                                             // the view opens 3 hours before now
+  const ran = L.bands.filter((b) => b.ran);
+  assert.deepStrictEqual(ran.map((b) => b.mode), ["self_use", "charge"]);      // 36 half-hours merge into two bands
+  assert.ok(ran.every((b) => b.state === "past"));
+  const planFirst = L.bands.find((b) => !b.ran);
+  assert.ok(planFirst.a >= ran[ran.length - 1].b - 1e-9);                      // no overlap: the plan's band starts where the run ends
+  assert.strictEqual(planFirst.levelStart, null);                              // its start was cut, so the plan's level there is not its own
+  assert.ok(L.steps.some((s) => s.ran) && L.steps.some((s) => !s.ran));
+  assert.strictEqual(L.mid[0].level, 40);                                      // as-run levels first: the end of the first half-hour
+  assert.strictEqual(L.mid[35].level, 75);                                     // the end of the last, at now
+  assert.ok(L.mid.every((p, i) => i === 0 || p.h >= L.mid[i - 1].h - 1e-9));   // one ordered line
+  assert.notStrictEqual(L.nowLevel, null);
+});
+
+test("without the hours already run the layout is what it was", () => {
+  const tl = timeline();
+  const plain = card.timelineLayout(tl);
+  const withNone = card.timelineLayout(tl, { recent: { series: [] } });
+  assert.deepStrictEqual(withNone, plain);
+  assert.strictEqual(plain.hist, 0);
+  assert.strictEqual(plain.viewH, 0);
+  assert.ok(plain.bands.every((b) => !b.ran));
+});
+
+test("planCardView: the timeline chart gets the history, the value map keeps the plan's extent", () => {
+  const states = { "sensor.pe_v2_timeline": st(iso(3), timeline()), "sensor.pe_v2_value_curve": st(iso(3), curve()), "sensor.pe_v2_recent": st("36", recent(3.5, 36)) };
+  const now = T0 + 3.5 * 3600000;
+  const v = card.planCardView(states, now);
+  assert.strictEqual(v.tlayout.hist, 36);
+  assert.strictEqual(v.layout.hist, 0);
+  assert.strictEqual(v.layout.t0, T0);
+  assert.strictEqual(v.grid.cells[0].a, 0);
+  const old = card.planCardView({ "sensor.pe_v2_timeline": states["sensor.pe_v2_timeline"], "sensor.pe_v2_value_curve": states["sensor.pe_v2_value_curve"] }, now);
+  assert.strictEqual(old.tlayout.hist, 0);                                     // an older app has no recent sensor: no history, no error
+  assert.strictEqual(old.tlayout.t0, T0);
+});
+
+test("hover over a stretch already run says what happened", () => {
+  const L = card.timelineLayout(timeline(), { now: T0 + 3.5 * 3600000, recent: recent(3.5, 36) });
+  const clock = (h) => `h${h}`;
+  const t = card.timelineHover(L, 1, clock);                                   // an hour into the 18 hours: self-use, as run
+  assert.ok(/Self-use \(happened/.test(t.lines[0]));
+  assert.ok(t.lines.some((l) => /^Battery: /.test(l)) && t.lines.some((l) => /^Import price: 28.84p/.test(l)));
+});
