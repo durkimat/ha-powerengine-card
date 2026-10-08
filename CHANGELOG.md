@@ -3,6 +3,11 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.126
+
+- The engine card's **plan chart now shows the last 18 hours** as they ran (modes, battery level, import price), shaded left of "now", and scrolls back over them. It needs app 0.9.126 for the history; with an older app the chart looks as before.
+- **"Now" on the plan chart follows the clock.** It used to stay where the plan was last worked out, because the chart only redrew when the plan changed. It now redraws about once a minute while on screen, without losing your scroll position.
+
 ## 0.9.120
 
 - New **Stop the car charger during grid events** switch on the Config page, under Grid events (on by default). It needs app 0.9.120, so the card now asks for that version or newer.
