@@ -3,6 +3,13 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.131
+
+### Behaviour changes
+
+None. This release is for the card only: nothing about planning, control or the app's sensors changes.
+- **The plan chart now opens an hour before "now" and stays where you put it on a phone.** Inside Home Assistant the chart was positioned before it had a width, so it opened at the start of the 18 hours of history, and every update (several sensors change together) sent it back there while you were sliding. It now waits until it has a width before positioning, and ignores the old chart being swapped out.
+
 ## 0.9.130
 
 - **The plan chart now opens an hour before "now" every time.** In 0.9.128 it could open at the start of the 18 hours instead, when the card was built before it was on screen (for example a dashboard view you had not opened yet). It now opens in the right place and keeps your place when you scroll.
