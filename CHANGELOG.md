@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.128
+
+- The engine card's **plan chart now opens one hour before "now"**, so the now line sits near the left edge. The rest of the last 18 hours is still a scroll to the left.
+- **On a phone the chart no longer jumps back while you scroll it.** A redraw (a sensor update, or the once-a-minute clock) that arrives while your finger is on the chart now waits until you let go, and your place is kept.
+- The chart's hover text now survives every redraw, a card on a hidden dashboard view catches up when you return to it, and the leftmost hour label is no longer clipped.
+
 ## 0.9.126
 
 - The engine card's **plan chart now shows the last 18 hours** as they ran (modes, battery level, import price), shaded left of "now", and scrolls back over them. It needs app 0.9.126 for the history; with an older app the chart looks as before.

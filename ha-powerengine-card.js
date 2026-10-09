@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.126";
+const CARD_VERSION = "0.9.128";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -6025,7 +6025,7 @@ function valueBarSummary(g) {
 // ---- plan: timeline layout ----------------------------------------------------------------------------------------
 const HOUR_MS = 3600000;
 const HISTORY_HOURS = 18;          // how far back the plan chart scrolls
-const VIEW_PAST_HOURS = 3;         // how much of that is in view before the person scrolls
+const VIEW_PAST_HOURS = 1;         // how much of that is in view before the person scrolls (now sits near the left edge)
 const TIMELINE_MIN_W = 560;          // the least width, in pixels, the hours in view are spread over
 
 /** The half-hours of sensor.pe_v2_recent that fall in the `hours` before `nowMs`, oldest first, as
@@ -6634,7 +6634,7 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     if (typeof ResizeObserver !== "undefined") {
       this._resize = new ResizeObserver(() => {
         const w = Math.round(this.clientWidth || 0);
-        if (!w || Math.abs(w - (this._drawnWidth || 0)) < 3) return;
+        if (!w || (!this._stale && Math.abs(w - (this._drawnWidth || 0)) < 3)) return;
         clearTimeout(this._resizeTimer);
         this._resizeTimer = setTimeout(() => this._onTick(true), 150);
       });
@@ -6643,18 +6643,33 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
   }
   _stopTick() {
     clearInterval(this._timer); this._timer = null;
-    clearTimeout(this._resizeTimer);
+    clearTimeout(this._resizeTimer); clearTimeout(this._idleTimer);
     if (this._onVisible) document.removeEventListener("visibilitychange", this._onVisible);
     if (this._resize) { this._resize.disconnect(); this._resize = null; }
   }
-  /** Redraw with the clock's "now". Not while the page is hidden, nor within a few seconds of the person scrolling or touching the
-   *  chart (a redraw would drop their place). `force` redraws even when the minute has not changed (back on screen, resized). */
+  /** Redraw with the clock's "now". Not while the page is hidden or the card is not on screen (it redraws when it comes back), and
+   *  `_draw` itself holds off while the person is touching or scrolling the chart. `force` redraws even when the minute has not
+   *  changed (back on screen, resized). */
   _onTick(force) {
     if (!this._hass || !this.shadowRoot || (typeof document !== "undefined" && document.hidden)) return;
+    if (!this.offsetWidth) { this._stale = true; return; }
     if (!force && Math.floor(Date.now() / 60000) === this._drawnMinute) return;
-    if (Date.now() - (this._lastScrollAt || 0) < 4000) return;
-    this._keepReadout = true;
-    try { this._draw(); } finally { this._keepReadout = false; }
+    this._draw();
+  }
+  /** Is the person's finger on the chart, or is it still scrolling? A redraw replaces the scroll box, which would cancel their
+   *  gesture and put the view back, so a redraw that arrives meanwhile (a sensor update, the clock) waits until they let go. */
+  _busy() { return (!!this._touching && Date.now() - (this._touchAt || 0) < 10000) || Date.now() - (this._lastScrollAt || 0) < 700; }
+  _draw() {
+    if (this._busy()) { this._pendingDraw = true; this._armIdle(); return; }
+    this._pendingDraw = false;
+    super._draw();
+  }
+  _armIdle() {
+    clearTimeout(this._idleTimer);
+    this._idleTimer = setTimeout(() => {
+      if (this._busy()) { this._armIdle(); return; }
+      if (this._pendingDraw) this._draw();
+    }, 800);
   }
   _render(states) {
     const v = planCardView(states, Date.now());
@@ -6665,8 +6680,15 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     this._dark = dark;
     const legend = (items) => items.map(([c, t]) => `<span><i class="sw" style="background:${c}"></i>${escHtml(t)}</span>`).join("");
     const L = v.layout, T = v.tlayout || v.layout;
-    const keepRead = this._keepReadout ? (this.shadowRoot.getElementById("treadout") || {}).innerHTML : null;
+    const keepRead = (this.shadowRoot.getElementById("treadout") || {}).innerHTML || null;
+    // read where the person has the chart now, from the live box, before it is replaced (scroll events can lag behind a flick)
+    const prevBox = this.shadowRoot.getElementById("tl-scroll");
+    if (prevBox && prevBox.clientWidth > 0 && this._tlGeom) {
+      const g = this._tlGeom;
+      if (Math.abs(prevBox.scrollLeft - g.defPx) > 8) { this._tlUser = true; this._tlLeftMs = g.t0 + (prevBox.scrollLeft / g.pph) * HOUR_MS; } else this._tlUser = false;
+    }
     this._drawnMinute = Math.floor(Date.now() / 60000);
+    this._stale = false;
     this.shadowRoot.innerHTML = `<style>${V2_CSS}
       .tlbox { display: grid; grid-template-columns: 40px minmax(0, 1fr) 46px; align-items: start; min-width: 0; }
       .tlbox svg { display: block; }
@@ -6731,7 +6753,7 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     for (let p = 0; p <= maxPrice; p += maxPrice <= 20 ? 5 : 10) svgEl("text", { x: 6, y: yP(p) + 4, "font-size": 11, fill: "var(--v2-price)" }, axr, `${p}p`);
     L.ticks.forEach((t) => {
       const tx = x(t.h);
-      if (tx > 16 && tx < plotW - 16) svgEl("text", { x: tx, y: G.H - 12, "text-anchor": "middle", "font-size": 11, fill: muted }, svg, v2Hm(new Date(t.ms).toISOString()));
+      if (tx > 24 && tx < plotW - 24) svgEl("text", { x: tx, y: G.H - 12, "text-anchor": "middle", "font-size": 11, fill: muted }, svg, v2Hm(new Date(t.ms).toISOString()));
     });
     L.bands.forEach((b) => {
       const col = `var(${v2Mode(b.mode).colour})`;
@@ -6782,6 +6804,7 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     let px = defPx;
     if (this._tlUser && this._tlLeftMs !== null && this._tlLeftMs !== undefined) px = Math.min(maxPx, Math.max(0, ((this._tlLeftMs - L.t0) / HOUR_MS) * pph));
     this._tlSetPx = px;
+    this._tlGeom = { t0: L.t0, pph, defPx };
     scroller.scrollLeft = px;
     scroller.addEventListener("scroll", () => {
       if (Math.abs(scroller.scrollLeft - this._tlSetPx) < 2) return;          // our own placing
@@ -6789,7 +6812,12 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
       this._tlSetPx = scroller.scrollLeft;
       this._tlLeftMs = L.t0 + (scroller.scrollLeft / pph) * HOUR_MS;
       this._tlUser = Math.abs(scroller.scrollLeft - defPx) > 8;
+      this._armIdle();
     });
+    scroller.addEventListener("touchstart", () => { this._touching = true; this._touchAt = Date.now(); }, { passive: true });
+    const lift = () => { this._touching = false; this._lastScrollAt = Date.now(); this._armIdle(); };
+    scroller.addEventListener("touchend", lift, { passive: true });
+    scroller.addEventListener("touchcancel", lift, { passive: true });
   }
   /** Hover (and touch) text for the timeline, in the box under the chart as the value map does: a guide line and, in the box,
    *  what the bands, battery, price and sun say at that time, for the values and status the bars have no room to print. */
