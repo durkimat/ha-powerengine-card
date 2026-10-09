@@ -40,3 +40,7 @@ on the owner's machine, not in a cloud session.
   the app repo's docs/SITE.md and docs/plans/multiple-devices.md). **Rules:** the list is shown, and `devices` sent, only when the app is 0.9.93
   or newer (an older app rejects the unknown key); once sent it is always a list (`[]` removes them; a save without the key keeps the saved
   ones, which is what an older card does); the entity-in-use check (`wizardUsedEntities`) counts device inputs. Tests: `tests/devices.test.cjs`.
+- **Looking at the plan chart without Home Assistant:** `ha-card` is a Lit element there that renders its slot a moment after it is created, so a scroll box built in the same breath has
+  no width (`clientWidth` 0) and ignores `scrollLeft`; a plain `ha-card` in a test page hides this (cause of the 0.9.126-0.9.130 "starts at the start of the history and jumps back" reports).
+  `_whenLaidOut` waits for the width; the scroll handler ignores a replaced box. A faithful check runs the real dashboard in a local Home Assistant (pip `homeassistant`, a
+  `lovelace` YAML dashboard, the card as a resource, states pushed with `POST /api/states/<id>`) in a phone-sized Playwright context with raw `Input.dispatchTouchEvent` swipes.
