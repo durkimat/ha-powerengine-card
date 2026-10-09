@@ -3,6 +3,10 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.130
+
+- **The plan chart now opens an hour before "now" every time.** In 0.9.128 it could open at the start of the 18 hours instead, when the card was built before it was on screen (for example a dashboard view you had not opened yet). It now opens in the right place and keeps your place when you scroll.
+
 ## 0.9.128
 
 - The engine card's **plan chart now opens one hour before "now"**, so the now line sits near the left edge. The rest of the last 18 hours is still a scroll to the left.
