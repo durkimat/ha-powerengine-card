@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.130";
+const CARD_VERSION = "0.9.131";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -6728,9 +6728,27 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     </ha-card>` : ""}
     </div>`;
     this.shadowRoot.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => { this._view = b.dataset.view; this._renderValue(); this.shadowRoot.querySelectorAll(".seg button").forEach((o) => o.setAttribute("aria-pressed", String(o === b))); }));
-    if (T) this._drawTimeline(this.shadowRoot.getElementById("timeline"), v);
+    if (T) this._whenLaidOut(() => this._drawTimeline(this.shadowRoot.getElementById("timeline"), v));
     if (keepRead) { const ro = this.shadowRoot.getElementById("treadout"); if (ro) ro.innerHTML = keepRead; }
     if (v.grid) this._renderValue();
+  }
+  /** Run `draw` once the scroll box has a width. Inside Home Assistant `ha-card` is itself a custom element that renders its slot a
+   *  moment after it is created, so a box built in the same breath has no width: the plot was sized for a made-up width and the scroll
+   *  position was ignored, which is why the chart opened at the start of the history and went back there on every redraw (a plain
+   *  `ha-card`, as in a test page, has a width at once and hid this). Waits up to ~1 s of frames, then draws anyway and stays stale. */
+  _whenLaidOut(draw) {
+    const token = (this._layoutToken = (this._layoutToken || 0) + 1);
+    const box = () => this.shadowRoot && this.shadowRoot.getElementById("tl-scroll");
+    const ready = () => { const b = box(); return !b || b.clientWidth > 0; };
+    if (ready() || typeof requestAnimationFrame === "undefined") { draw(); return; }
+    this._stale = true;
+    let frames = 0;
+    const step = () => {
+      if (token !== this._layoutToken) return;                // a newer render replaced this box
+      if (ready() || ++frames > 60) { draw(); if (ready()) this._stale = false; return; }
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
   }
   _geom(extra) {
     return Object.assign({ W: 900, H: 300, L: 40, R: 46, T: 14, B: 34 }, extra || {});
@@ -6818,6 +6836,7 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     this._tlSetPx = scroller.scrollLeft;                                       // what the box really holds, so our own placing is never taken for a scroll
     if (!laidOut) this._stale = true;                                          // built before it is on screen: draw again when it has a width
     scroller.addEventListener("scroll", () => {
+      if (!scroller.isConnected || scroller !== this.shadowRoot.getElementById("tl-scroll")) return;   // a replaced box reports 0 as it goes: not the person
       if (Math.abs(scroller.scrollLeft - this._tlSetPx) < 2) return;          // our own placing
       this._lastScrollAt = Date.now();
       this._tlSetPx = scroller.scrollLeft;
