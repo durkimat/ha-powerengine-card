@@ -6041,6 +6041,16 @@ function recentRows(recent, nowMs, hours) {
     .filter((x) => x.b > from && x.a < nowMs).sort((p, q) => p.a - q.a);
 }
 
+/** Did the person move the chart? Read from the scroll box just before it is replaced. `box`: {placed, laidOut, scrollLeft}; `geom`: {t0, pph,
+ *  defPx} of that box. Only a box whose opening position actually took (it was laid out when placed) says anything: a card built before it is
+ *  on screen has no width, the browser ignores the position it is given, and that 0 must not be read back as the person scrolling to the start.
+ *  Returns null (no information: keep what we had), {user: false} (still at the opening position, so keep following now) or {user: true, leftMs}. */
+function scrollIntent(box, geom) {
+  if (!box || !geom || !box.placed || !box.laidOut) return null;
+  if (Math.abs(box.scrollLeft - geom.defPx) > 8) return { user: true, leftMs: geom.t0 + (box.scrollLeft / geom.pph) * HOUR_MS };
+  return { user: false, leftMs: null };
+}
+
 /** Where everything goes on the time axis, in hours from the left edge (t0). Pure: no widths, no clock labels.
  *  `now`: opts.now (the card passes the browser's clock, so the line moves between the app's publishes), else the plan's own
  *  stamp, else the clock. `recent` (sensor.pe_v2_recent's attributes): the hours already run, drawn left of now instead of the plan's
@@ -6683,10 +6693,8 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     const keepRead = (this.shadowRoot.getElementById("treadout") || {}).innerHTML || null;
     // read where the person has the chart now, from the live box, before it is replaced (scroll events can lag behind a flick)
     const prevBox = this.shadowRoot.getElementById("tl-scroll");
-    if (prevBox && prevBox.clientWidth > 0 && this._tlGeom) {
-      const g = this._tlGeom;
-      if (Math.abs(prevBox.scrollLeft - g.defPx) > 8) { this._tlUser = true; this._tlLeftMs = g.t0 + (prevBox.scrollLeft / g.pph) * HOUR_MS; } else this._tlUser = false;
-    }
+    const intent = prevBox ? scrollIntent({ placed: prevBox._placed === true, laidOut: prevBox.clientWidth > 0, scrollLeft: prevBox.scrollLeft }, this._tlGeom) : null;
+    if (intent) { this._tlUser = intent.user; this._tlLeftMs = intent.leftMs; }
     this._drawnMinute = Math.floor(Date.now() / 60000);
     this._stale = false;
     this.shadowRoot.innerHTML = `<style>${V2_CSS}
@@ -6803,9 +6811,12 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     const maxPx = Math.max(0, plotW - boxW), defPx = Math.min(maxPx, L.viewH * pph);
     let px = defPx;
     if (this._tlUser && this._tlLeftMs !== null && this._tlLeftMs !== undefined) px = Math.min(maxPx, Math.max(0, ((this._tlLeftMs - L.t0) / HOUR_MS) * pph));
-    this._tlSetPx = px;
     this._tlGeom = { t0: L.t0, pph, defPx };
+    const laidOut = scroller.clientWidth > 0;
     scroller.scrollLeft = px;
+    scroller._placed = laidOut && Math.abs(scroller.scrollLeft - px) < 2;      // a box with no width ignores the position: that is not the person's choice
+    this._tlSetPx = scroller.scrollLeft;                                       // what the box really holds, so our own placing is never taken for a scroll
+    if (!laidOut) this._stale = true;                                          // built before it is on screen: draw again when it has a width
     scroller.addEventListener("scroll", () => {
       if (Math.abs(scroller.scrollLeft - this._tlSetPx) < 2) return;          // our own placing
       this._lastScrollAt = Date.now();
@@ -7356,7 +7367,7 @@ if (typeof module !== "undefined") {
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
-  ENGINE_SENSOR, V2_NOT_RUNNING, V2_NO_DATA, V2_MODES, v2Engine, v2Supported, v2Gate, valueBarGeometry, modeSubtitle, exitRows, engineCardView, timelineLayout, recentRows, HISTORY_HOURS, V2_RECENT, sunLayout, levelAtHour, bandLabel, timelineHover,
+  ENGINE_SENSOR, V2_NOT_RUNNING, V2_NO_DATA, V2_MODES, v2Engine, v2Supported, v2Gate, valueBarGeometry, modeSubtitle, exitRows, engineCardView, timelineLayout, recentRows, scrollIntent, HISTORY_HOURS, V2_RECENT, sunLayout, levelAtHour, bandLabel, timelineHover,
   heatColour, valueMapGrid, mapCellAt, interpValue, pathValueSeries, pathLines, mapReadoutText, planCardView, causeBars, causeLabel, comfortSummary, healthCardView,
   ENGINE_ICONS, engineIcon, refreshEngineIcons, engineBadge, BADGE_LINES, V2_HISTORY_DAY_EVENT, v2HistoryDayPayload, v2HistoryView, engineCompareView, calibrationLine, gbp, COMPARE_WAITING,
   V1_SECTIONS, v2Same, engineGrouping, engineInUse, engineConfirm, cleanV2Block, engineFields, v2Problem, v2Contradictions, v2Values, comfortReadout, weightsReadout, floorsReadout };

@@ -530,3 +530,20 @@ test("hover over a stretch already run says what happened", () => {
   assert.ok(/Self-use \(happened/.test(t.lines[0]));
   assert.ok(t.lines.some((l) => /^Battery: /.test(l)) && t.lines.some((l) => /^Import price: 28.84p/.test(l)));
 });
+
+// ---- plan chart: what a scroll position means -----------------------------------------------------------------------
+const geom = { t0: T0, pph: 20, defPx: 300 };
+test("scrollIntent: a position that never took is not the person's choice (the card was built before it was on screen)", () => {
+  assert.strictEqual(card.scrollIntent({ placed: false, laidOut: true, scrollLeft: 0 }, geom), null);
+  assert.strictEqual(card.scrollIntent({ placed: true, laidOut: false, scrollLeft: 0 }, geom), null);
+  assert.strictEqual(card.scrollIntent(null, geom), null);
+  assert.strictEqual(card.scrollIntent({ placed: true, laidOut: true, scrollLeft: 0 }, null), null);
+});
+
+test("scrollIntent: at the opening position it keeps following now; moved, it keeps the time at the left edge", () => {
+  assert.deepStrictEqual(card.scrollIntent({ placed: true, laidOut: true, scrollLeft: 304 }, geom), { user: false, leftMs: null });
+  const moved = card.scrollIntent({ placed: true, laidOut: true, scrollLeft: 100 }, geom);
+  assert.strictEqual(moved.user, true);
+  assert.strictEqual(moved.leftMs, T0 + 5 * 3600000);                          // 100 px at 20 px an hour
+  assert.strictEqual(card.scrollIntent({ placed: true, laidOut: true, scrollLeft: 0 }, geom).leftMs, T0);   // a real scroll to the start is still honoured
+});
