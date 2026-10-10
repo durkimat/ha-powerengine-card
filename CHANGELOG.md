@@ -3,6 +3,13 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.135
+
+### Behaviour changes
+
+- **"Re-plan now" under the expected timeline** (needs app 0.9.135): asks the app to re-plan, then says "Re-planning..." and "Re-planned at HH:MM" when the new plan arrives, or says so when nothing came back within 20 seconds.
+- **The value map's buy line uses the price the plan worked with for a smart slot that is only a chance** (the chance of the offered price plus the rest at the standard rate), now that the timeline draws such a slot at the offered price. Before, the buy line and the plan could disagree about whether a charge was worth it.
+
 ## 0.9.131
 
 ### Behaviour changes
