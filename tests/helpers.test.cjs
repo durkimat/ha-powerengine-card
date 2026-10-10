@@ -859,28 +859,28 @@ test("versionOlder compares numbers, not text, and says nothing when it can't re
 });
 
 test("MIN_APP_VERSION is a real version no newer than the card", () => {
-  assert.equal(h.MIN_APP_VERSION, "0.9.120");
-  assert.deepEqual(h.parseVersion(h.MIN_APP_VERSION), [0, 9, 120]);
+  assert.equal(h.MIN_APP_VERSION, "0.9.135");
+  assert.deepEqual(h.parseVersion(h.MIN_APP_VERSION), [0, 9, 135]);
   assert.equal(h.versionOlder(h.CARD_VERSION, h.MIN_APP_VERSION), false);
 });
 
 test("versionWarnings warns only when the other side is older than its minimum", () => {
   const st = (state, attrs) => ({ "sensor.pe_diag_version": { state, attributes: attrs || {} } });
   // a different but supported app: no warning, whichever way round
-  assert.deepEqual(h.versionWarnings(st("0.9.120", { min_card_version: "0.9.110" })), []);
-  assert.deepEqual(h.versionWarnings(st("0.9.130", { min_card_version: "0.9.70" })), []);
+  assert.deepEqual(h.versionWarnings(st("0.9.135", { min_card_version: "0.9.110" })), []);
+  assert.deepEqual(h.versionWarnings(st("0.9.140", { min_card_version: "0.9.70" })), []);
   // an app older than the card's minimum
-  const old = h.versionWarnings(st("0.9.119"));
+  const old = h.versionWarnings(st("0.9.134"));
   assert.equal(old.length, 1);
-  assert.match(old[0], /0\.9\.120 or newer.*0\.9\.119/);
+  assert.match(old[0], /0\.9\.135 or newer.*0\.9\.134/);
   // a card older than the app's minimum
-  const oldCard = h.versionWarnings(st("0.9.130", { min_card_version: "99.0.0" }));
+  const oldCard = h.versionWarnings(st("0.9.140", { min_card_version: "99.0.0" }));
   assert.equal(oldCard.length, 1);
   assert.match(oldCard[0], /card 99\.0\.0 or newer/);
   // nothing to compare: no sensor, unavailable, no attribute (an older app)
   assert.deepEqual(h.versionWarnings({}), []);
   assert.deepEqual(h.versionWarnings(st("unavailable")), []);
-  assert.deepEqual(h.versionWarnings(st("0.9.130", {})), []);
+  assert.deepEqual(h.versionWarnings(st("0.9.140", {})), []);
 });
 
 test("history day payload accepts a date inside the range and nothing else", () => {
@@ -929,4 +929,25 @@ test("overnightReadout warns when nothing is learned yet or the fixed times don'
   const bad = h.overnightReadout({ state: "23:30–05:30", attributes: { source: "learned", learned: "23:30–05:30", learned_days: 4, fixed_not_valid: true } });
   assert.equal(bad.notes.length, 1);
   assert.match(bad.notes[0], /don't make a window/);
+});
+
+// ---- Re-plan now (app 0.9.135) ----
+test("replanStatus: nothing asked says nothing; waiting, done and given-up read plainly", () => {
+  const { replanStatus } = require("../ha-powerengine-card.js");
+  assert.deepEqual(replanStatus(null, "2026-10-10T06:30:00+00:00", 1000), { text: "", busy: false, done: false });
+  const ask = { at: 1000, before: "2026-10-10T06:30:00+00:00" };
+  assert.equal(replanStatus(ask, "2026-10-10T06:30:00+00:00", 5000).text, "Re-planning...");
+  assert.equal(replanStatus(ask, "2026-10-10T06:30:00+00:00", 5000).busy, true);
+  const done = replanStatus(ask, "2026-10-10T06:41:00+00:00", 5000);
+  assert.ok(/^Re-planned at \d\d:\d\d$/.test(done.text) && done.done && !done.busy);
+  const late = replanStatus(ask, "2026-10-10T06:30:00+00:00", 30000);
+  assert.ok(/^No new plan yet/.test(late.text) && !late.busy);
+});
+
+test("plannedImportP: a smart slot that is only a chance is priced as the chance, as the plan did", () => {
+  const { plannedImportP } = require("../ha-powerengine-card.js");
+  assert.ok(Math.abs(plannedImportP({ slot: true, slotProb: 0.6, importP: 6.66, standardP: 28.84 }) - 15.532) < 0.01);
+  assert.equal(plannedImportP({ slot: true, slotProb: 1, importP: 6.66, standardP: 28.84 }), 6.66);
+  assert.equal(plannedImportP({ slot: false, slotProb: null, importP: 28.84, standardP: null }), 28.84);
+  assert.equal(plannedImportP({ slot: true, slotProb: 0.6, importP: 6.66, standardP: null }), 6.66);   // an older app: nothing to blend with
 });
