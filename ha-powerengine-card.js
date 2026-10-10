@@ -7,11 +7,11 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.131";
+const CARD_VERSION = "0.9.135";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
-const MIN_APP_VERSION = "0.9.120";
+const MIN_APP_VERSION = "0.9.135";
 
 /** "0.9.70" -> [0, 9, 70]; null when it isn't a plain dotted number ("?", "unavailable", "0.9.70-beta"). */
 function parseVersion(v) {
@@ -6097,7 +6097,7 @@ function timelineLayout(tl, opts) {
   const planSteps = prices.map((x) => {
     const c = clip(x);
     return Object.assign(c, { importP: toNumber(x.import_p), exportP: toNumber(x.export_p), slot: x.slot_prob !== null && x.slot_prob !== undefined,
-      slotProb: toNumber(x.slot_prob), event: !!x.event, free: !!x.free, estimated: !!x.estimated });
+      slotProb: toNumber(x.slot_prob), standardP: toNumber(x.standard_p), event: !!x.event, free: !!x.free, estimated: !!x.estimated });
   }).filter((p) => p.b > p.a && p.importP !== null);
   const steps = histSteps.concat(planSteps);
   const pts = (arr) => (Array.isArray(arr) ? arr : []).map((v, i) => ({ h: h(v2Ms(path.start) + i * stepMs), level: toNumber(v) }))
@@ -6273,7 +6273,7 @@ function pathLines(layout, val) {
   const steps = (layout && layout.steps) || [];
   return {
     afterLosses: kb !== null || ks !== null,
-    buy: steps.map((s) => ({ a: s.a, b: s.b, p: s.importP * (kb === null ? 1 : kb), slot: s.slot, event: s.event })),
+    buy: steps.map((s) => ({ a: s.a, b: s.b, p: plannedImportP(s) * (kb === null ? 1 : kb), slot: s.slot, event: s.event })),
     sell: steps.filter((s) => s.exportP !== null).map((s) => ({ a: s.a, b: s.b, p: s.exportP * (ks === null ? 1 : ks), event: s.event })),
   };
 }
@@ -6286,6 +6286,15 @@ function mapReadoutText(cell, clock, buyLineAt) {
     t += ` Buying then costs ${v2P(buyLineAt, 1)} per stored kWh: ${cell.value >= buyLineAt ? "worth it, so a charge would run" : "not worth it, so no charge"}.`;
   }
   return t;
+}
+/** The price the plan worked with for a step. A smart slot that is only a chance is drawn at the offered price (app 0.9.134 and later),
+ *  but the plan priced it as the chance of that price plus the rest at the standard rate (`standard_p` beside it), so a buy line that
+ *  says "worth it" has to use that one. */
+function plannedImportP(s) {
+  if (s && s.slot && s.slotProb !== null && s.slotProb !== undefined && s.slotProb < 1 && s.standardP !== null && s.standardP !== undefined) {
+    return s.slotProb * s.importP + (1 - s.slotProb) * s.standardP;
+  }
+  return s.importP;
 }
 /** The plan card's content: kind "v1" | "none" | "ok" (needs at least the timeline or the curve). */
 function planCardView(states, now) {
@@ -6628,6 +6637,23 @@ class PowerEngineEngineCard extends PowerEngineV2Card {
   }
 }
 
+/* "Re-plan now" under the expected timeline: fires pe_v2_replan (admins only: HA's fire_event needs admin) and says what happened.
+   The plan sensor's state is the time the values were worked out, so a new state is the proof that a new plan has been made. */
+const REPLAN_EVENT = "pe_v2_replan";
+const REPLAN_WAIT_MS = 20000;
+/** What to say next to the button. `ask` is {at (ms), before (the sensor's state when asked)} or null; `worked` is its state now. */
+function replanStatus(ask, worked, nowMs) {
+  if (!ask) return { text: "", busy: false, done: false };
+  if (worked !== undefined && worked !== null && String(worked) !== String(ask.before)) {
+    const hm = v2Hm(worked);
+    return { text: hm ? `Re-planned at ${hm}` : "Re-planned just now", busy: false, done: true };
+  }
+  if (nowMs - ask.at > REPLAN_WAIT_MS) {
+    return { text: "No new plan yet. The app may be busy, not in Engine v2, or it did not get the request.", busy: false, done: false };
+  }
+  return { text: "Re-planning...", busy: true, done: false };
+}
+
 /* powerengine-v2-plan-card: the expected timeline, and the value map with a toggle to "along the expected path" ------ */
 class PowerEngineV2PlanCard extends PowerEngineV2Card {
   getCardSize() { return 9; }
@@ -6697,6 +6723,8 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     if (intent) { this._tlUser = intent.user; this._tlLeftMs = intent.leftMs; }
     this._drawnMinute = Math.floor(Date.now() / 60000);
     this._stale = false;
+    const rp = replanStatus(this._replanAsk, (states[V2_TIMELINE] || {}).state, Date.now());
+    if (rp.busy) { clearTimeout(this._replanTimer); this._replanTimer = setTimeout(() => this._draw(), REPLAN_WAIT_MS + 500); }
     this.shadowRoot.innerHTML = `<style>${V2_CSS}
       .tlbox { display: grid; grid-template-columns: 40px minmax(0, 1fr) 46px; align-items: start; min-width: 0; }
       .tlbox svg { display: block; }
@@ -6707,6 +6735,9 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
       .readout { font-size: 13px; min-height: 2.6em; background: var(--secondary-background-color); border-radius: 8px; padding: 8px 12px; }
       .gap { display: flex; flex-direction: column; gap: 14px; }
       .readout.tl { min-height: 8.5em; line-height: 1.45; }
+      .replan { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 4px 16px 12px; }
+      .replan button { font: inherit; font-size: 13px; font-weight: 500; border: 1px solid var(--primary-color); background: none; color: var(--primary-color); padding: 6px 14px; border-radius: 8px; cursor: pointer; }
+      .replan button[disabled] { opacity: .5; cursor: default; }
     </style>
     <div class="gap">
     ${T ? `<ha-card>
@@ -6714,6 +6745,7 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
       <div class="head"><span class="title">Expected timeline · next ${Math.round(T.spanH - T.nowH)} hours</span>${v.chip ? `<span class="chip muted">${escHtml(v.chip)}</span>` : ""}</div>
       <div class="tlbox"><svg id="tl-axl" aria-hidden="true"></svg><div class="tlscroll" id="tl-scroll"><div id="timeline"></div></div><svg id="tl-axr" aria-hidden="true"></svg></div>
       <p class="readout tl" id="treadout" aria-live="polite">${escHtml(TIMELINE_HINT)}</p>
+      <div class="replan"><button id="replan" ${rp.busy ? "disabled" : ""}>Re-plan now</button><span class="muted small" id="replan-s" aria-live="polite">${escHtml(rp.text)}</span></div>
       <div class="legend">${legend(Object.keys(V2_MODES).filter((k) => k !== "none" && k !== "free").map((k) => [`var(${V2_MODES[k].colour})`, V2_MODES[k].name]))
         .concat(legend([["var(--v2-battery)", "Battery (shaded: likely range)"], ["var(--v2-price)", "Import price (dashed: smart slot that may not come)"]]))
         .concat(T.sun ? legend([["var(--v2-sun)", T.sun.peak > 0 ? `Sun forecast (shaded: low to high; peak ${T.sun.peak.toFixed(1)} kW)` : "Sun forecast (none expected in this window)"], ["var(--v2-house)", "House use expected (strip is 0 to " + T.sun.max + " kW)"]]) : "")}</div>
@@ -6728,9 +6760,25 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     </ha-card>` : ""}
     </div>`;
     this.shadowRoot.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => { this._view = b.dataset.view; this._renderValue(); this.shadowRoot.querySelectorAll(".seg button").forEach((o) => o.setAttribute("aria-pressed", String(o === b))); }));
+    const rb = this.shadowRoot.getElementById("replan");
+    if (rb) rb.addEventListener("click", () => this._replan(states));
     if (T) this._whenLaidOut(() => this._drawTimeline(this.shadowRoot.getElementById("timeline"), v));
     if (keepRead) { const ro = this.shadowRoot.getElementById("treadout"); if (ro) ro.innerHTML = keepRead; }
     if (v.grid) this._renderValue();
+  }
+  /** "Re-plan now": ask the app to work the values out again from the live readings, then redraw. */
+  async _replan(states) {
+    this._replanAsk = { at: Date.now(), before: (states[V2_TIMELINE] || {}).state };
+    this._draw();
+    try {
+      await this._hass.callWS({ type: "fire_event", event_type: REPLAN_EVENT, event_data: {} });
+    } catch (err) {
+      this._replanAsk = null;
+      const el = this.shadowRoot.getElementById("replan-s");
+      if (el) el.textContent = "Could not ask for a re-plan: only a Home Assistant administrator can.";
+      const b = this.shadowRoot.getElementById("replan");
+      if (b) b.disabled = false;
+    }
   }
   /** Run `draw` once the scroll box has a width. Inside Home Assistant `ha-card` is itself a custom element that renders its slot a
    *  moment after it is created, so a box built in the same breath has no width: the plot was sized for a made-up width and the scroll
@@ -7382,7 +7430,7 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
 });
 
 if (typeof module !== "undefined") {
-  module.exports = { PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
+  module.exports = { REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
