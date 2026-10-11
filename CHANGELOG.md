@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.136
+
+### Behaviour changes
+
+- **"Engine 2.1 beta" on the config page** (needs app 0.9.136): a third button under "Planning engine", shown only when the app says it has the choice. Switching asks for the same confirmation as v1 and v2, with a note that it is a beta. While it is in use, the "Engine v2 settings" group says "in use by engine 2.1 beta": the two share one set of settings, including ten new ones.
+
 ## 0.9.135
 
 ### Behaviour changes
