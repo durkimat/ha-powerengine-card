@@ -1171,7 +1171,9 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     box.replaceChildren(el("div", { class: "head" }, el("span", { class: "label" }, "Planning engine")),
       el("div", { class: "enginepick", role: "group", "aria-label": "Planning engine" },
         opt("v1", "Engine v1", "Half-hour plan, remade every 5 minutes and on changes."),
-        opt("v2", "Engine v2", "Acts on conditions: a level reached, a price change, the sun falling short.")));
+        opt("v2", "Engine v2", "Acts on conditions: a level reached, a price change, the sun falling short."),
+        ...((this._v2 && Array.isArray(this._v2.engines) && this._v2.engines.includes("v2_1")) || cur === "v2_1"
+          ? [opt("v2_1", "Engine 2.1 beta", "Engine v2 following its own plan, with a smooth cost keeping the battery off the very top and bottom. Beta.")] : [])));
     if (this._enginePending && this._enginePending !== cur) {
       const c = engineConfirm(cur, this._enginePending);
       box.append(el("div", { class: "engineconfirm" }, el("p", {}, el("b", {}, c.title), " ", c.text),
@@ -1193,7 +1195,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     this._renderEngineBox();
     try {
       await this._hass.callWS({ type: "fire_event", event_type: SAVE_EVENT, event_data: { config: buildConfig(base) } });
-      this._setBanner("info", `Switching to engine ${to}: sent to PowerEngine; waiting for it to check and save…`);
+      this._setBanner("info", `Switching to ${engineName(to)}: sent to PowerEngine; waiting for it to check and save…`);
       setTimeout(() => { if (this._saving) { this._saving = false; this._setBanner("info", SAVE_NO_REPLY); this._renderEngineBox(); this._refresh(); } }, SAVE_WAIT_MS);
     } catch (e) {
       this._saving = false;
@@ -1547,9 +1549,9 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
         g.house.chip.textContent = "used by both engines";
         g.house.wrap.style.order = 0;
         ["v1", "v2"].forEach((k) => {
-          const on = this._engine === k;
+          const on = (this._engine === "v2_1" ? "v2" : this._engine) === k;
           g[k].wrap.classList.toggle("dim", !on);
-          g[k].chip.textContent = on ? "in use" : "not in use: can be set now";
+          g[k].chip.textContent = on ? (this._engine === "v2_1" ? "in use by engine 2.1 beta" : "in use") : "not in use: can be set now";
           g[k].chip.className = `groupchip${on ? " on" : ""}`;
           g[k].wrap.style.order = on ? 1 : 2;
         });
@@ -6413,14 +6415,21 @@ function engineGrouping(roleKeys, settingKeys, featureKeys, systemKeys, v2On) {
 }
 /** The engine in use: what the app says is running, else the saved choice, else v1. */
 function engineInUse(states, saved) {
-  return v2Engine(states) || (((saved || {}).system || {}).engine === "v2" ? "v2" : "v1");
+  const e = (states || {})[ENGINE_SENSOR];
+  const choice = e && e.attributes ? e.attributes.choice : null;
+  if (v2Engine(states) === "v2" && choice === "v2_1") return "v2_1";     // engine 2.1 beta runs as engine v2 (the sensor says "v2")
+  const savedChoice = ((saved || {}).system || {}).engine;
+  return v2Engine(states) || (savedChoice === "v2" || savedChoice === "v2_1" ? savedChoice : "v1");
 }
+/** The name of an engine choice, for messages. */
+function engineName(id) { return id === "v2_1" ? "engine 2.1 beta" : `engine ${id}`; }
 /** The text of the inline confirmation, the same in both directions. */
 function engineConfirm(from, to) {
+  const beta = to === "v2_1" ? " It is a beta: it follows its own plan and keeps the battery below about 95%; watch it for a few days." : "";
   return {
-    title: `Switch to engine ${to}?`,
-    text: `It takes over within a few seconds. Active, Passive and Pause stay as they are; the inverter keeps its current command until engine ${to} has decided. Engine ${from}'s settings are kept, and you can switch back here at any time.`,
-    confirm: `Switch to ${to}`, cancel: `Keep ${from}`,
+    title: `Switch to ${engineName(to)}?`,
+    text: `It takes over within a few seconds. Active, Passive and Pause stay as they are; the inverter keeps its current command until ${engineName(to)} has decided. ${engineName(from)[0].toUpperCase()}${engineName(from).slice(1)}'s settings are kept, and you can switch back here at any time.${beta}`,
+    confirm: `Switch to ${to === "v2_1" ? "2.1 beta" : to}`, cancel: `Keep ${from === "v2_1" ? "2.1 beta" : from}`,
   };
 }
 /** A v2 settings block ready to send: numbers as numbers, flags as booleans, nothing empty. */
@@ -6438,7 +6447,7 @@ function cleanV2Block(block) {
 function engineFields(supported, engine, block) {
   if (!supported) return {};
   const out = {};
-  if (engine === "v1" || engine === "v2") out.system = { engine };
+  if (engine === "v1" || engine === "v2" || engine === "v2_1") out.system = { engine };
   const clean = cleanV2Block(block);
   if (Object.keys(clean).length) out.engine_v2 = clean;
   return out;
