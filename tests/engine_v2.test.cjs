@@ -316,6 +316,24 @@ test("engine in use: the running engine wins, then the saved choice", () => {
   assert.strictEqual(card.engineInUse({ [card.ENGINE_SENSOR]: st("unavailable") }, null), "v1");
 });
 
+test("engine 2.1 beta: the app says v2 and names the choice; the card keeps it apart from v2", () => {
+  const sensor = (state, choice) => ({ state, attributes: choice ? { choice } : {} });
+  assert.strictEqual(card.engineInUse({ [card.ENGINE_SENSOR]: sensor("v2", "v2_1") }, { system: { engine: "v2" } }), "v2_1");
+  assert.strictEqual(card.engineInUse({ [card.ENGINE_SENSOR]: sensor("v2", "v2") }, { system: { engine: "v2_1" } }), "v2");
+  assert.strictEqual(card.engineInUse({ [card.ENGINE_SENSOR]: sensor("v2") }, {}), "v2");                  // an older app names no choice
+  assert.strictEqual(card.engineInUse({ [card.ENGINE_SENSOR]: sensor("v1", "v2_1") }, {}), "v1");          // v1 running: the sensor wins
+  assert.strictEqual(card.engineInUse({}, { system: { engine: "v2_1" } }), "v2_1");                         // nothing running: the saved choice
+  assert.deepStrictEqual(card.engineFields(true, "v2_1", { top_up_cost_p: 0 }), { system: { engine: "v2_1" }, engine_v2: { top_up_cost_p: 0 } });
+  const c = card.engineConfirm("v2", "v2_1");
+  assert.strictEqual(c.title, "Switch to engine 2.1 beta?");
+  assert.strictEqual(c.confirm, "Switch to 2.1 beta");
+  assert.strictEqual(c.cancel, "Keep v2");
+  assert.match(c.text, /beta/);
+  assert.match(c.text, /Engine v2's settings are kept/);
+  assert.strictEqual(card.engineConfirm("v2_1", "v1").cancel, "Keep 2.1 beta");
+  assert.match(card.engineConfirm("v2_1", "v1").text, /Engine 2\.1 beta's settings are kept/);
+});
+
 test("the confirmation reads the same in both directions", () => {
   const up = card.engineConfirm("v1", "v2"), down = card.engineConfirm("v2", "v1");
   assert.strictEqual(up.title, "Switch to engine v2?");
