@@ -70,3 +70,25 @@ test("the profiles sensor is merged into the catalogue only when the app publish
   assert.deepStrictEqual(v.profiles.saved, ["mine"]);
   assert.deepStrictEqual(v.settings, [{ key: "a" }]);
 });
+
+test("the engine badge names the settings profile engine v2 runs on, only for engine v2 in use", () => {
+  const st = (state, attributes = {}) => ({ state, attributes });
+  const world = (engine, attrs) => ({ "sensor.pe_state_engine": st(engine, attrs), "sensor.pe_state_operation_mode": st("active"), "switch.pe_ctl_pause": st("off"), "sensor.pe_v2_mode": st("self_use", {}) });
+  assert.strictEqual(c.engineBadge(world("v2", { choice: "v2_1", profile: "2.1 beta" }), "v2").profile, "2.1 beta");
+  assert.strictEqual(c.engineBadge(world("v2", { choice: "v2" }), "v2").profile, "");            // an older app names none
+  assert.strictEqual(c.engineBadge(world("v1", { profile: "x" }), "v2").profile, "");           // v1 in use: engine v2's badge is not in use
+  assert.strictEqual(c.engineBadge(world("v2", { profile: "x" }), "v1").profile, "");
+});
+
+test("the history and comparison views carry the profile", () => {
+  const rows = [{ t: "2026-10-06T10:00:00Z", mode: "self_use", sent: true }, { t: "2026-10-06T10:30:00Z", mode: "self_use", sent: true }];
+  const v = c.v2HistoryView({ date: "2026-10-06", series: rows, in_control: "v2", profile: "mine" });
+  assert.strictEqual(v.profile, "mine");
+  assert.strictEqual(c.v2HistoryView({ date: "2026-10-06", series: rows, in_control: "v2" }).profile, "");
+  const cmp = c.engineCompareView({ days: [
+    { date: "2026-10-06", status: "ok", in_control: "v2", live: true, v1: 1, v2: 1.2, bound: 1.5, profile: "2.1 beta" },
+    { date: "2026-10-05", status: "ok", in_control: "v1", live: true, v1: 1, v2: 1.2, bound: 1.5, profile: "2.1 beta" },
+  ] }, "ok");
+  assert.strictEqual(cmp.rows[0].controlText, "engine v2 · 2.1 beta");
+  assert.strictEqual(cmp.rows[1].controlText, "engine v1");                                      // a profile only goes with engine v2
+});
