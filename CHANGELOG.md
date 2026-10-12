@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.137
+
+### Behaviour changes
+
+- **Settings profiles for engine v2.** A "Settings profile" box under the Planning engine choice lets you load "defaults", "2.1 beta" or your own saved profile, save your changes as a new profile, update or delete one of yours, and revert to the profile in use. It shows how many settings you have changed from the profile. Engine 2.1 beta is no longer a separate engine button; with the new app it is a profile. Needs app 0.9.137 for profiles (an older app shows the page as before).
+
 ## 0.9.136
 
 ### Behaviour changes

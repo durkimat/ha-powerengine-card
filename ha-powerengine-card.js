@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.136";
+const CARD_VERSION = "0.9.137";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -495,6 +495,8 @@ function buildConfig(draft) {
     const f = engineFields(true, (draft.system || {}).engine, draft.engine_v2);
     if (f.system) out.system = Object.assign({}, out.system, f.system);
     if (f.engine_v2) out.engine_v2 = f.engine_v2;
+    if (typeof draft.v2_profile === "string" && draft.v2_profile) out.v2_profile = draft.v2_profile;      // only set when the app has profiles
+    if (draft.v2_profiles && Object.keys(draft.v2_profiles).length) out.v2_profiles = draft.v2_profiles;
   }
   if (draft.remove_entities) out.remove_entities = true;
   return out;
@@ -790,9 +792,11 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     if (this._site) draft.site = Object.assign({}, this._siteSaved); else delete draft.site;
     this._devices = devicesSupported(ver.state);
     if (this._devices) draft.devices = deviceDraft(draft.devices); else delete draft.devices;
-    this._v2 = v2Supported(s) ? s[V2_SETTINGS].attributes : null;
-    if (this._v2) { draft.engine_v2 = Object.assign({}, this._saved.engine_v2 || {}); draft.system.engine = engineInUse(s, this._saved); this._engine = draft.system.engine; }
-    else { delete draft.engine_v2; this._engine = null; }
+    this._v2 = v2Supported(s) ? v2WithProfiles(s) : null;
+    if (this._v2) {
+      draft.engine_v2 = Object.assign({}, this._saved.engine_v2 || {}); draft.system.engine = uiEngine(this._v2, engineInUse(s, this._saved)); this._engine = draft.system.engine;
+      Object.assign(draft, profileDraft(this._v2, this._saved));
+    } else { delete draft.engine_v2; delete draft.v2_profile; delete draft.v2_profiles; this._engine = null; }
     // no choice saved yet: the draft shows what the app is using (derived from the mapped guards), or carries none when
     // that is "unset", so the catalogue's empty default is never shown as a real choice or saved by accident
     if (!((this._saved.system || {}).other_controller)) {
@@ -913,7 +917,9 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       .engineopt[aria-pressed="true"] { border-color: var(--primary-color); box-shadow: 0 0 0 1px var(--primary-color); }
       .engineopt small { color: var(--secondary-text-color); }
       .engineconfirm { border: 1px solid var(--primary-color); background: rgba(3, 169, 244, .1); border-radius: 10px; padding: 10px 12px; margin-top: 10px; display: flex; flex-direction: column; gap: 10px; }
-      .engineconfirm .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+      .engineconfirm .btns, .profilebox .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+      .profilebox { margin-top: 12px; border-top: 1px solid var(--divider-color); padding-top: 8px; }
+      .profilebox .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
       .groups { display: flex; flex-direction: column; }
       .group.dim { opacity: .6; }
       .grouphead { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin: 14px 0 2px; }
@@ -1171,8 +1177,8 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     box.replaceChildren(el("div", { class: "head" }, el("span", { class: "label" }, "Planning engine")),
       el("div", { class: "enginepick", role: "group", "aria-label": "Planning engine" },
         opt("v1", "Engine v1", "Half-hour plan, remade every 5 minutes and on changes."),
-        opt("v2", "Engine v2", "Acts on conditions: a level reached, a price change, the sun falling short."),
-        ...((this._v2 && Array.isArray(this._v2.engines) && this._v2.engines.includes("v2_1")) || cur === "v2_1"
+        opt("v2", "Engine v2", "Acts on conditions: a level reached, a price change, the sun falling short. Its settings come as profiles, below."),
+        ...(!(this._v2 && this._v2.profiles) && ((this._v2 && Array.isArray(this._v2.engines) && this._v2.engines.includes("v2_1")) || cur === "v2_1")
           ? [opt("v2_1", "Engine 2.1 beta", "Engine v2 following its own plan, with a smooth cost keeping the battery off the very top and bottom. Beta.")] : [])));
     if (this._enginePending && this._enginePending !== cur) {
       const c = engineConfirm(cur, this._enginePending);
@@ -1181,6 +1187,84 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
           el("button", { class: "primary", disabled: this._readOnly || this._saving, onclick: () => this._switchEngine(this._enginePending) }, c.confirm),
           el("button", { onclick: () => { this._enginePending = null; this._renderEngineBox(); } }, c.cancel))));
     }
+    if (cur === "v2" && this._v2 && this._v2.profiles) box.append(this._profileView());
+  }
+
+  _profileSig() { return JSON.stringify([this._draft && this._draft.v2_profile, this._draft && this._draft.v2_profiles, this._profilePending, profileChanges(this._v2, (this._draft || {}).engine_v2)]); }
+
+  /** The settings profile: which one is in use, whether you have changed it, and loading, saving and deleting. */
+  _profileView() {
+    const cat = this._v2, d = this._draft, saved = d.v2_profiles || {}, active = d.v2_profile;
+    const names = profileList(cat, saved);
+    const changed = profileChanges(cat, d.engine_v2);
+    const busy = this._readOnly || this._saving;
+    const pick = el("select", { disabled: busy, onchange: (ev) => { this._profilePending = ev.target.value === active ? null : { kind: "load", name: ev.target.value }; this._renderEngineBox(); } });
+    names.forEach((n) => pick.append(el("option", { value: n.name }, n.builtin ? `${n.name} (built in)` : n.name)));
+    pick.value = this._profilePending && this._profilePending.kind === "load" ? this._profilePending.name : active;
+    const note = (names.find((n) => n.name === active) || {}).note;
+    const isSaved = !!saved[active];
+    const btn = (label, kind, extra) => el("button", Object.assign({ disabled: busy, onclick: () => { this._profilePending = { kind }; this._renderEngineBox(); } }, extra || {}), label);
+    const row = el("div", { class: "btns" },
+      isSaved && changed.length ? btn(`Save changes to “${active}”`, "update") : null,
+      changed.length ? btn("Save as a new profile…", "new") : null,
+      changed.length ? btn(`Revert to “${active}”`, "load", { onclick: () => { this._profilePending = { kind: "load", name: active }; this._renderEngineBox(); } }) : null,
+      isSaved ? btn(`Delete “${active}”`, "delete") : null);
+    const out = el("div", { class: "profilebox" },
+      el("div", { class: "head" }, el("span", { class: "label" }, "Settings profile")),
+      el("div", { class: "row" }, pick, el("span", { class: "desc" }, changed.length ? `Changed from “${active}”: ${changed.length} setting${changed.length === 1 ? "" : "s"}.` : (note || "Your saved profile."))),
+      row);
+    const p = this._profilePending;
+    if (p) {
+      let text, confirm, name = null, input = null;
+      if (p.kind === "load") {
+        text = `Loading “${p.name}” replaces the engine's tuning settings with the profile's. ${changed.length ? "Your changes since you loaded this profile are dropped (save them as a profile first to keep them). " : ""}Your reserve, comfort band and what the engine may do stay as they are. Other unsaved edits on this page stay unsaved.`;
+        confirm = `Load “${p.name}”`;
+      } else if (p.kind === "delete") {
+        text = `Delete the saved profile “${active}”? The engine goes back to the built-in defaults profile and keeps the changes you made on top.`;
+        confirm = `Delete “${active}”`;
+      } else if (p.kind === "update") {
+        text = `Replace the saved profile “${active}” with its values plus your changes.`;
+        confirm = `Save changes to “${active}”`;
+      } else {
+        input = el("input", { type: "text", placeholder: "Profile name", maxlength: String(cat.profiles.max_name || 30), value: p.text || "", oninput: (ev) => { p.text = ev.target.value; } });
+        text = `Saves the values in use (“${active}” plus your changes) as a new profile and switches to it. Up to ${cat.profiles.max_saved || 10} profiles can be saved.`;
+        confirm = "Save profile";
+      }
+      const go = () => {
+        let fields;
+        if (p.kind === "load") fields = profileLoadFields(cat, saved, d.engine_v2, p.name);
+        else if (p.kind === "delete") fields = profileDeleteFields(cat, saved, active, d.engine_v2);
+        else fields = profileSaveFields(cat, saved, active, d.engine_v2, p.kind === "update" ? active : (p.text || ""));
+        if (fields.error) { this._setBanner("error", fields.error); return; }
+        this._applyProfile(fields, p.kind === "load" ? `Loading “${p.name}”` : p.kind === "delete" ? "Deleting the profile" : "Saving the profile");
+      };
+      out.append(el("div", { class: "engineconfirm" }, el("p", {}, text), input,
+        el("div", { class: "btns" }, el("button", { class: "primary", disabled: busy, onclick: go }, confirm),
+          el("button", { onclick: () => { this._profilePending = null; this._renderEngineBox(); } }, "Cancel"))));
+    }
+    return out;
+  }
+
+  /** Sends the saved configuration with only the profile fields changed (other edits on this page stay unsaved drafts). */
+  async _applyProfile(fields, what) {
+    if (this._readOnly || this._saving) return;
+    const base = this._baseDraft(this._saved || {});
+    base.v2_profile = fields.v2_profile;
+    base.v2_profiles = fields.v2_profiles;
+    base.engine_v2 = fields.engine_v2;
+    this._profilePending = null;
+    this._saving = true;
+    this._renderEngineBox();
+    try {
+      await this._hass.callWS({ type: "fire_event", event_type: SAVE_EVENT, event_data: { config: buildConfig(base) } });
+      this._setBanner("info", `${what}: sent to PowerEngine; waiting for it to check and save…`);
+      setTimeout(() => { if (this._saving) { this._saving = false; this._setBanner("info", SAVE_NO_REPLY); this._renderEngineBox(); this._refresh(); } }, SAVE_WAIT_MS);
+    } catch (e) {
+      this._saving = false;
+      this._setBanner("error", `Could not send: ${e.message || e}. Saving needs an admin user.`);
+      this._renderEngineBox();
+    }
+    this._refresh();
   }
 
   /** Sends the saved configuration with only the engine changed (other edits on this page stay unsaved drafts). */
@@ -1211,8 +1295,8 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const base = initialDraft(saved, [], [], this._settings).draft;
     if (this._siteSaved) base.site = this._siteSaved; else delete base.site;
     if (this._devices) base.devices = deviceDraft(base.devices); else delete base.devices;
-    if (this._v2) { base.engine_v2 = Object.assign({}, saved.engine_v2 || {}); base.system.engine = engineInUse(this._hass.states, saved); }
-    else delete base.engine_v2;
+    if (this._v2) { base.engine_v2 = Object.assign({}, saved.engine_v2 || {}); base.system.engine = uiEngine(this._v2, engineInUse(this._hass.states, saved)); Object.assign(base, profileDraft(this._v2, saved)); }
+    else { delete base.engine_v2; delete base.v2_profile; delete base.v2_profiles; }
     return base;
   }
 
@@ -1542,21 +1626,21 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
         if (!v2Same(vals[st.key], was)) tally(section, "unsaved");
       });
       (this._v2Readouts || []).forEach(({ box, fn }) => { const t = fn(); box.textContent = t || ""; box.style.display = t ? "" : "none"; });
-      const eng = engineInUse(states, saved);
+      const eng = uiEngine(this._v2, engineInUse(states, saved));
       if (eng !== this._engine) { this._engine = eng; this._draft.system.engine = eng; }
       const g = this._groups || {};
       if (g.house) {
         g.house.chip.textContent = "used by both engines";
         g.house.wrap.style.order = 0;
         ["v1", "v2"].forEach((k) => {
-          const on = (this._engine === "v2_1" ? "v2" : this._engine) === k;
+          const on = this._engine === k;
           g[k].wrap.classList.toggle("dim", !on);
-          g[k].chip.textContent = on ? (this._engine === "v2_1" ? "in use by engine 2.1 beta" : "in use") : "not in use: can be set now";
+          g[k].chip.textContent = on ? "in use" : "not in use: can be set now";
           g[k].chip.className = `groupchip${on ? " on" : ""}`;
           g[k].wrap.style.order = on ? 1 : 2;
         });
       }
-      const sig = [this._engine, this._enginePending, this._saving, this._readOnly].join("|");
+      const sig = [this._engine, this._enginePending, this._saving, this._readOnly, this._profileSig()].join("|");
       if (sig !== this._engineSig) { this._engineSig = sig; this._renderEngineBox(); }
     }
     Object.values(secs).forEach((s) => {
@@ -5876,6 +5960,7 @@ const V2_RECENT = "sensor.pe_v2_recent";            // the last 18 hours as run 
 const V2_TRIGGERS = "sensor.pe_v2_triggers";
 const V2_DIAG = "sensor.pe_diag_v2";
 const V2_SETTINGS = "sensor.pe_diag_v2_settings";
+const V2_PROFILES = "sensor.pe_diag_v2_profiles";      // the settings profiles (0.9.137+); the catalogue above is near HA's size limit
 const V2_NOT_RUNNING = "Engine v2 is not running (engine v1 is).";
 const V2_NO_DATA = "Engine v2 has not published anything yet.";
 const V2_PREVIEW_LINE = "Preview: engine v1 is in control. Nothing is sent.";
@@ -5927,6 +6012,11 @@ function v2Preview(states) {
 function previewLabel(label, preview) { return preview ? `Would be ${lowerFirst(label)}` : label; }
 function previewBanner(preview) { return preview ? `<p class="preview-line" role="note">${escHtml(V2_PREVIEW_LINE)}</p>` : ""; }
 /** Does the app publish the v2 settings catalogue (so the v2 keys may be sent and shown)? */
+/** The settings catalogue with the profiles sensor's attributes as `profiles` (and `profile`, the one in use), when the app has them. */
+function v2WithProfiles(states) {
+  const cat = states[V2_SETTINGS].attributes, p = v2Attrs(states, V2_PROFILES);
+  return p && Array.isArray(p.builtin) ? Object.assign({}, cat, { profile: p.profile, profiles: p }) : cat;
+}
 function v2Supported(states) {
   const a = v2Attrs(states, V2_SETTINGS);
   return !!(a && Array.isArray(a.settings) && a.settings.length);
@@ -6420,6 +6510,61 @@ function engineInUse(states, saved) {
   if (v2Engine(states) === "v2" && choice === "v2_1") return "v2_1";     // engine 2.1 beta runs as engine v2 (the sensor says "v2")
   const savedChoice = ((saved || {}).system || {}).engine;
   return v2Engine(states) || (savedChoice === "v2" || savedChoice === "v2_1" ? savedChoice : "v1");
+}
+/** With profiles (an app that publishes `profiles`), engine 2.1 beta is a profile of engine v2, not an engine. */
+function uiEngine(v2cat, eng) { return eng === "v2_1" && v2cat && v2cat.profiles ? "v2" : eng; }
+/** The profile fields of a draft: the profile in use (what the app runs when the config names none) and your saved ones. */
+function profileDraft(v2cat, saved) {
+  const profiles = (v2cat || {}).profiles ? Object.assign({}, (saved || {}).v2_profiles || {}) : {};
+  return { v2_profile: (saved || {}).v2_profile || (v2cat || {}).profile || "defaults", v2_profiles: profiles };
+}
+/** Every profile you can load: the built-in ones, then your saved ones. */
+function profileList(v2cat, savedProfiles) {
+  const p = (v2cat || {}).profiles || {};
+  return [...(p.builtin || []).map((b) => ({ name: b.name, builtin: true, note: b.note })),
+    ...Object.keys(savedProfiles || {}).sort().map((name) => ({ name, builtin: false, note: "" }))];
+}
+/** The values a profile gives (only those that differ from engine v2's defaults), or null when it is unknown. */
+function profileBase(v2cat, savedProfiles, name) {
+  const b = (((v2cat || {}).profiles || {}).builtin || []).find((x) => x.name === name);
+  if (b) return Object.assign({}, b.values);
+  return savedProfiles && savedProfiles[name] ? Object.assign({}, savedProfiles[name]) : null;
+}
+function isSiteKey(v2cat, key) { return (((v2cat || {}).profiles || {}).site_keys || []).includes(key); }
+/** The settings in the changes block that a profile would hold (house settings are not part of a profile). */
+function profileChanges(v2cat, block) {
+  return Object.keys(block || {}).filter((k) => !isSiteKey(v2cat, k));
+}
+function withoutProfileKeys(v2cat, block) {
+  const out = {};
+  Object.entries(block || {}).forEach(([k, v]) => { if (isSiteKey(v2cat, k)) out[k] = v; });
+  return out;
+}
+/** Loading a profile: it becomes the one in use and the changes made on top of the old one are dropped. */
+function profileLoadFields(v2cat, savedProfiles, block, name) {
+  if (!profileBase(v2cat, savedProfiles, name)) return { error: `No profile called “${name}”.` };
+  return { v2_profile: name, v2_profiles: Object.assign({}, savedProfiles), engine_v2: withoutProfileKeys(v2cat, block) };
+}
+/** Saving: the profile in use plus your changes, under `name` (an existing saved name is replaced). */
+function profileSaveFields(v2cat, savedProfiles, active, block, name) {
+  const n = String(name || "").trim();
+  const p = (v2cat || {}).profiles || {};
+  if (!n) return { error: "Give the profile a name." };
+  if (n.length > (p.max_name || 30)) return { error: `A profile name is at most ${p.max_name || 30} characters.` };
+  if ((p.builtin || []).some((b) => b.name.toLowerCase() === n.toLowerCase())) return { error: `“${n}” is a built-in profile; pick another name.` };
+  const exists = !!(savedProfiles || {})[n];
+  if (!exists && Object.keys(savedProfiles || {}).length >= (p.max_saved || 10)) return { error: `Up to ${p.max_saved || 10} profiles can be saved; delete one first.` };
+  const base = profileBase(v2cat, savedProfiles, active) || {};
+  const changes = {};
+  profileChanges(v2cat, block).forEach((k) => { changes[k] = block[k]; });
+  const values = cleanV2Block(Object.assign({}, base, changes));
+  return { v2_profile: n, v2_profiles: Object.assign({}, savedProfiles, { [n]: values }), engine_v2: withoutProfileKeys(v2cat, block) };
+}
+/** Deleting the profile in use: back to the built-in defaults profile, with your changes kept on top. */
+function profileDeleteFields(v2cat, savedProfiles, active, block) {
+  const rest = Object.assign({}, savedProfiles);
+  delete rest[active];
+  return { v2_profile: "defaults", v2_profiles: rest, engine_v2: Object.assign({}, block) };
 }
 /** The name of an engine choice, for messages. */
 function engineName(id) { return id === "v2_1" ? "engine 2.1 beta" : `engine ${id}`; }
@@ -7443,6 +7588,7 @@ if (typeof module !== "undefined") {
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
+  v2WithProfiles, V2_PROFILES, uiEngine, profileDraft, profileList, profileBase, profileChanges, profileLoadFields, profileSaveFields, profileDeleteFields,
   ENGINE_SENSOR, V2_NOT_RUNNING, V2_NO_DATA, V2_MODES, v2Engine, v2Supported, v2Gate, valueBarGeometry, modeSubtitle, exitRows, engineCardView, timelineLayout, recentRows, scrollIntent, HISTORY_HOURS, V2_RECENT, sunLayout, levelAtHour, bandLabel, timelineHover,
   heatColour, valueMapGrid, mapCellAt, interpValue, pathValueSeries, pathLines, mapReadoutText, planCardView, causeBars, causeLabel, comfortSummary, healthCardView,
   ENGINE_ICONS, engineIcon, refreshEngineIcons, engineBadge, BADGE_LINES, V2_HISTORY_DAY_EVENT, v2HistoryDayPayload, v2HistoryView, engineCompareView, calibrationLine, gbp, COMPARE_WAITING,
