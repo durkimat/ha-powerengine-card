@@ -7250,7 +7250,10 @@ function engineBadge(states, engine) {
   const op = st[MODE_SENSOR] && st[MODE_SENSOR].state;
   const pause = st[PAUSE_SWITCH] && st[PAUSE_SWITCH].state === "on";
   const label = (kind) => ({ active: "Active", paused: "Paused", passive: "Passive", unknown: "Unknown" }[kind]);
-  const make = (kind, line) => ({ engine: eng, kind, label: label(kind), line: line || BADGE_LINES[kind], chosen });
+  const e = st[ENGINE_SENSOR];
+  const prof = e && e.attributes && typeof e.attributes.profile === "string" ? e.attributes.profile : "";
+  const profile = eng === "v2" && chosen === "v2" ? prof : "";      // the settings profile engine v2 runs on, when it is the engine in use
+  const make = (kind, line) => ({ engine: eng, kind, label: label(kind), line: line || BADGE_LINES[kind], chosen, profile });
   if (chosen !== eng) {
     if (eng === "v2" && !v2Preview(st)) return make("passive", BADGE_LINES.off);
     return make("passive");
@@ -7269,7 +7272,7 @@ class PowerEngineEngineBadgeCard extends PowerEngineV2Card {
   }
   getCardSize() { return 1; }
   getGridOptions() { return { columns: "full", rows: "auto" }; }   // the line wraps on a phone: as tall as it needs
-  _ids() { return [MODE_SENSOR, PAUSE_SWITCH, V2_MODE]; }
+  _ids() { return [MODE_SENSOR, PAUSE_SWITCH, V2_MODE, ENGINE_SENSOR]; }
   _render(states) {
     const b = engineBadge(states, this._engine);
     this.shadowRoot.innerHTML = `<style>${V2_CSS}
@@ -7281,7 +7284,7 @@ class PowerEngineEngineBadgeCard extends PowerEngineV2Card {
       .badge-chip.passive, .badge-chip.unknown { background: var(--secondary-background-color); color: var(--secondary-text-color); }
       .eng { font-size: 16px; font-weight: 500; }
     </style>
-    <ha-card><span class="eng">Engine ${this._engine}</span><span class="badge-chip ${b.kind}" role="status">${escHtml(b.label)}</span><span class="muted">${escHtml(b.line)}</span></ha-card>`;
+    <ha-card><span class="eng">Engine ${this._engine}${b.profile ? ` · ${escHtml(b.profile)}` : ""}</span><span class="badge-chip ${b.kind}" role="status">${escHtml(b.label)}</span><span class="muted">${escHtml(b.line)}</span></ha-card>`;
   }
 }
 
@@ -7325,6 +7328,7 @@ function v2HistoryView(attrs) {
   const stepPts = (key) => raw.map((p) => ({ a: h(v2Ms(p.t)), b: h(v2Ms(p.t) + stepMs), y: toNumber(p[key]) })).filter((s) => s.y !== null);
   const sentCount = raw.filter(sentOf).length;
   const control = a.in_control === "v1" || a.in_control === "v2" || a.in_control === "mixed" ? a.in_control : (sentCount === 0 ? "v1" : sentCount === raw.length ? "v2" : "mixed");
+  const profile = typeof a.profile === "string" ? a.profile : "";
   const previewOnly = sentCount === 0;
   const partlyPreview = sentCount > 0 && sentCount < raw.length;
   const changes = (Array.isArray(a.changes) ? a.changes : []).filter((c) => c && v2Ms(c.at) !== null).sort((a, b) => v2Ms(b.at) - v2Ms(a.at)).map((c) => ({
@@ -7333,7 +7337,7 @@ function v2HistoryView(attrs) {
   const priceMax = Math.max(10, Math.ceil(Math.max(0, ...stepPts("import_p").map((s) => s.y), ...stepPts("export_p").map((s) => s.y)) / 5) * 5);
   const valueVals = pts("value_p").filter((p) => p.y !== null).map((p) => p.y);
   return Object.assign(base, {
-    kind: "ok", t0, spanH, stepMs, bands, previewOnly, partlyPreview, control,
+    kind: "ok", t0, spanH, stepMs, bands, previewOnly, partlyPreview, control, profile,
     banner: previewOnly ? "Preview only: engine v1 was in control on this day, so nothing was sent to the inverter. The modes below are what engine v2 would have chosen."
       : partlyPreview ? "Control changed during the day: the dimmed bands are where engine v2 was only previewing." : "",
     level: runsOf(pts("level")), expected: runsOf(pts("expected")), value: runsOf(pts("value_p")),
@@ -7412,7 +7416,7 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
     const legend = (items) => items.map(([c, t]) => `<span><i class="sw" style="background:${c}"></i>${escHtml(t)}</span>`).join("");
     const modesUsed = Array.from(new Set(v.bands.map((b) => b.mode)));
     this.shadowRoot.innerHTML = `${css}<ha-card>
-      <div class="head"><span class="title">Engine v2 history${v.date ? ` · ${escHtml(v.date)}` : ""}</span>${v.kind === "ok" ? `<span class="chip${v.control === "v2" ? "" : " muted"}">${v.control === "v2" ? "Engine v2 in control" : v.control === "v1" ? "Preview" : "Control changed"}</span>` : ""}</div>
+      <div class="head"><span class="title">Engine v2 history${v.date ? ` · ${escHtml(v.date)}` : ""}</span>${v.kind === "ok" ? `<span class="chip${v.control === "v2" ? "" : " muted"}">${v.control === "v2" ? `Engine v2 in control${v.profile ? ` · ${escHtml(v.profile)}` : ""}` : v.control === "v1" ? "Preview" : "Control changed"}</span>` : ""}</div>
       ${this._pickerHtml(attrs || {})}
       ${v.kind === "empty" ? `<p class="muted">${escHtml(v.text)}</p>` : `${v.banner ? `<p class="preview-line" role="note">${escHtml(v.banner)}</p>` : ""}
       <div class="chart" id="hist"></div>
@@ -7511,7 +7515,7 @@ function engineCompareView(attrs, state) {
       date: d.date, label: compareDayLabel(d.date), ok, best,
       reason: ok ? "" : (d.reason ? String(d.reason) : COMPARE_REASONS[d.status] || "not compared"),
       v1: gbp(d.v1), v2: gbp(d.v2), bound: gbp(d.bound), diff: diff === null ? "–" : gbp(diff, true), diffN: diff,
-      control, controlText: control ? `${control === "mixed" ? "mixed" : `engine ${control}`}${d.live === false ? " (passive)" : ""}` : "–",
+      control, controlText: control ? `${control === "mixed" ? "mixed" : `engine ${control}`}${control === "v2" && typeof d.profile === "string" && d.profile ? ` · ${d.profile}` : ""}${d.live === false ? " (passive)" : ""}` : "–",
       calib: c && toNumber(c.diff) !== null ? `Engine ${c.engine}'s replay against the metered cost: ${gbp(c.diff, true)}${toNumber(c.diff_pct) === null ? "" : ` (${Math.round(toNumber(c.diff_pct) * 10) / 10}%)`}` : "",
     };
   });
