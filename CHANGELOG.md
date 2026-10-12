@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.138
+
+### Behaviour changes
+
+- **The settings profile is shown with engine v2.** The engine badge reads "Engine v2 · <profile>", the Engine v2 history's chip reads "Engine v2 in control · <profile>", and the same-day comparison's "in control" column shows the profile. Needs app 0.9.138 for the profile (an older app shows them as before).
+
 ## 0.9.137
 
 ### Behaviour changes
