@@ -6133,6 +6133,16 @@ function recentRows(recent, nowMs, hours) {
     .filter((x) => x.b > from && x.a < nowMs).sort((p, q) => p.a - q.a);
 }
 
+/** The `runs` an app publishes (sensor.pe_v2_history, sensor.pe_v2_recent): the day as it ran, one row [at, mode, level at the start, 1 if only
+ *  previewed] per mode change. As {a, b (ms), mode, level (at a), preview}, each ending where the next begins and the last at `untilMs`
+ *  (null: leave the last one out, its end is not known). Empty when the app publishes none (an older app): the half-hours are then all there is. */
+function runRows(runs, untilMs) {
+  const rows = (Array.isArray(runs) ? runs : []).filter((r) => Array.isArray(r) && v2Ms(r[0]) !== null)
+    .map((r) => ({ a: v2Ms(r[0]), mode: r[1] || "none", level: toNumber(r[2]), preview: r[3] === 1 })).sort((p, q) => p.a - q.a);
+  rows.forEach((r, i) => { r.b = i + 1 < rows.length ? rows[i + 1].a : untilMs; });
+  return rows.filter((r) => r.b !== null && r.b !== undefined && r.b > r.a);
+}
+
 /** Did the person move the chart? Read from the scroll box just before it is replaced. `box`: {placed, laidOut, scrollLeft}; `geom`: {t0, pph,
  *  defPx} of that box. Only a box whose opening position actually took (it was laid out when placed) says anything: a card built before it is
  *  on screen has no width, the browser ignores the position it is given, and that 0 must not be read back as the person scrolling to the start.
@@ -6176,7 +6186,17 @@ function timelineLayout(tl, opts) {
       state: e <= now ? "past" : s < now ? "now" : "future", startMs: s, endMs: e });
   }).filter((b) => b.b > b.a);
   const histBands = [];
-  hist.forEach((r) => {
+  // the hours already run as they ran (`runs`: each change where it happened), up to the last whole half-hour; the half-hours are the fallback
+  const runs = histStop !== null && o.recent ? runRows(o.recent.runs, histStop).filter((r) => r.b > hist[0].a) : [];
+  if (runs.length) {
+    runs.forEach((r, i) => {
+      const a = h(r.a), b = Math.min(h(r.b), h(histStop));
+      if (b <= a) return;
+      const next = runs[i + 1];
+      histBands.push({ a: Math.max(0, a), b, mode: r.mode, until: "", reason: "", levelStart: a < 0 ? null : r.level, levelEnd: next ? next.level : hist[hist.length - 1].level,
+        state: "past", startMs: r.a, endMs: Math.min(r.b, histStop), ran: true, preview: r.preview });
+    });
+  } else hist.forEach((r) => {
     const last = histBands[histBands.length - 1];
     const a = h(r.a), b = h(r.b);
     if (last && last.mode === r.mode && last.preview === !r.sent && Math.abs(last.b - a) < 1e-6) { last.b = b; last.endMs = r.b; last.levelEnd = r.level; return; }
@@ -6194,7 +6214,8 @@ function timelineLayout(tl, opts) {
   const steps = histSteps.concat(planSteps);
   const pts = (arr) => (Array.isArray(arr) ? arr : []).map((v, i) => ({ h: h(v2Ms(path.start) + i * stepMs), level: toNumber(v) }))
     .filter((p) => p.level !== null && p.h >= lo - 1e-9 && p.h <= spanH + 1e-9);
-  const histLevel = hist.filter((r) => r.level !== null).map((r) => ({ h: h(r.b), level: r.level }));
+  const histLevel = hist.filter((r) => r.level !== null).map((r) => ({ h: h(r.b), level: r.level }))
+    .concat(runs.filter((r) => r.level !== null && h(r.a) >= 0 && r.a < histStop).map((r) => ({ h: h(r.a), level: r.level }))).sort((p, q) => p.h - q.h);
   const mid = histLevel.concat(path ? pts(path.mid) : []), low = path ? pts(path.low) : [], high = path ? pts(path.high) : [];
   const sun = sunLayout(a.sun, h, spanH);
   const ticks = [];
@@ -7305,7 +7326,7 @@ function runsOf(points) {
 }
 /** Everything the history card draws, from the attributes of sensor.pe_v2_history. kind: "none" | "empty" | "ok".
  *  Hours are from the start of the first half-hour. Pure. */
-function v2HistoryView(attrs) {
+function v2HistoryView(attrs, nowMs) {
   const a = attrs && typeof attrs === "object" ? attrs : null;
   if (!a) return { kind: "none", text: V2_HISTORY_NONE };
   const date = typeof a.date === "string" ? a.date : "";
@@ -7319,12 +7340,20 @@ function v2HistoryView(attrs) {
   const spanH = h(v2Ms(raw[raw.length - 1].t) + stepMs);
   const sentOf = (p) => p.sent !== false;
   const bandsRaw = raw.map((p) => ({ mode: p.mode || "none", a: h(v2Ms(p.t)), b: h(v2Ms(p.t) + stepMs), preview: !sentOf(p) }));
+  // the day as it ran, to the second, when the app publishes it (`runs`); else the mode that ran longest in each half-hour
+  const ranTo = a.runs_until && v2Ms(a.runs_until) !== null ? v2Ms(a.runs_until)
+    : (Number.isFinite(nowMs) ? nowMs : (() => { const done = raw.filter((p) => p.mode); return done.length ? v2Ms(done[done.length - 1].t) + stepMs : null; })());
+  const runs = runRows(a.runs, ranTo === null ? null : Math.min(ranTo, t0 + spanH * HOUR_MS));
+  const exact = runs.length > 0;
+  const bandsFrom = exact ? runs.map((r) => ({ mode: r.mode, a: Math.max(0, h(r.a)), b: h(r.b), preview: r.preview })) : bandsRaw;
   const bands = [];
-  bandsRaw.forEach((b) => {
+  bandsFrom.forEach((b) => {
     const last = bands[bands.length - 1];
     if (last && last.mode === b.mode && last.preview === b.preview && Math.abs(last.b - b.a) < 1e-6) last.b = b.b; else bands.push(Object.assign({}, b));
   });
   const pts = (key) => raw.map((p) => ({ h: h(v2Ms(p.t) + stepMs), y: toNumber(p[key]) }));     // level and value are at the half-hour's end
+  // the level as it ran: also where each run began, so a change inside a half-hour sits where it happened
+  const levelPts = pts("level").concat(exact ? runs.filter((r) => r.level !== null).map((r) => ({ h: h(r.a), y: r.level })) : []).sort((p, q) => p.h - q.h);
   const stepPts = (key) => raw.map((p) => ({ a: h(v2Ms(p.t)), b: h(v2Ms(p.t) + stepMs), y: toNumber(p[key]) })).filter((s) => s.y !== null);
   const sentCount = raw.filter(sentOf).length;
   const control = a.in_control === "v1" || a.in_control === "v2" || a.in_control === "mixed" ? a.in_control : (sentCount === 0 ? "v1" : sentCount === raw.length ? "v2" : "mixed");
@@ -7340,7 +7369,7 @@ function v2HistoryView(attrs) {
     kind: "ok", t0, spanH, stepMs, bands, previewOnly, partlyPreview, control, profile,
     banner: previewOnly ? "Preview only: engine v1 was in control on this day, so nothing was sent to the inverter. The modes below are what engine v2 would have chosen."
       : partlyPreview ? "Control changed during the day: the dimmed bands are where engine v2 was only previewing." : "",
-    level: runsOf(pts("level")), expected: runsOf(pts("expected")), value: runsOf(pts("value_p")),
+    level: runsOf(levelPts), expected: runsOf(pts("expected")), exact, value: runsOf(pts("value_p")),
     importSteps: stepPts("import_p"), exportSteps: stepPts("export_p"), priceMax,
     valueMax: valueVals.length ? Math.max(...valueVals) : 0,
     changes, ticks: (() => {
@@ -7401,7 +7430,7 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
   }
   _render(states) {
     const attrs = this._attrs(states);
-    const v = v2HistoryView(attrs);
+    const v = v2HistoryView(attrs, Date.now());
     const css = `<style>${V2_CSS}
       .picker { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       .picker input, .picker button { font: inherit; color: var(--primary-text-color); background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 6px; }
@@ -7588,7 +7617,7 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
 });
 
 if (typeof module !== "undefined") {
-  module.exports = { REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
+  module.exports = { runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
