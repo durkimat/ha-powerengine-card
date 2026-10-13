@@ -565,3 +565,52 @@ test("scrollIntent: at the opening position it keeps following now; moved, it ke
   assert.strictEqual(moved.leftMs, T0 + 5 * 3600000);                          // 100 px at 20 px an hour
   assert.strictEqual(card.scrollIntent({ placed: true, laidOut: true, scrollLeft: 0 }, geom).leftMs, T0);   // a real scroll to the start is still honoured
 });
+
+// ---- the day as it ran, to the second (`runs`), not half-hour by half-hour -------------------------------------------------
+test("runRows: each run ends where the next begins, the last at the given end; none without it", () => {
+  const runs = [[iso(2.1), "export", 80, 0], [iso(1), "charge", 50.5, 0], [iso(3), "self_use", null, 1], ["nope", "x"], null];
+  const rows = card.runRows(runs, T0 + 4 * 3600000);
+  assert.deepStrictEqual(rows.map((r) => r.mode), ["charge", "export", "self_use"]);                   // ordered, bad rows dropped
+  assert.strictEqual(rows[0].b, rows[1].a);
+  assert.strictEqual(rows[2].b, T0 + 4 * 3600000);
+  assert.strictEqual(rows[2].preview, true);
+  assert.strictEqual(rows[2].level, null);
+  assert.deepStrictEqual(card.runRows(runs, null).map((r) => r.mode), ["charge", "export"]);           // the last one's end is not known
+  assert.deepStrictEqual(card.runRows(undefined, 5), []);
+});
+
+test("the history card draws the runs where they happened, and falls back to half-hours without them", () => {
+  const half = (i, mode, level) => ({ t: new Date(T0 + i * HALF).toISOString(), mode, level, import_p: 6.66, export_p: 15, value_p: 10, sent: true });
+  const series = [half(0, "charge", 60), half(1, "export", 50), half(2, "export", 40)];
+  const without = card.v2HistoryView({ date: "2026-10-06", series, in_control: "v2" });
+  assert.deepStrictEqual(without.bands.map((b) => b.mode), ["charge", "export"]);                      // the half-hours merged
+  assert.strictEqual(without.exact, false);
+  const runs = [[new Date(T0).toISOString(), "charge", 45, 0], [new Date(T0 + 24 * 60000).toISOString(), "export", 61.2, 0]];
+  const v = card.v2HistoryView({ date: "2026-10-06", series, in_control: "v2", runs, runs_until: new Date(T0 + 3 * HALF).toISOString() });
+  assert.strictEqual(v.exact, true);
+  assert.deepStrictEqual(v.bands.map((b) => b.mode), ["charge", "export"]);
+  assert.ok(Math.abs(v.bands[0].b - 0.4) < 1e-9);                                                       // the change at minute 24, not 30
+  assert.ok(Math.abs(v.bands[1].b - 1.5) < 1e-9);
+  const lv = v.level.reduce((acc, r) => acc.concat(r), []);
+  assert.ok(lv.some((p) => Math.abs(p.h - 0.4) < 1e-9 && p.y === 61.2));                               // the level where the change happened
+  assert.ok(lv.every((p, i) => i === 0 || p.h >= lv[i - 1].h));
+  const today = card.v2HistoryView({ date: "2026-10-06", series: series.concat([half(3, null, null)]), in_control: "v2", runs }, T0 + 80 * 60000);
+  assert.ok(Math.abs(today.bands[today.bands.length - 1].b - 80 / 60) < 1e-9);                         // today's last run goes on to now
+});
+
+test("the plan chart's hours already run use the runs, up to the last whole half-hour", () => {
+  const now = T0 + 3.5 * 3600000;
+  const r = recent(3.5, 36);
+  const changeAt = now - 90 * 60000 - 7 * 60000;                                                        // inside a half-hour, off the grid
+  r.runs = [[new Date(now - 18 * 3600000).toISOString(), "self_use", 40, 0], [new Date(changeAt).toISOString(), "charge", 70.5, 0]];
+  const L = card.timelineLayout(timeline(), { now, recent: r });
+  const ran = L.bands.filter((b) => b.ran);
+  assert.deepStrictEqual(ran.map((b) => b.mode), ["self_use", "charge"]);
+  assert.ok(Math.abs(ran[0].b - (changeAt - L.t0) / 3600000) < 1e-9);                                   // the change sits where it happened
+  assert.strictEqual(ran[1].levelStart, 70.5);
+  assert.ok(Math.abs(ran[1].b - (now - L.t0) / 3600000) < 1e-9);                                        // to the last half-hour, here at now
+  assert.ok(L.mid.some((p) => Math.abs(p.h - (changeAt - L.t0) / 3600000) < 1e-9 && p.level === 70.5));
+  assert.ok(L.mid.every((p, i) => i === 0 || p.h >= L.mid[i - 1].h - 1e-9));
+  const old = card.timelineLayout(timeline(), { now, recent: recent(3.5, 36) });                        // an older app: no runs
+  assert.deepStrictEqual(old.bands.filter((b) => b.ran).map((b) => b.mode), ["self_use", "charge"]);
+});
