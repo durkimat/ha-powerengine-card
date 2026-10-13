@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.140
+
+### Behaviour changes
+
+- **The Engine v2 history and the plan chart draw the modes as they ran.** Each mode band starts and ends where the change happened, not on the half-hour, and the battery level line has a point at each change. Needs app 0.9.140; with an older app both keep drawing half-hours.
+
 ## 0.9.138
 
 ### Behaviour changes
