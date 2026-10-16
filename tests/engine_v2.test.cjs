@@ -549,6 +549,19 @@ test("hover over a stretch already run says what happened", () => {
   assert.ok(t.lines.some((l) => /^Battery: /.test(l)) && t.lines.some((l) => /^Import price: 28.84p/.test(l)));
 });
 
+test("timeline value: recorded over the hours run, from the value curve after now; hover says both", () => {
+  const states = { "sensor.pe_v2_timeline": st(iso(3), timeline()), "sensor.pe_v2_value_curve": st(iso(3), curve()), "sensor.pe_v2_recent": st("36", recent(3.5, 36, { value_p: 12.5 })) };
+  const now = T0 + 3.5 * 3600000;
+  const v = card.planCardView(states, now);
+  assert.ok(v.tvalue.past.length > 10 && v.tvalue.past.every((p) => p.value === 12.5 && p.h <= v.tlayout.nowH + 1e-9));
+  assert.ok(v.tvalue.future.length > 0 && v.tvalue.future.every((p) => p.h >= v.tlayout.nowH - 1e-9));
+  const clock = (h) => `h${h}`;
+  assert.ok(card.timelineHover(v.tlayout, 1, clock, v.tvalue).lines.some((l) => /^Value of a stored kWh: 12.5p$/.test(l)));
+  assert.ok(card.timelineHover(v.tlayout, v.tlayout.nowH + 1, clock, v.tvalue).lines.some((l) => /^Value of a stored kWh: .*\(expected\)$/.test(l)));
+  const old = card.planCardView({ "sensor.pe_v2_timeline": states["sensor.pe_v2_timeline"], "sensor.pe_v2_value_curve": states["sensor.pe_v2_value_curve"] }, now);
+  assert.deepStrictEqual(old.tvalue.past, []);                                 // an older app records no value: the expected part still draws
+});
+
 // ---- plan chart: what a scroll position means -----------------------------------------------------------------------
 const geom = { t0: T0, pph: 20, defPx: 300 };
 test("scrollIntent: a position that never took is not the person's choice (the card was built before it was on screen)", () => {
