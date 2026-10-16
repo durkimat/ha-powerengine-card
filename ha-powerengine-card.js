@@ -6216,6 +6216,8 @@ function timelineLayout(tl, opts) {
     .filter((p) => p.level !== null && p.h >= lo - 1e-9 && p.h <= spanH + 1e-9);
   const histLevel = hist.filter((r) => r.level !== null).map((r) => ({ h: h(r.b), level: r.level }))
     .concat(runs.filter((r) => r.level !== null && h(r.a) >= 0 && r.a < histStop).map((r) => ({ h: h(r.a), level: r.level }))).sort((p, q) => p.h - q.h);
+  const pathValue = path && Array.isArray(path.value) ? path.value.map((v, i) => ({ h: h(v2Ms(path.start) + i * stepMs), value: toNumber(v) }))
+    .filter((p) => p.value !== null && p.h >= lo - 1e-9 && p.h <= spanH + 1e-9) : [];
   const mid = histLevel.concat(path ? pts(path.mid) : []), low = path ? pts(path.low) : [], high = path ? pts(path.high) : [];
   const sun = sunLayout(a.sun, h, spanH);
   const ticks = [];
@@ -6227,7 +6229,7 @@ function timelineLayout(tl, opts) {
   const histLines = hist.filter((r) => r.buyP !== null || r.sellP !== null).map((r) => ({ a: Math.max(0, h(r.a)), b: h(r.b), buy: r.buyP, sell: r.sellP }));
   const replans = (o.recent && Array.isArray(o.recent.replans) ? o.recent.replans : []).map(v2Ms).filter((m) => m !== null && m >= t0 && m <= t1).map(h);
   const histValue = hist.filter((r) => r.valueP !== null).map((r) => ({ h: h(r.b), value: r.valueP }));      // at each half-hour's end, as the history chart has it
-  return { t0, t1, now, spanH, nowH, bands, steps, mid, low, high, sun, ticks, hist: hist.length, viewH, histValue, histLines, replans,
+  return { t0, t1, now, spanH, nowH, bands, steps, mid, low, high, sun, ticks, hist: hist.length, viewH, histValue, histLines, replans, pathValue,
     floor: toNumber(a.floor_soc), reserve: toNumber(a.reserve_soc), nowLevel: levelAtHour(mid, nowH) };
 }
 /** The sun and house forecast the plan used (`sun` on the timeline sensor: average kW per step_min from `start`), as points in
@@ -6384,8 +6386,11 @@ function pathValueSeries(curve, layout) {
   const out = [];
   layout.mid.forEach((p) => {
     const t = layout.t0 + p.h * HOUR_MS;
-    const r = v2Clamp(Math.floor((t - startMs) / stepMs), 0, rows.length - 1);
-    const v = interpValue(levels, rows[r], p.level);
+    // between two rows in time as well as between levels: a row is one hour's value, so reading the row the time falls in made the line
+    // fall within each hour and jump back on the hour (a sawtooth with a period of one hour, which the plan never meant)
+    const x = Math.max(0, (t - startMs) / stepMs), r = v2Clamp(Math.floor(x), 0, rows.length - 1), f = Math.min(1, x - r);
+    const v0 = interpValue(levels, rows[r], p.level), v1 = r + 1 < rows.length ? interpValue(levels, rows[r + 1], p.level) : null;
+    const v = v0 !== null && v1 !== null ? v0 + (v1 - v0) * f : v0;
     if (v !== null) out.push({ h: p.h, value: v });
   });
   return out;
@@ -6393,7 +6398,9 @@ function pathValueSeries(curve, layout) {
 /** The value of a stored kWh for the timeline chart: what it was over the hours already run (the recorded value at each half-hour's end)
  *  and what the plan expects along the battery's expected path from now on. [{h, value}] each, hours from the chart's left edge. */
 function timelineValue(curve, L) {
-  const future = pathValueSeries(curve, L).filter((p) => p.h >= L.nowH - 1e-9);
+  // newer apps send the value at each point of the path (what the controller reads at that level); else it is read off the 10% curve
+  const own = (L.pathValue || []).filter((p) => p.h >= L.nowH - 1e-9);
+  const future = own.length ? own : pathValueSeries(curve, L).filter((p) => p.h >= L.nowH - 1e-9);
   return { past: (L.histValue || []).filter((p) => p.h <= L.nowH + 1e-9), future };
 }
 /** The buy and sell lines for the timeline chart as steps {a, b, p} in hours from its left edge: as recorded over the hours already
@@ -7050,7 +7057,7 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     const yL = (p) => top + (1 - p / 100) * (G.H - top - G.B);
     const hid = this._hidden("plan");
     const TV = v.tvalue || { past: [], future: [] }, TLN = v.tlines || { buy: [], sell: [] };
-    const maxPrice = Math.max(10, Math.ceil(Math.max(0, ...L.steps.map((s) => s.importP), ...TV.past.map((p) => p.value), ...TV.future.map((p) => p.value), ...TLN.buy.map((s) => s.p), ...TLN.sell.map((s) => s.p)) / 5) * 5);
+    const maxPrice = Math.max(10, Math.ceil(Math.max(0, ...L.steps.map((s) => s.importP), ...TV.past.map((p) => Math.min(p.value, 60)), ...TV.future.map((p) => Math.min(p.value, 60)), ...TLN.buy.map((s) => s.p), ...TLN.sell.map((s) => s.p)) / 5) * 5);
     const yP = (p) => top + (1 - Math.min(p, maxPrice) / maxPrice) * (G.H - top - G.B);
     const muted = "var(--secondary-text-color)";
     axl.setAttribute("width", 40); axl.setAttribute("height", G.H); axr.setAttribute("width", 46); axr.setAttribute("height", G.H);

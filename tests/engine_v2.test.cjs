@@ -181,6 +181,26 @@ test("value along the expected path, and the real prices as lines in value terms
   assert.ok(Math.abs(series[4].value - 25) < 1e-9 || series[4].value > 0);
 });
 
+test("value along the path moves smoothly between hourly rows (no jump on the hour)", () => {
+  const H = 3600000;
+  const c = { start: new Date(T0).toISOString(), step_min: 60, levels: [0, 100], values: [[10, 10], [20, 20], [30, 30]] };
+  const layout = { t0: T0, mid: [0, 0.5, 1, 1.5, 2].map((h) => ({ h, level: 50 })) };
+  const got = card.pathValueSeries(c, layout).map((p) => p.value);
+  assert.deepStrictEqual(got, [10, 15, 20, 25, 30]);
+  const last = card.pathValueSeries(c, { t0: T0, mid: [{ h: 2.5, level: 50 }] });
+  assert.strictEqual(last[0].value, 30);                                       // past the last row: its value, no error
+});
+
+test("timeline value uses the app's value along the path when it sends one", () => {
+  const tl = timeline();
+  tl.path.value = tl.path.mid.map((_, i) => 20 + i);
+  const states = { "sensor.pe_v2_timeline": st(iso(3), tl), "sensor.pe_v2_value_curve": st(iso(3), curve()) };
+  const v = card.planCardView(states, T0 + 1 * 3600000);
+  assert.ok(v.tvalue.future.length > 0 && v.tvalue.future[0].value >= 20 && Number.isInteger(v.tvalue.future[0].value));
+  const without = card.planCardView({ "sensor.pe_v2_timeline": st(iso(3), timeline()), "sensor.pe_v2_value_curve": st(iso(3), curve()) }, T0 + 3600000);
+  assert.ok(without.tvalue.future.length > 0);                                 // an older app: read off the curve as before
+});
+
 test("path lines are the prices times the losses the value sensor reports, never a made-up price", () => {
   const L = card.timelineLayout(timeline());
   const lines = card.pathLines(L, { import_p: 6.99, buy_line_p: 7.36, export_p: 15, sell_line_p: 14.25 });
