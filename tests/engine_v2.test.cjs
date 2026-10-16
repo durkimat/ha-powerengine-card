@@ -562,6 +562,31 @@ test("timeline value: recorded over the hours run, from the value curve after no
   assert.deepStrictEqual(old.tvalue.past, []);                                 // an older app records no value: the expected part still draws
 });
 
+test("history: buy and sell lines, grid and car energy and the replans are read when the app records them, and absent otherwise", () => {
+  const half = (i, extra) => Object.assign({ t: new Date(T0 + i * HALF).toISOString(), mode: "charge", level: 60, import_p: 6.66, export_p: 15, value_p: 10, sent: true }, extra);
+  const series = [half(0, { buy_p: 7.1, sell_p: 14.2, grid_in: 2.5, grid_out: 0, car: 1 }), half(1, { buy_p: 7.2, sell_p: 14.3, grid_out: 0.4 }), half(2)];
+  const v = card.v2HistoryView({ date: "2026-10-06", series, in_control: "v2", replans: [new Date(T0 + 1.25 * 3600000).toISOString(), "junk", new Date(T0 + 30 * 3600000).toISOString()] });
+  assert.strictEqual(v.buySteps.length, 2);
+  assert.strictEqual(v.sellSteps[1].y, 14.3);
+  assert.strictEqual(v.energy.length, 2);                                      // the third half-hour has no figures
+  assert.strictEqual(v.energyMax, 2.5);
+  assert.deepStrictEqual(v.replans, [1.25]);                                   // junk and out-of-range times dropped
+  const old = card.v2HistoryView({ date: "2026-10-06", series: [half(0)], in_control: "v2" });
+  assert.deepStrictEqual([old.buySteps, old.energy, old.replans], [[], [], []]);
+});
+
+test("timeline: recorded buy/sell lines, the ones from now, and the replans", () => {
+  const states = { "sensor.pe_v2_timeline": st(iso(3), timeline()), "sensor.pe_v2_value_curve": st(iso(3), curve()),
+    "sensor.pe_v2_recent": st("36", Object.assign(recent(3.5, 36, { value_p: 12, buy_p: 7.5, sell_p: 14 }), { replans: [new Date(T0 + 2 * 3600000).toISOString()] })),
+    "sensor.pe_v2_value": st("12", { import_p: 7, buy_line_p: 7.35, export_p: 15, sell_line_p: 14.25 }) };
+  const v = card.planCardView(states, T0 + 3.5 * 3600000);
+  assert.ok(v.tlines.buy.some((s) => s.p === 7.5) && v.tlines.buy.some((s) => Math.abs(s.p - 7.35) < 1e-9 || s.p > 7.4));
+  assert.ok(v.tlines.sell.some((s) => s.p === 14));
+  assert.strictEqual(v.tlayout.replans.length, 1);
+  const clock = (h) => `h${h}`;
+  assert.ok(card.timelineHover(v.tlayout, 1, clock, v.tvalue, v.tlines).lines.some((l) => /^Buy line 7.5p, sell line 14p$/.test(l)));
+});
+
 // ---- plan chart: what a scroll position means -----------------------------------------------------------------------
 const geom = { t0: T0, pph: 20, defPx: 300 };
 test("scrollIntent: a position that never took is not the person's choice (the card was built before it was on screen)", () => {
