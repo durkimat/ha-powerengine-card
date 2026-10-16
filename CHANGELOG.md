@@ -3,6 +3,13 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.152
+
+### Behaviour changes
+
+- **The value line on the expected timeline is smooth.** It uses the value the app publishes along the expected path (needs app 0.9.152). With an older app the card now blends between the hourly rows of the curve instead of jumping on the hour, which removes the hourly jumps but not all of the wobble.
+- The price axis no longer stretches for one very large value near the battery's floor.
+
 ## 0.9.151
 
 ### Behaviour changes
