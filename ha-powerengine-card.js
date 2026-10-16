@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.150";
+const CARD_VERSION = "0.9.151";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -6704,12 +6704,15 @@ function floorsReadout(safety, values) {
 // ---- the cards -------------------------------------------------------------------------------------------------
 const V2_CSS = `
   :host { display: block; --m-self: #00897b; --m-hold: #78909c; --m-charge: #43a047; --m-export: #e53935; --m-event: #8e24aa; --m-free: #f9a825;
-    --v2-battery: #1565c0; --v2-price: #fb8c00; --v2-sun: #f2a900; --v2-house: #78909c; --v2-good: #2e7d32; --v2-warn: #ef6c00; }
+    --v2-battery: #1565c0; --v2-price: #fb8c00; --v2-sun: #f2a900; --v2-house: #78909c; --v2-good: #2e7d32; --v2-warn: #ef6c00; --v2-buy: #00838f; --v2-sell: #c2185b; }
   :host(.dark) { --m-self: #26a69a; --m-hold: #90a4ae; --m-charge: #66bb6a; --m-export: #ef5350; --m-event: #ba68c8; --m-free: #ffd54f;
-    --v2-battery: #64a6f0; --v2-price: #ffa940; --v2-sun: #ffd54f; --v2-house: #b0bec5; --v2-good: #66bb6a; --v2-warn: #ffa726; }
+    --v2-battery: #64a6f0; --v2-price: #ffa940; --v2-sun: #ffd54f; --v2-house: #b0bec5; --v2-good: #66bb6a; --v2-warn: #ffa726; --v2-buy: #26c6da; --v2-sell: #f06292; }
   ha-card { padding: 16px; display: flex; flex-direction: column; gap: 14px; min-width: 0; box-sizing: border-box; }
   .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
   .title { font-size: 16px; font-weight: 500; }
+  .key { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 12px; color: var(--secondary-text-color); flex: 1 1 auto; justify-content: flex-end; }
+  .key label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
+  .key input { margin: 0; accent-color: var(--primary-color); cursor: pointer; }
   .chip { display: inline-flex; align-items: center; font-size: 12px; font-weight: 500; padding: 2px 10px; border-radius: 999px;
     background: rgba(3,169,244,.14); color: var(--primary-color); white-space: nowrap; }
   .chip.muted { background: var(--secondary-background-color); color: var(--secondary-text-color); }
@@ -6737,7 +6740,30 @@ const V2_CSS = `
 `;
 
 const V2Base = typeof HTMLElement !== "undefined" ? HTMLElement : class {};
+/** The key above a chart: a tick box per line that can be hidden. Which are hidden is kept in this browser only (localStorage, tried and caught). */
+const CHART_KEYS = {
+  value: ["--v2-good", "Value of a stored kWh"], buy: ["--v2-buy", "Buy line"], sell: ["--v2-sell", "Sell line"],
+  replan: ["--primary-text-color", "Re-plans"], energy: ["--v2-price", "Grid energy"],
+};
+function chartHidden(id) {
+  try { const raw = typeof localStorage !== "undefined" ? localStorage.getItem(`pe_chart_hide_${id}`) : null; return new Set(raw ? JSON.parse(raw) : []); } catch (e) { return new Set(); }
+}
+function chartHide(id, hidden) { try { localStorage.setItem(`pe_chart_hide_${id}`, JSON.stringify(Array.from(hidden))); } catch (e) { /* no storage: it still works for now */ } }
+function chartKeyHtml(keys, hidden) {
+  return `<span class="key" role="group" aria-label="Lines to show">${keys.map((k) => `<label><input type="checkbox" data-key="${k}" ${hidden.has(k) ? "" : "checked"}><i class="sw" style="background:var(${CHART_KEYS[k][0]})"></i>${escHtml(CHART_KEYS[k][1])}</label>`).join("")}</span>`;
+}
 class PowerEngineV2Card extends V2Base {
+  /** The lines hidden on this chart, and the tick boxes that change it. `id` names the chart ("plan", "history"). */
+  _hidden(id) { if (!this._hid) this._hid = {}; return this._hid[id] || (this._hid[id] = chartHidden(id)); }
+  _wireKey(id) {
+    const hidden = this._hidden(id);
+    this.shadowRoot.querySelectorAll("input[data-key]").forEach((box) => box.addEventListener("change", () => {
+      if (box.checked) hidden.delete(box.dataset.key); else hidden.add(box.dataset.key);
+      chartHide(id, hidden);
+      if (box.blur) box.blur();
+      this._draw();
+    }));
+  }
   setConfig(config) {
     this._config = config || {};
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
@@ -6948,12 +6974,12 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     <div class="gap">
     ${T ? `<ha-card>
       ${previewBanner(v.preview)}
-      <div class="head"><span class="title">Expected timeline · next ${Math.round(T.spanH - T.nowH)} hours</span>${v.chip ? `<span class="chip muted">${escHtml(v.chip)}</span>` : ""}</div>
+      <div class="head"><span class="title">Expected timeline · next ${Math.round(T.spanH - T.nowH)} hours</span>${chartKeyHtml(["value", "buy", "sell", "replan"], this._hidden("plan"))}${v.chip ? `<span class="chip muted">${escHtml(v.chip)}</span>` : ""}</div>
       <div class="tlbox"><svg id="tl-axl" aria-hidden="true"></svg><div class="tlscroll" id="tl-scroll"><div id="timeline"></div></div><svg id="tl-axr" aria-hidden="true"></svg></div>
       <p class="readout tl" id="treadout" aria-live="polite">${escHtml(TIMELINE_HINT)}</p>
       <div class="replan"><button id="replan" ${rp.busy ? "disabled" : ""}>Re-plan now</button><span class="muted small" id="replan-s" aria-live="polite">${escHtml(rp.text)}</span></div>
       <div class="legend">${legend(Object.keys(V2_MODES).filter((k) => k !== "none" && k !== "free").map((k) => [`var(${V2_MODES[k].colour})`, V2_MODES[k].name]))
-        .concat(legend([["var(--v2-battery)", "Battery (shaded: likely range)"], ["var(--v2-price)", "Import price (dashed: smart slot that may not come)"], ["var(--v2-good)", "Value of a stored kWh (dashed: expected)"], ["var(--v2-price)", "Buy line: it charges when the value is above (dotted)"], ["var(--m-export)", "Sell line: it sells when the value is below (dotted)"], ["var(--primary-text-color)", "Tick under the chart: the plan was worked out again"]]))
+        .concat(legend([["var(--v2-battery)", "Battery (shaded: likely range)"], ["var(--v2-price)", "Import price (dashed: smart slot that may not come)"]]))
         .concat(T.sun ? legend([["var(--v2-sun)", T.sun.peak > 0 ? `Sun forecast (shaded: low to high; peak ${T.sun.peak.toFixed(1)} kW)` : "Sun forecast (none expected in this window)"], ["var(--v2-house)", "House use expected (strip is 0 to " + T.sun.max + " kW)"]]) : "")}</div>
       <p class="muted small">Bands to the left of <b>now</b> are what happened${T.hist ? ` (scroll left for the last ${HISTORY_HOURS} hours)` : ""}. Bands to the right are expected: each says what ends it, and its edge moves when the condition is met earlier or later.${v.cost ? ` ${escHtml(v.cost)}.` : ""}</p>
     </ha-card>` : ""}
@@ -6968,6 +6994,7 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     this.shadowRoot.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => { this._view = b.dataset.view; this._renderValue(); this.shadowRoot.querySelectorAll(".seg button").forEach((o) => o.setAttribute("aria-pressed", String(o === b))); }));
     const rb = this.shadowRoot.getElementById("replan");
     if (rb) rb.addEventListener("click", () => this._replan(states));
+    this._wireKey("plan");
     if (T) this._whenLaidOut(() => this._drawTimeline(this.shadowRoot.getElementById("timeline"), v));
     if (keepRead) { const ro = this.shadowRoot.getElementById("treadout"); if (ro) ro.innerHTML = keepRead; }
     if (v.grid) this._renderValue();
@@ -7021,6 +7048,7 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     const x = (hr) => hr * pph;
     const top = G.T + bandH + 10;
     const yL = (p) => top + (1 - p / 100) * (G.H - top - G.B);
+    const hid = this._hidden("plan");
     const TV = v.tvalue || { past: [], future: [] }, TLN = v.tlines || { buy: [], sell: [] };
     const maxPrice = Math.max(10, Math.ceil(Math.max(0, ...L.steps.map((s) => s.importP), ...TV.past.map((p) => p.value), ...TV.future.map((p) => p.value), ...TLN.buy.map((s) => s.p), ...TLN.sell.map((s) => s.p)) / 5) * 5);
     const yP = (p) => top + (1 - Math.min(p, maxPrice) / maxPrice) * (G.H - top - G.B);
@@ -7064,11 +7092,13 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
       if (Math.abs(L.steps[i].a - L.steps[i - 1].b) < 1e-6) svgEl("line", { x1: x(L.steps[i].a), x2: x(L.steps[i].a), y1: yP(L.steps[i - 1].importP), y2: yP(L.steps[i].importP), stroke: "var(--v2-price)", "stroke-opacity": 0.5 }, svg);
     }
     const stepLines = (steps, col) => steps.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: yP(s.p), y2: yP(s.p), stroke: col, "stroke-width": 1.3, "stroke-opacity": 0.7, "stroke-dasharray": "2 3" }, svg));
-    stepLines(TLN.buy, "var(--v2-price)");                                  // where it charges (value above) and sells (value below)
-    stepLines(TLN.sell, "var(--m-export)");
+    if (!hid.has("buy")) stepLines(TLN.buy, "var(--v2-buy)");              // where it charges (value above) and sells (value below)
+    if (!hid.has("sell")) stepLines(TLN.sell, "var(--v2-sell)");
     const vline = (pts, dash) => { if (pts.length > 1) svgEl("polyline", { points: pts.map((p) => `${x(p.h)},${yP(p.value)}`).join(" "), fill: "none", stroke: "var(--v2-good)", "stroke-width": 2.2, "stroke-dasharray": dash }, svg); };
-    vline(TV.past, "none");                                                 // the value of a stored kWh, on the price axis (pence)
-    vline(TV.past.slice(-1).concat(TV.future), "6 4");
+    if (!hid.has("value")) {                                                // the value of a stored kWh, on the price axis (pence)
+      vline(TV.past, "none");
+      vline(TV.past.slice(-1).concat(TV.future), "6 4");
+    }
     const poly = (pts) => pts.map((p) => `${x(p.h)},${yL(p.level)}`).join(" ");
     const past = L.mid.filter((p) => p.h <= L.nowH + 1e-9), fut = future(L.mid);
     if (past.length > 1) svgEl("polyline", { points: poly(past), fill: "none", stroke: "var(--v2-battery)", "stroke-width": 2.5 }, svg);
@@ -7077,7 +7107,7 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
       svgEl("line", { x1: 0, x2: plotW, y1: yL(L.floor), y2: yL(L.floor), stroke: "var(--m-export)", "stroke-dasharray": "2 4" }, svg);
       svgEl("text", { x: plotW - 4, y: yL(L.floor) - 4, "text-anchor": "end", "font-size": 10.5, fill: "var(--m-export)" }, svg, `hard floor ${L.floor}%`);
     }
-    (L.replans || []).forEach((rh) => svgEl("line", { x1: x(rh), x2: x(rh), y1: G.H - G.B, y2: G.H - G.B + 9, stroke: "var(--primary-text-color)", "stroke-width": 1.5, "stroke-opacity": 0.7 }, svg));
+    (hid.has("replan") ? [] : (L.replans || [])).forEach((rh) => svgEl("line", { x1: x(rh), x2: x(rh), y1: G.H - G.B, y2: G.H - G.B + 9, stroke: "var(--primary-text-color)", "stroke-width": 1.5, "stroke-opacity": 0.7 }, svg));
     const nowX = x(L.nowH), nowLabel = `now ${v2Hm(new Date(L.now).toISOString())}`;
     svgEl("line", { x1: nowX, x2: nowX, y1: G.T - 4, y2: G.H - G.B + 4, stroke: "var(--primary-text-color)", "stroke-width": 1.4 }, svg);
     svgEl("text", { x: nowX + 4, y: G.H - G.B - 4, "font-size": 11, "font-weight": 500, fill: "var(--primary-text-color)" }, svg, nowLabel);
@@ -7489,22 +7519,24 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
     const legend = (items) => items.map(([c, t]) => `<span><i class="sw" style="background:${c}"></i>${escHtml(t)}</span>`).join("");
     const modesUsed = Array.from(new Set(v.bands.map((b) => b.mode)));
     this.shadowRoot.innerHTML = `${css}<ha-card>
-      <div class="head"><span class="title">Engine v2 history${v.date ? ` · ${escHtml(v.date)}` : ""}</span>${v.kind === "ok" ? `<span class="chip${v.control === "v2" ? "" : " muted"}">${v.control === "v2" ? `Engine v2 in control${v.profile ? ` · ${escHtml(v.profile)}` : ""}` : v.control === "v1" ? "Preview" : "Control changed"}</span>` : ""}</div>
+      <div class="head"><span class="title">Engine v2 history${v.date ? ` · ${escHtml(v.date)}` : ""}</span>${v.kind === "ok" ? chartKeyHtml(["value", "buy", "sell", "energy", "replan"], this._hidden("history")) : ""}${v.kind === "ok" ? `<span class="chip${v.control === "v2" ? "" : " muted"}">${v.control === "v2" ? `Engine v2 in control${v.profile ? ` · ${escHtml(v.profile)}` : ""}` : v.control === "v1" ? "Preview" : "Control changed"}</span>` : ""}</div>
       ${this._pickerHtml(attrs || {})}
       ${v.kind === "empty" ? `<p class="muted">${escHtml(v.text)}</p>` : `${v.banner ? `<p class="preview-line" role="note">${escHtml(v.banner)}</p>` : ""}
       <div class="chart" id="hist"></div>
-      <div class="legend">${legend(modesUsed.map((k) => [`var(${v2Mode(k).colour})`, v2Mode(k).name]).concat([["var(--v2-battery)", "Battery as it ran (dashed: expected at the start of the day)"], ["var(--v2-price)", "Import price"], ["var(--m-export)", "Export price (dotted)"], ["var(--v2-good)", "Value of a stored kWh"], ["var(--v2-price)", "Buy line (dotted)"], ["var(--m-export)", "Sell line (dotted)"], ["var(--primary-text-color)", "Tick above the times: the plan was worked out again"]]))}</div>
+      <div class="legend">${legend(modesUsed.map((k) => [`var(${v2Mode(k).colour})`, v2Mode(k).name]).concat([["var(--v2-battery)", "Battery as it ran (dashed: expected at the start of the day)"], ["var(--v2-price)", "Import price"], ["var(--m-export)", "Export price (dotted)"]]))}</div>
       ${v.partlyPreview || v.previewOnly ? '<p class="muted small">Dimmed bands: engine v2 was only previewing, nothing was sent.</p>' : ""}
       ${v.changes.length ? `<div><h3>Mode changes (newest first)</h3><div class="changes">${v.changes.map((c) => `<span class="num muted">${escHtml(c.at)}</span><span class="mode"><i class="sw" style="background:var(${v2Mode(c.modeKey).colour})"></i>${escHtml(c.mode)}</span><span>${escHtml(c.reason)}</span>`).join("")}</div></div>` : '<p class="muted small">No mode changes recorded for this day.</p>'}
       ${v.note ? `<p class="muted small">${escHtml(v.note)}</p>` : ""}`}
     </ha-card>`;
     this._wirePicker(attrs || {});
+    this._wireKey("history");
     if (v.kind === "ok") this._drawChart(this.shadowRoot.getElementById("hist"), v);
   }
   _drawChart(host, v) {
     const G = { W: 900, L: 40, R: 46, T: 12, bandH: 26 };
     const topY = G.T + G.bandH + 10, levelH = 150, gap = 34, priceTop = topY + levelH + gap, priceH = 110;
-    const hasE = v.energy.length > 0, enTop = priceTop + priceH + 34, enH = 80, H = (hasE ? enTop + enH : priceTop + priceH) + 28;
+    const hid = this._hidden("history");
+    const hasE = v.energy.length > 0 && !hid.has("energy"), enTop = priceTop + priceH + 34, enH = 80, H = (hasE ? enTop + enH : priceTop + priceH) + 28;
     const svg = svgEl("svg", { viewBox: `0 0 ${G.W} ${H}`, role: "img", "aria-label": "Engine v2's modes, battery level, prices and the value of a stored kWh over the day" }, host);
     const x = (hr) => G.L + (hr / v.spanH) * (G.W - G.L - G.R);
     const yL = (p) => topY + (1 - p / 100) * levelH;
@@ -7537,9 +7569,9 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
     v.importSteps.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: yP(s.y), y2: yP(s.y), stroke: "var(--v2-price)", "stroke-width": 2 }, svg));
     v.exportSteps.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: yP(s.y), y2: yP(s.y), stroke: "var(--m-export)", "stroke-width": 1.5, "stroke-dasharray": "2 3" }, svg));
     const dotted = (steps, col) => steps.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: yP(s.y), y2: yP(s.y), stroke: col, "stroke-width": 1.3, "stroke-opacity": 0.7, "stroke-dasharray": "1 3" }, svg));
-    dotted(v.buySteps, "var(--v2-price)");
-    dotted(v.sellSteps, "var(--m-export)");
-    line(v.value, yP, { stroke: "var(--v2-good)", "stroke-width": 2.2 });
+    if (!hid.has("buy")) dotted(v.buySteps, "var(--v2-buy)");
+    if (!hid.has("sell")) dotted(v.sellSteps, "var(--v2-sell)");
+    if (!hid.has("value")) line(v.value, yP, { stroke: "var(--v2-good)", "stroke-width": 2.2 });
     svgEl("text", { x: G.L, y: priceTop - 8, "font-size": 11, fill: muted }, svg, "Prices, buy and sell lines and the value of a stored kWh (pence per kWh)");
     if (hasE) {                                          // grid energy per half-hour: import up, export down; the car outlined (it is part of the load)
       const mid = enTop + enH / 2, yE = (k) => (k / v.energyMax) * (enH / 2 - 4);
@@ -7554,7 +7586,7 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
         if (e.car) svgEl("rect", { x: bx + 1, y: mid - yE(e.car), width: Math.max(1, bw - 2), height: yE(e.car), fill: "none", stroke: "var(--primary-text-color)", "stroke-width": 1.2, "stroke-opacity": 0.8 }, svg);
       });
     }
-    v.replans.forEach((rh) => svgEl("line", { x1: x(rh), x2: x(rh), y1: H - 26, y2: H - 17, stroke: "var(--primary-text-color)", "stroke-width": 1.5, "stroke-opacity": 0.7 }, svg));
+    (hid.has("replan") ? [] : v.replans).forEach((rh) => svgEl("line", { x1: x(rh), x2: x(rh), y1: H - 26, y2: H - 17, stroke: "var(--primary-text-color)", "stroke-width": 1.5, "stroke-opacity": 0.7 }, svg));
   }
 }
 
@@ -7685,7 +7717,7 @@ if (typeof module !== "undefined") {
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
   v2WithProfiles, V2_PROFILES, uiEngine, profileDraft, profileList, profileBase, profileChanges, profileLoadFields, profileSaveFields, profileDeleteFields,
   ENGINE_SENSOR, V2_NOT_RUNNING, V2_NO_DATA, V2_MODES, v2Engine, v2Supported, v2Gate, valueBarGeometry, modeSubtitle, exitRows, engineCardView, timelineLayout, recentRows, scrollIntent, HISTORY_HOURS, V2_RECENT, sunLayout, levelAtHour, bandLabel, timelineHover,
-  heatColour, valueMapGrid, mapCellAt, interpValue, pathValueSeries, timelineValue, timelineLines, pathLines, mapReadoutText, planCardView, causeBars, causeLabel, comfortSummary, healthCardView,
+  heatColour, valueMapGrid, mapCellAt, interpValue, chartKeyHtml, chartHidden, CHART_KEYS, pathValueSeries, timelineValue, timelineLines, pathLines, mapReadoutText, planCardView, causeBars, causeLabel, comfortSummary, healthCardView,
   ENGINE_ICONS, engineIcon, refreshEngineIcons, engineBadge, BADGE_LINES, V2_HISTORY_DAY_EVENT, v2HistoryDayPayload, v2HistoryView, engineCompareView, calibrationLine, gbp, COMPARE_WAITING,
   V1_SECTIONS, v2Same, engineGrouping, engineInUse, engineConfirm, cleanV2Block, engineFields, v2Problem, v2Contradictions, v2Values, comfortReadout, weightsReadout, floorsReadout };
 }

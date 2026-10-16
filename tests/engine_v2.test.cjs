@@ -587,6 +587,14 @@ test("timeline: recorded buy/sell lines, the ones from now, and the replans", ()
   assert.ok(card.timelineHover(v.tlayout, 1, clock, v.tvalue, v.tlines).lines.some((l) => /^Buy line 7.5p, sell line 14p$/.test(l)));
 });
 
+test("the key above a chart: one tick box per line, unticked when hidden; buy and sell have colours of their own", () => {
+  const html = card.chartKeyHtml(["value", "buy", "sell"], new Set(["buy"]));
+  assert.ok(/data-key="value" checked/.test(html) && /data-key="sell" checked/.test(html) && !/data-key="buy" checked/.test(html));
+  const colours = ["buy", "sell"].map((k) => card.CHART_KEYS[k][0]);
+  assert.ok(colours.every((c) => c !== "--v2-price" && c !== "--m-export") && colours[0] !== colours[1]);
+  assert.strictEqual(card.chartHidden("nothing-saved").size, 0);              // no storage in node: nothing hidden, no error
+});
+
 // ---- plan chart: what a scroll position means -----------------------------------------------------------------------
 const geom = { t0: T0, pph: 20, defPx: 300 };
 test("scrollIntent: a position that never took is not the person's choice (the card was built before it was on screen)", () => {
