@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.140";
+const CARD_VERSION = "0.9.150";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -6129,7 +6129,7 @@ function recentRows(recent, nowMs, hours) {
   const from = nowMs - (hours || HISTORY_HOURS) * HOUR_MS;
   return r.series.filter((x) => x && v2Ms(x.t) !== null)
     .map((x) => ({ a: v2Ms(x.t), b: v2Ms(x.t) + stepMs, mode: x.mode || "none", level: toNumber(x.level), importP: toNumber(x.import_p),
-      exportP: toNumber(x.export_p), sent: x.sent !== false, preview: x.preview === true }))
+      exportP: toNumber(x.export_p), valueP: toNumber(x.value_p), buyP: toNumber(x.buy_p), sellP: toNumber(x.sell_p), sent: x.sent !== false, preview: x.preview === true }))
     .filter((x) => x.b > from && x.a < nowMs).sort((p, q) => p.a - q.a);
 }
 
@@ -6224,7 +6224,10 @@ function timelineLayout(tl, opts) {
   for (let t = d.getTime(); t <= t1; t += 3 * HOUR_MS) ticks.push({ h: h(t), ms: t });
   const nowH = h(now);
   const viewH = hist.length ? Math.max(0, nowH - (o.viewPastHours || VIEW_PAST_HOURS)) : 0;
-  return { t0, t1, now, spanH, nowH, bands, steps, mid, low, high, sun, ticks, hist: hist.length, viewH,
+  const histLines = hist.filter((r) => r.buyP !== null || r.sellP !== null).map((r) => ({ a: Math.max(0, h(r.a)), b: h(r.b), buy: r.buyP, sell: r.sellP }));
+  const replans = (o.recent && Array.isArray(o.recent.replans) ? o.recent.replans : []).map(v2Ms).filter((m) => m !== null && m >= t0 && m <= t1).map(h);
+  const histValue = hist.filter((r) => r.valueP !== null).map((r) => ({ h: h(r.b), value: r.valueP }));      // at each half-hour's end, as the history chart has it
+  return { t0, t1, now, spanH, nowH, bands, steps, mid, low, high, sun, ticks, hist: hist.length, viewH, histValue, histLines, replans,
     floor: toNumber(a.floor_soc), reserve: toNumber(a.reserve_soc), nowLevel: levelAtHour(mid, nowH) };
 }
 /** The sun and house forecast the plan used (`sun` on the timeline sensor: average kW per step_min from `start`), as points in
@@ -6266,7 +6269,7 @@ function levelAtHour(points, hour) {
 const TIMELINE_HINT = "Move over the chart, or tap it, to read the mode, battery level, price and sun at that time.";
 /** What the timeline says at `hour` (hours from the left edge), for the hover text: a heading with the clock time and
  *  the lines for the mode band, battery (with its likely range), import price, sun and house under it. Pure; `clock(h)` -> "HH:MM". */
-function timelineHover(L, hour, clock) {
+function timelineHover(L, hour, clock, TV, TLN) {
   const lines = [];
   const band = L.bands.find((b) => hour >= b.a && hour < b.b) || L.bands.find((b) => hour >= b.a && hour <= b.b);
   if (band) {
@@ -6285,6 +6288,16 @@ function timelineHover(L, hour, clock) {
   if (step) {
     const tag = step.event ? ", grid event" : step.free ? ", free power" : step.slot ? `, smart slot${step.slotProb !== null ? ` (${Math.round(step.slotProb * 100)}% likely to come)` : " that may not come"}` : step.estimated ? ", estimated" : "";
     lines.push(`Import price: ${v2P(step.importP, 2)}${tag}`);
+  }
+  if (TV) {
+    const pts = hour < L.nowH ? TV.past : TV.future;
+    const near = pts.length ? pts.reduce((m, p) => (Math.abs(p.h - hour) < Math.abs(m.h - hour) ? p : m)) : null;
+    if (near && Math.abs(near.h - hour) <= 1) lines.push(`Value of a stored kWh: ${v2P(near.value, 1)}${hour < L.nowH ? "" : " (expected)"}`);
+  }
+  if (TLN) {
+    const at = (steps) => { const s = steps.find((q) => hour >= q.a && hour < q.b); return s ? s.p : null; };
+    const buy = at(TLN.buy), sell = at(TLN.sell);
+    if (buy !== null || sell !== null) lines.push(`Buy line ${buy !== null ? v2P(buy, 1) : "–"}, sell line ${sell !== null ? v2P(sell, 1) : "–"}`);
   }
   if (L.sun) {
     const at = (pts) => { const p = pts.find((q) => q.h >= hour); return p ? p.kw : null; };
@@ -6377,6 +6390,22 @@ function pathValueSeries(curve, layout) {
   });
   return out;
 }
+/** The value of a stored kWh for the timeline chart: what it was over the hours already run (the recorded value at each half-hour's end)
+ *  and what the plan expects along the battery's expected path from now on. [{h, value}] each, hours from the chart's left edge. */
+function timelineValue(curve, L) {
+  const future = pathValueSeries(curve, L).filter((p) => p.h >= L.nowH - 1e-9);
+  return { past: (L.histValue || []).filter((p) => p.h <= L.nowH + 1e-9), future };
+}
+/** The buy and sell lines for the timeline chart as steps {a, b, p} in hours from its left edge: as recorded over the hours already
+ *  run, and from now on the plan's prices scaled by the losses the value sensor reports now (pathLines). */
+function timelineLines(L, val) {
+  const ahead = pathLines({ steps: L.steps.filter((s) => !s.ran) }, val);
+  const run = L.histLines || [];
+  return {
+    buy: run.filter((r) => r.buy !== null).map((r) => ({ a: r.a, b: r.b, p: r.buy })).concat(ahead.buy),
+    sell: run.filter((r) => r.sell !== null).map((r) => ({ a: r.a, b: r.b, p: r.sell })).concat(ahead.sell),
+  };
+}
 /** The real prices as lines in value terms: import and export steps scaled by what the value sensor says about losses
  *  now (buy_line_p / import_p, sell_line_p / export_p). With no figures the prices are drawn as they are (k = 1). */
 function pathLines(layout, val) {
@@ -6427,6 +6456,8 @@ function planCardView(states, now) {
       + (toNumber(tl.comfort_given_up) ? `; comfort band gave up £${toNumber(tl.comfort_given_up).toFixed(2)}` : "") : "";
   return { kind: "ok", preview: v2Preview(states), tl, layout, tlayout, grid, curve, val, scaleMax: toNumber(val.scale_max_p) > 0 ? toNumber(val.scale_max_p) : 40,
     lines: layout ? pathLines(layout, val) : null, series: layout && curve ? pathValueSeries(curve, layout) : [],
+    tvalue: tlayout ? timelineValue(curve, tlayout) : { past: [], future: [] },
+    tlines: tlayout ? timelineLines(tlayout, val) : { buy: [], sell: [] },
     chip: [worked && v2Hm(worked) ? `values worked out ${v2Hm(worked)}` : "", tl && tl.because ? lowerFirst(tl.because) : ""].filter(Boolean).join(" · "),
     cost };
 }
@@ -6922,7 +6953,7 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
       <p class="readout tl" id="treadout" aria-live="polite">${escHtml(TIMELINE_HINT)}</p>
       <div class="replan"><button id="replan" ${rp.busy ? "disabled" : ""}>Re-plan now</button><span class="muted small" id="replan-s" aria-live="polite">${escHtml(rp.text)}</span></div>
       <div class="legend">${legend(Object.keys(V2_MODES).filter((k) => k !== "none" && k !== "free").map((k) => [`var(${V2_MODES[k].colour})`, V2_MODES[k].name]))
-        .concat(legend([["var(--v2-battery)", "Battery (shaded: likely range)"], ["var(--v2-price)", "Import price (dashed: smart slot that may not come)"]]))
+        .concat(legend([["var(--v2-battery)", "Battery (shaded: likely range)"], ["var(--v2-price)", "Import price (dashed: smart slot that may not come)"], ["var(--v2-good)", "Value of a stored kWh (dashed: expected)"], ["var(--v2-price)", "Buy line: it charges when the value is above (dotted)"], ["var(--m-export)", "Sell line: it sells when the value is below (dotted)"], ["var(--primary-text-color)", "Tick under the chart: the plan was worked out again"]]))
         .concat(T.sun ? legend([["var(--v2-sun)", T.sun.peak > 0 ? `Sun forecast (shaded: low to high; peak ${T.sun.peak.toFixed(1)} kW)` : "Sun forecast (none expected in this window)"], ["var(--v2-house)", "House use expected (strip is 0 to " + T.sun.max + " kW)"]]) : "")}</div>
       <p class="muted small">Bands to the left of <b>now</b> are what happened${T.hist ? ` (scroll left for the last ${HISTORY_HOURS} hours)` : ""}. Bands to the right are expected: each says what ends it, and its edge moves when the condition is met earlier or later.${v.cost ? ` ${escHtml(v.cost)}.` : ""}</p>
     </ha-card>` : ""}
@@ -6990,7 +7021,8 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     const x = (hr) => hr * pph;
     const top = G.T + bandH + 10;
     const yL = (p) => top + (1 - p / 100) * (G.H - top - G.B);
-    const maxPrice = Math.max(10, Math.ceil(Math.max(0, ...L.steps.map((s) => s.importP)) / 5) * 5);
+    const TV = v.tvalue || { past: [], future: [] }, TLN = v.tlines || { buy: [], sell: [] };
+    const maxPrice = Math.max(10, Math.ceil(Math.max(0, ...L.steps.map((s) => s.importP), ...TV.past.map((p) => p.value), ...TV.future.map((p) => p.value), ...TLN.buy.map((s) => s.p), ...TLN.sell.map((s) => s.p)) / 5) * 5);
     const yP = (p) => top + (1 - Math.min(p, maxPrice) / maxPrice) * (G.H - top - G.B);
     const muted = "var(--secondary-text-color)";
     axl.setAttribute("width", 40); axl.setAttribute("height", G.H); axr.setAttribute("width", 46); axr.setAttribute("height", G.H);
@@ -7031,6 +7063,12 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     for (let i = 1; i < L.steps.length; i++) {
       if (Math.abs(L.steps[i].a - L.steps[i - 1].b) < 1e-6) svgEl("line", { x1: x(L.steps[i].a), x2: x(L.steps[i].a), y1: yP(L.steps[i - 1].importP), y2: yP(L.steps[i].importP), stroke: "var(--v2-price)", "stroke-opacity": 0.5 }, svg);
     }
+    const stepLines = (steps, col) => steps.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: yP(s.p), y2: yP(s.p), stroke: col, "stroke-width": 1.3, "stroke-opacity": 0.7, "stroke-dasharray": "2 3" }, svg));
+    stepLines(TLN.buy, "var(--v2-price)");                                  // where it charges (value above) and sells (value below)
+    stepLines(TLN.sell, "var(--m-export)");
+    const vline = (pts, dash) => { if (pts.length > 1) svgEl("polyline", { points: pts.map((p) => `${x(p.h)},${yP(p.value)}`).join(" "), fill: "none", stroke: "var(--v2-good)", "stroke-width": 2.2, "stroke-dasharray": dash }, svg); };
+    vline(TV.past, "none");                                                 // the value of a stored kWh, on the price axis (pence)
+    vline(TV.past.slice(-1).concat(TV.future), "6 4");
     const poly = (pts) => pts.map((p) => `${x(p.h)},${yL(p.level)}`).join(" ");
     const past = L.mid.filter((p) => p.h <= L.nowH + 1e-9), fut = future(L.mid);
     if (past.length > 1) svgEl("polyline", { points: poly(past), fill: "none", stroke: "var(--v2-battery)", "stroke-width": 2.5 }, svg);
@@ -7039,6 +7077,7 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
       svgEl("line", { x1: 0, x2: plotW, y1: yL(L.floor), y2: yL(L.floor), stroke: "var(--m-export)", "stroke-dasharray": "2 4" }, svg);
       svgEl("text", { x: plotW - 4, y: yL(L.floor) - 4, "text-anchor": "end", "font-size": 10.5, fill: "var(--m-export)" }, svg, `hard floor ${L.floor}%`);
     }
+    (L.replans || []).forEach((rh) => svgEl("line", { x1: x(rh), x2: x(rh), y1: G.H - G.B, y2: G.H - G.B + 9, stroke: "var(--primary-text-color)", "stroke-width": 1.5, "stroke-opacity": 0.7 }, svg));
     const nowX = x(L.nowH), nowLabel = `now ${v2Hm(new Date(L.now).toISOString())}`;
     svgEl("line", { x1: nowX, x2: nowX, y1: G.T - 4, y2: G.H - G.B + 4, stroke: "var(--primary-text-color)", "stroke-width": 1.4 }, svg);
     svgEl("text", { x: nowX + 4, y: G.H - G.B - 4, "font-size": 11, "font-weight": 500, fill: "var(--primary-text-color)" }, svg, nowLabel);
@@ -7085,7 +7124,7 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
       if (!r.width) return;
       const px = ((ev.clientX - r.left) / r.width) * G.plotW;
       const h = Math.min(L.spanH, Math.max(0, px / G.pph));
-      const t = timelineHover(L, h, clock);
+      const t = timelineHover(L, h, clock, v.tvalue, v.tlines);
       ro.innerHTML = `<b>${escHtml(t.title)}</b><br>${t.lines.map(escHtml).join("<br>")}`;
       guide.setAttribute("x1", h * G.pph); guide.setAttribute("x2", h * G.pph); guide.setAttribute("visibility", "visible");
     };
@@ -7363,14 +7402,19 @@ function v2HistoryView(attrs, nowMs) {
   const changes = (Array.isArray(a.changes) ? a.changes : []).filter((c) => c && v2Ms(c.at) !== null).sort((a, b) => v2Ms(b.at) - v2Ms(a.at)).map((c) => ({
     at: v2Hm(c.at), mode: v2Mode(c.mode).name, modeKey: c.mode || "none", reason: c.reason ? String(c.reason) : "",
   }));
-  const priceMax = Math.max(10, Math.ceil(Math.max(0, ...stepPts("import_p").map((s) => s.y), ...stepPts("export_p").map((s) => s.y)) / 5) * 5);
+  const priceMax = Math.max(10, Math.ceil(Math.max(0, ...stepPts("import_p").map((s) => s.y), ...stepPts("export_p").map((s) => s.y), ...stepPts("buy_p").map((s) => s.y), ...stepPts("sell_p").map((s) => s.y), ...pts("value_p").map((p) => p.y || 0)) / 5) * 5);
+  const energy = raw.map((p) => ({ a: h(v2Ms(p.t)), b: h(v2Ms(p.t) + stepMs), inK: toNumber(p.grid_in), outK: toNumber(p.grid_out), car: toNumber(p.car) }))
+    .filter((e) => e.inK !== null || e.outK !== null || e.car !== null);
+  const energyMax = Math.max(1, Math.ceil(Math.max(0, ...energy.map((e) => Math.max(e.inK || 0, e.outK || 0, e.car || 0))) * 2) / 2);
+  const replans = (Array.isArray(a.replans) ? a.replans : []).map(v2Ms).filter((m) => m !== null && m >= t0 && m <= t0 + spanH * HOUR_MS).map(h);
   const valueVals = pts("value_p").filter((p) => p.y !== null).map((p) => p.y);
   return Object.assign(base, {
     kind: "ok", t0, spanH, stepMs, bands, previewOnly, partlyPreview, control, profile,
     banner: previewOnly ? "Preview only: engine v1 was in control on this day, so nothing was sent to the inverter. The modes below are what engine v2 would have chosen."
       : partlyPreview ? "Control changed during the day: the dimmed bands are where engine v2 was only previewing." : "",
     level: runsOf(levelPts), expected: runsOf(pts("expected")), exact, value: runsOf(pts("value_p")),
-    importSteps: stepPts("import_p"), exportSteps: stepPts("export_p"), priceMax,
+    importSteps: stepPts("import_p"), exportSteps: stepPts("export_p"), priceMax, buySteps: stepPts("buy_p"), sellSteps: stepPts("sell_p"),
+    energy, energyMax, replans,
     valueMax: valueVals.length ? Math.max(...valueVals) : 0,
     changes, ticks: (() => {
       const out = []; const d = new Date(t0); d.setMinutes(0, 0, 0);
@@ -7449,7 +7493,7 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
       ${this._pickerHtml(attrs || {})}
       ${v.kind === "empty" ? `<p class="muted">${escHtml(v.text)}</p>` : `${v.banner ? `<p class="preview-line" role="note">${escHtml(v.banner)}</p>` : ""}
       <div class="chart" id="hist"></div>
-      <div class="legend">${legend(modesUsed.map((k) => [`var(${v2Mode(k).colour})`, v2Mode(k).name]).concat([["var(--v2-battery)", "Battery as it ran (dashed: expected at the start of the day)"], ["var(--v2-price)", "Import price"], ["var(--m-export)", "Export price (dotted)"], ["var(--v2-good)", "Value of a stored kWh"]]))}</div>
+      <div class="legend">${legend(modesUsed.map((k) => [`var(${v2Mode(k).colour})`, v2Mode(k).name]).concat([["var(--v2-battery)", "Battery as it ran (dashed: expected at the start of the day)"], ["var(--v2-price)", "Import price"], ["var(--m-export)", "Export price (dotted)"], ["var(--v2-good)", "Value of a stored kWh"], ["var(--v2-price)", "Buy line (dotted)"], ["var(--m-export)", "Sell line (dotted)"], ["var(--primary-text-color)", "Tick above the times: the plan was worked out again"]]))}</div>
       ${v.partlyPreview || v.previewOnly ? '<p class="muted small">Dimmed bands: engine v2 was only previewing, nothing was sent.</p>' : ""}
       ${v.changes.length ? `<div><h3>Mode changes (newest first)</h3><div class="changes">${v.changes.map((c) => `<span class="num muted">${escHtml(c.at)}</span><span class="mode"><i class="sw" style="background:var(${v2Mode(c.modeKey).colour})"></i>${escHtml(c.mode)}</span><span>${escHtml(c.reason)}</span>`).join("")}</div></div>` : '<p class="muted small">No mode changes recorded for this day.</p>'}
       ${v.note ? `<p class="muted small">${escHtml(v.note)}</p>` : ""}`}
@@ -7459,7 +7503,8 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
   }
   _drawChart(host, v) {
     const G = { W: 900, L: 40, R: 46, T: 12, bandH: 26 };
-    const topY = G.T + G.bandH + 10, levelH = 150, gap = 34, priceTop = topY + levelH + gap, priceH = 110, H = priceTop + priceH + 28;
+    const topY = G.T + G.bandH + 10, levelH = 150, gap = 34, priceTop = topY + levelH + gap, priceH = 110;
+    const hasE = v.energy.length > 0, enTop = priceTop + priceH + 34, enH = 80, H = (hasE ? enTop + enH : priceTop + priceH) + 28;
     const svg = svgEl("svg", { viewBox: `0 0 ${G.W} ${H}`, role: "img", "aria-label": "Engine v2's modes, battery level, prices and the value of a stored kWh over the day" }, host);
     const x = (hr) => G.L + (hr / v.spanH) * (G.W - G.L - G.R);
     const yL = (p) => topY + (1 - p / 100) * levelH;
@@ -7491,8 +7536,25 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
     line(v.level, yL, { stroke: "var(--v2-battery)", "stroke-width": 2.5 });
     v.importSteps.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: yP(s.y), y2: yP(s.y), stroke: "var(--v2-price)", "stroke-width": 2 }, svg));
     v.exportSteps.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: yP(s.y), y2: yP(s.y), stroke: "var(--m-export)", "stroke-width": 1.5, "stroke-dasharray": "2 3" }, svg));
+    const dotted = (steps, col) => steps.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: yP(s.y), y2: yP(s.y), stroke: col, "stroke-width": 1.3, "stroke-opacity": 0.7, "stroke-dasharray": "1 3" }, svg));
+    dotted(v.buySteps, "var(--v2-price)");
+    dotted(v.sellSteps, "var(--m-export)");
     line(v.value, yP, { stroke: "var(--v2-good)", "stroke-width": 2.2 });
-    svgEl("text", { x: G.L, y: priceTop - 8, "font-size": 11, fill: muted }, svg, "Prices and the value of a stored kWh (pence per kWh)");
+    svgEl("text", { x: G.L, y: priceTop - 8, "font-size": 11, fill: muted }, svg, "Prices, buy and sell lines and the value of a stored kWh (pence per kWh)");
+    if (hasE) {                                          // grid energy per half-hour: import up, export down; the car outlined (it is part of the load)
+      const mid = enTop + enH / 2, yE = (k) => (k / v.energyMax) * (enH / 2 - 4);
+      svgEl("line", { x1: G.L, x2: G.W - G.R, y1: mid, y2: mid, stroke: "var(--divider-color)" }, svg);
+      svgEl("text", { x: G.L - 6, y: mid + 4, "text-anchor": "end", "font-size": 11, fill: muted }, svg, "0");
+      svgEl("text", { x: G.L - 6, y: mid - yE(v.energyMax) + 4, "text-anchor": "end", "font-size": 11, fill: muted }, svg, `${v.energyMax}`);
+      svgEl("text", { x: G.L, y: enTop - 8, "font-size": 11, fill: muted }, svg, "Grid energy per half-hour (kWh): import up, export down; outline: the car");
+      v.energy.forEach((e) => {
+        const bx = x(e.a) + 1, bw = Math.max(1, x(e.b) - x(e.a) - 2);
+        if (e.inK) svgEl("rect", { x: bx, y: mid - yE(e.inK), width: bw, height: yE(e.inK), fill: "var(--v2-price)", "fill-opacity": 0.75 }, svg);
+        if (e.outK) svgEl("rect", { x: bx, y: mid, width: bw, height: yE(e.outK), fill: "var(--m-export)", "fill-opacity": 0.75 }, svg);
+        if (e.car) svgEl("rect", { x: bx + 1, y: mid - yE(e.car), width: Math.max(1, bw - 2), height: yE(e.car), fill: "none", stroke: "var(--primary-text-color)", "stroke-width": 1.2, "stroke-opacity": 0.8 }, svg);
+      });
+    }
+    v.replans.forEach((rh) => svgEl("line", { x1: x(rh), x2: x(rh), y1: H - 26, y2: H - 17, stroke: "var(--primary-text-color)", "stroke-width": 1.5, "stroke-opacity": 0.7 }, svg));
   }
 }
 
@@ -7623,7 +7685,7 @@ if (typeof module !== "undefined") {
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
   v2WithProfiles, V2_PROFILES, uiEngine, profileDraft, profileList, profileBase, profileChanges, profileLoadFields, profileSaveFields, profileDeleteFields,
   ENGINE_SENSOR, V2_NOT_RUNNING, V2_NO_DATA, V2_MODES, v2Engine, v2Supported, v2Gate, valueBarGeometry, modeSubtitle, exitRows, engineCardView, timelineLayout, recentRows, scrollIntent, HISTORY_HOURS, V2_RECENT, sunLayout, levelAtHour, bandLabel, timelineHover,
-  heatColour, valueMapGrid, mapCellAt, interpValue, pathValueSeries, pathLines, mapReadoutText, planCardView, causeBars, causeLabel, comfortSummary, healthCardView,
+  heatColour, valueMapGrid, mapCellAt, interpValue, pathValueSeries, timelineValue, timelineLines, pathLines, mapReadoutText, planCardView, causeBars, causeLabel, comfortSummary, healthCardView,
   ENGINE_ICONS, engineIcon, refreshEngineIcons, engineBadge, BADGE_LINES, V2_HISTORY_DAY_EVENT, v2HistoryDayPayload, v2HistoryView, engineCompareView, calibrationLine, gbp, COMPARE_WAITING,
   V1_SECTIONS, v2Same, engineGrouping, engineInUse, engineConfirm, cleanV2Block, engineFields, v2Problem, v2Contradictions, v2Values, comfortReadout, weightsReadout, floorsReadout };
 }
