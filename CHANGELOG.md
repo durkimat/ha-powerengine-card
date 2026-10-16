@@ -3,6 +3,13 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.151
+
+### Behaviour changes
+
+- **A key above the plan chart and the history chart, with a tick box for each line.** Value of a stored kWh, buy line, sell line and re-plans on both; grid energy as well on the history. Untick one to hide it, tick it to bring it back. Your choice is remembered in that browser. The key sits in the header beside the title, so it takes no extra height on a wide screen.
+- **The buy and sell lines have colours of their own** (teal and magenta), so they no longer look like the import and export prices.
+
 ## 0.9.150
 
 ### Behaviour changes
