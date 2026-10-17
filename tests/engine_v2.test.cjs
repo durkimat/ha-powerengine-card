@@ -201,6 +201,16 @@ test("timeline value uses the app's value along the path when it sends one", () 
   assert.ok(without.tvalue.future.length > 0);                                 // an older app: read off the curve as before
 });
 
+test("off the scale means a grid event only where one covers the cell; near the floor it is the floor", () => {
+  const cell = { a: 1, b: 2, lo: 0, hi: 10, value: 457 };
+  assert.strictEqual(card.offScaleReason(cell, [{ a: 0, b: 5, event: false }], 40), "floor");
+  assert.strictEqual(card.offScaleReason(cell, [{ a: 1.5, b: 3, event: true }], 40), "event");
+  assert.strictEqual(card.offScaleReason(cell, [{ a: 3, b: 4, event: true }], 40), "floor");        // an event, but not then
+  assert.strictEqual(card.offScaleReason({ a: 1, b: 2, lo: 50, hi: 60, value: 30 }, [], 40), null);
+  assert.ok(/not a grid event/.test(card.mapReadoutText(cell, "17:00", null, "floor")));
+  assert.ok(!/off the scale/.test(card.mapReadoutText({ a: 1, b: 2, lo: 50, hi: 60, value: 30 }, "17:00", null, null)));
+});
+
 test("path lines are the prices times the losses the value sensor reports, never a made-up price", () => {
   const L = card.timelineLayout(timeline());
   const lines = card.pathLines(L, { import_p: 6.99, buy_line_p: 7.36, export_p: 15, sell_line_p: 14.25 });
