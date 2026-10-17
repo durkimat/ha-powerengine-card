@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.152";
+const CARD_VERSION = "0.9.153";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -6331,6 +6331,13 @@ function heatColour(v, opts) {
   return { kind: "scale", css: `rgb(${m.join(",")})`, t };
 }
 
+/** Why a map cell is off the scale (more than 1.5 times the scale): "event" where a grid event or free-power step covers it in time, else
+ *  "floor": the plan prices the battery's lowest levels very high (running out means buying at the dear rate, and the reserve and floor
+ *  are protected), which is not an event. Null when the value is on the scale. `steps` are the layout's price steps. */
+function offScaleReason(cell, steps, scaleMax) {
+  if (!cell || heatColour(cell.value, { max: scaleMax }).kind !== "event") return null;
+  return (steps || []).some((s) => s.event && s.a < cell.b && s.b > cell.a) ? "event" : "floor";
+}
 /** The value curve as cells: one row per step_min from `start`, one column per level, in hours from t0 (clipped to the
  *  span). Each level covers half a step either side (0 and 100 only half). */
 function valueMapGrid(curve, t0, spanH) {
@@ -6427,13 +6434,15 @@ function pathLines(layout, val) {
   };
 }
 /** Sentence for a point on the map. `buyLineAt` = the buy line (p) at that time, or null. */
-function mapReadoutText(cell, clock, buyLineAt) {
+function mapReadoutText(cell, clock, buyLineAt, offReason) {
   if (!cell) return "Point at the map: the value of one more kWh at that time and battery level.";
   const lo = Math.round(cell.lo), hi = Math.round(cell.hi);
   let t = `At ${clock} with the battery at ${lo === hi ? lo : `${lo}–${hi}`}%, one more kWh is worth ${v2P(cell.value, 1)}.`;
   if (buyLineAt !== null && buyLineAt !== undefined) {
     t += ` Buying then costs ${v2P(buyLineAt, 1)} per stored kWh: ${cell.value >= buyLineAt ? "worth it, so a charge would run" : "not worth it, so no charge"}.`;
   }
+  if (offReason === "floor") t += " That is off the scale: this low the battery is near its floor, so running out is priced very high. It is not a grid event.";
+  else if (offReason === "event") t += " That is off the scale: a grid event pays far more than the prices.";
   return t;
 }
 /** The price the plan worked with for a step. A smart slot that is only a chance is drawn at the offered price (app 0.9.134 and later),
@@ -6848,7 +6857,7 @@ class PowerEngineEngineCard extends PowerEngineV2Card {
       <div class="bar"><h3>What a stored kWh is worth now, against today's prices</h3><div id="bar"></div>
         <p class="muted small">The marker is the value at the battery's level now; it moves as the battery fills and when the values are worked out again.
         The lines are the real prices after charging and discharging losses: buy while a stored kWh is worth more than the buy line, sell when it is worth less than the sell line.
-        ${v.offScale ? "The marker is off the scale: grid-event values are far above the prices." : "Grid-event values are off the scale."}</p></div>
+        ${v.offScale ? "The marker is off the scale: a grid event, or a battery so low that running out is priced very high." : "Grid-event values, and the battery's lowest levels, are off the scale."}</p></div>
       ${exits}
       <div class="figs">${v.figs.map((f) => `<div class="fig"><span class="k">${escHtml(f.k)}</span><span class="v">${escHtml(f.v)}</span></div>`).join("")}</div>
       ${v.notes.map((n) => `<p class="muted small">${escHtml(n)}</p>`).join("")}
@@ -7187,7 +7196,10 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
     if (this._view === "map") {
       const y = (p) => G.T + (1 - p / 100) * (G.H - G.T - G.B);
       const heat = { max: v.scaleMax, dark: this._dark };
-      v.grid.cells.forEach((c) => svgEl("rect", { x: x(c.a), y: y(c.hi), width: x(c.b) - x(c.a) + 0.5, height: y(c.lo) - y(c.hi) + 0.5, fill: heatColour(c.value, heat).css }, svg));
+      const steps = v.layout ? v.layout.steps : [];
+      const seen = new Set();
+      const off = (c) => { const r = offScaleReason(c, steps, v.scaleMax); if (r) seen.add(r); return r; };
+      v.grid.cells.forEach((c) => svgEl("rect", { x: x(c.a), y: y(c.hi), width: x(c.b) - x(c.a) + 0.5, height: y(c.lo) - y(c.hi) + 0.5, fill: off(c) === "floor" ? "var(--v2-warn)" : heatColour(c.value, heat).css }, svg));
       for (let p = 0; p <= 100; p += 25) svgEl("text", { x: G.L - 6, y: y(p) + 4, "text-anchor": "end", "font-size": 11, fill: muted }, svg, `${p}%`);
       if (v.layout && v.layout.mid.length) {
         const pts = v.layout.mid.map((p) => `${x(p.h)},${y(p.level)}`).join(" ");
@@ -7202,12 +7214,13 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
         const px = ((ev.clientX - r.left) / r.width) * G.W, py = ((ev.clientY - r.top) / r.height) * G.H;
         const h = ((px - G.L) / (G.W - G.L - G.R)) * spanH, lvl = (1 - (py - G.T) / (G.H - G.T - G.B)) * 100;
         const cell = mapCellAt(v.grid, h, lvl);
-        ro.textContent = mapReadoutText(cell, clock(h), cell ? buyAt(h) : null);
+        ro.textContent = mapReadoutText(cell, clock(h), cell ? buyAt(h) : null, cell ? offScaleReason(cell, steps, v.scaleMax) : null);
       };
       cover.addEventListener("pointermove", point); cover.addEventListener("pointerdown", point);
       [0, 10, 20, 30].forEach((p) => p <= v.scaleMax && swatch(heatColour(p, heat).css, `${p}p`));
       swatch(heatColour(v.scaleMax, heat).css, `${v.scaleMax}p+`);
-      swatch("var(--m-event)", "grid event (off the scale)");
+      if (seen.has("floor")) swatch("var(--v2-warn)", "off the scale: the battery near its floor");
+      if (seen.has("event")) swatch("var(--m-event)", "grid event (off the scale)");
       swatch("var(--primary-text-color)", "expected battery path");
       ro.textContent = mapReadoutText(null);
     } else {
@@ -7724,7 +7737,7 @@ if (typeof module !== "undefined") {
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
   v2WithProfiles, V2_PROFILES, uiEngine, profileDraft, profileList, profileBase, profileChanges, profileLoadFields, profileSaveFields, profileDeleteFields,
   ENGINE_SENSOR, V2_NOT_RUNNING, V2_NO_DATA, V2_MODES, v2Engine, v2Supported, v2Gate, valueBarGeometry, modeSubtitle, exitRows, engineCardView, timelineLayout, recentRows, scrollIntent, HISTORY_HOURS, V2_RECENT, sunLayout, levelAtHour, bandLabel, timelineHover,
-  heatColour, valueMapGrid, mapCellAt, interpValue, chartKeyHtml, chartHidden, CHART_KEYS, pathValueSeries, timelineValue, timelineLines, pathLines, mapReadoutText, planCardView, causeBars, causeLabel, comfortSummary, healthCardView,
+  heatColour, valueMapGrid, mapCellAt, interpValue, offScaleReason, chartKeyHtml, chartHidden, CHART_KEYS, pathValueSeries, timelineValue, timelineLines, pathLines, mapReadoutText, planCardView, causeBars, causeLabel, comfortSummary, healthCardView,
   ENGINE_ICONS, engineIcon, refreshEngineIcons, engineBadge, BADGE_LINES, V2_HISTORY_DAY_EVENT, v2HistoryDayPayload, v2HistoryView, engineCompareView, calibrationLine, gbp, COMPARE_WAITING,
   V1_SECTIONS, v2Same, engineGrouping, engineInUse, engineConfirm, cleanV2Block, engineFields, v2Problem, v2Contradictions, v2Values, comfortReadout, weightsReadout, floorsReadout };
 }
