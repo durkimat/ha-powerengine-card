@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.153
+
+### Behaviour changes
+
+- **The value map no longer calls every very high value a grid event.** Near the battery's floor the plan prices running out very high, which showed as purple "grid event (off the scale)" even with no event. Those cells are now orange, "off the scale: the battery near its floor", and the hover text says it is not a grid event. Purple stays for cells that a real grid event covers.
+
 ## 0.9.152
 
 ### Behaviour changes
