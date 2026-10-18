@@ -241,7 +241,7 @@ test("plan card view: gates and content", () => {
   assert.strictEqual(v.kind, "ok");
   assert.strictEqual(v.scaleMax, 50);
   assert.ok(v.grid && v.layout);
-  assert.match(v.cost, /Expected cost £1.23 against £2.34 on Self-use; comfort band gave up £0.06/);
+  assert.match(v.cost, /^Expected cost £1.23 against £2.34 on Self-use$/);
   assert.match(v.chip, /new prices published/);
   // the curve alone still draws a map
   const only = card.planCardView({ "sensor.pe_v2_value_curve": st(iso(0), curve()) });
@@ -263,15 +263,15 @@ test("health: causes biggest first, backstop flagged, weights and comfort text",
     "sensor.pe_diag_v2": st("ok", { weights: { solar: { morning: [0.29, 0.51, 0.2], midday: [0.34, 0.48, 0.18] }, days: 23, start: { solar: [0.25, 0.5, 0.25] } },
       soc_offset: { charging: -0.9, holding: 0, discharging: 0.3 }, filter_gap_max_today: 1.2,
       comfort: [{ date: "2026-10-05", hours_above: 3.5, hours_below: 0, given_up: 0.06, decisions_changed: 2 }] }),
-    "sensor.pe_diag_v2_settings": st("30", { settings: [], values: { comfort_low_soc: 20, comfort_high_soc: 90 } }),
+    "sensor.pe_diag_v2_settings": st("30", { settings: [], values: { range_low_soc: 20, range_high_soc: 90 } }),
   });
   assert.strictEqual(v.kind, "ok");
   assert.strictEqual(v.revalues, 9);
   assert.deepStrictEqual(v.figs.map((f) => f.v), ["7", "0", "1", "2.4 s"]);
   assert.deepStrictEqual(v.weights[1].pct, [34, 48, 18]);
   assert.deepStrictEqual(v.weightsStart, [25, 50, 25]);
-  assert.strictEqual(v.comfort.title, "Comfort band (20 to 90%)");
-  assert.strictEqual(v.comfort.text, "3.5 h above 90%, none below 20%. Gave up £0.06 against no band; changed 2 decisions.");
+  assert.strictEqual(v.comfort.title, "Everyday range (20 to 90%)");
+  assert.strictEqual(v.comfort.text, "3.5 h above 90%, none below 20%.");
   assert.match(v.filterText, /0.9 points low while charging.*0.3 points high while discharging/);
   assert.strictEqual(v.recent[0].text, "New prices");
   assert.strictEqual(card.healthCardView({ [card.ENGINE_SENSOR]: st("v1") }).text, card.V2_NOT_RUNNING);
@@ -388,9 +388,8 @@ test("v2 setting checks", () => {
   assert.strictEqual(card.v2Problem({ kind: "bool" }, true), "");
   assert.strictEqual(card.v2Problem({ kind: "choice", options: ["refill", "fixed"] }, "fixed"), "");
   assert.match(card.v2Problem({ kind: "choice", options: ["refill", "fixed"] }, "other"), /options/);
-  assert.ok(card.v2Contradictions({ comfort_low_soc: 90, comfort_high_soc: 20 }).comfort_low_soc);
-  assert.deepStrictEqual(card.v2Contradictions({ comfort_low_soc: 20, comfort_high_soc: 90 }), {});
-  assert.ok(card.v2Contradictions({ solar_low_pct: 0, solar_mid_pct: 0, solar_high_pct: 0 }).solar_low_pct);
+  assert.ok(card.v2Contradictions({ range_low_soc: 90, range_high_soc: 20 }).range_low_soc);
+  assert.deepStrictEqual(card.v2Contradictions({ range_low_soc: 20, range_high_soc: 90 }), {});
   assert.strictEqual(card.v2Same("5", 5), true);
   assert.strictEqual(card.v2Same(true, "true"), true);
   assert.strictEqual(card.v2Same("fixed", "refill"), false);
@@ -401,7 +400,7 @@ test("readouts under the v2 settings", () => {
   const diag = { weights: { solar: { midday: [0.34, 0.48, 0.18] }, days: 23 }, comfort: [{ date: "2026-10-05", hours_above: 3.5, hours_below: 0, given_up: 0.06, decisions_changed: 2 }] };
   assert.match(card.weightsReadout(diag), /Learned now \(midday\): 34 \/ 48 \/ 18 from 23 days/);
   assert.strictEqual(card.weightsReadout({}), null);
-  assert.match(card.comfortReadout(diag, { comfort_low_soc: 20, comfort_high_soc: 90 }), /Latest day \(2026-10-05\): 3.5 h above 90%, none below 20%/);
+  assert.match(card.comfortReadout(diag, { range_low_soc: 20, range_high_soc: 90 }), /Latest day \(2026-10-05\): 3.5 h above 90%, none below 20%/);
   assert.strictEqual(card.comfortReadout({}, {}), null);
   assert.strictEqual(card.floorsReadout({ battery_floor_soc: 12 }, { hard_floor_margin_pct: 1 }), "Hard floor 12% (the battery's own limit, set under Your house). Grid events stop at 13%.");
   assert.strictEqual(card.floorsReadout({}, {}), null);

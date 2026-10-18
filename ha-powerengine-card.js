@@ -1217,7 +1217,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     if (p) {
       let text, confirm, name = null, input = null;
       if (p.kind === "load") {
-        text = `Loading “${p.name}” replaces the engine's tuning settings with the profile's. ${changed.length ? "Your changes since you loaded this profile are dropped (save them as a profile first to keep them). " : ""}Your reserve, comfort band and what the engine may do stay as they are. Other unsaved edits on this page stay unsaved.`;
+        text = `Loading “${p.name}” replaces the engine's tuning settings with the profile's. ${changed.length ? "Your changes since you loaded this profile are dropped (save them as a profile first to keep them). " : ""}Your reserve, the smart slot odds and what the engine may do stay as they are. Other unsaved edits on this page stay unsaved.`;
         confirm = `Load “${p.name}”`;
       } else if (p.kind === "delete") {
         text = `Delete the saved profile “${active}”? The engine goes back to the built-in defaults profile and keeps the changes you made on top.`;
@@ -1313,9 +1313,9 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       const body = section(`v2_${sec.key}`, T(sec.label));
       sec.keys.forEach((k) => body.append(track(this._v2Row(byKey[k], `v2_${sec.key}`), "setting", `${byKey[k].label} ${byKey[k].help} ${k} engine v2`)));
       const readout = (fn) => { const box = el("div", { class: "readline" }); body.append(box); this._v2Readouts.push({ box, fn }); };
-      if (sec.key === "comfort") readout(() => comfortReadout(this._v2Diag(), v2Values(this._v2, this._draft.engine_v2)));
+      if (sec.key === "range") readout(() => comfortReadout(this._v2Diag(), v2Values(this._v2, this._draft.engine_v2)));
+      if (sec.key === "range") readout(() => floorsReadout(this._draft.safety, v2Values(this._v2, this._draft.engine_v2)));
       if (sec.key === "forecast") readout(() => weightsReadout(this._v2Diag()));
-      if (sec.key === "floors") readout(() => floorsReadout(this._draft.safety, v2Values(this._v2, this._draft.engine_v2)));
     });
   }
 
@@ -6469,7 +6469,7 @@ function planCardView(states, now) {
   const worked = (states[V2_TIMELINE] || {}).state;
   const cost = tl && toNumber(tl.cost_expected) !== null && toNumber(tl.cost_selfuse) !== null
     ? `Expected cost £${toNumber(tl.cost_expected).toFixed(2)} against £${toNumber(tl.cost_selfuse).toFixed(2)} on Self-use`
-      + (toNumber(tl.comfort_given_up) ? `; comfort band gave up £${toNumber(tl.comfort_given_up).toFixed(2)}` : "") : "";
+ : "";
   return { kind: "ok", preview: v2Preview(states), tl, layout, tlayout, grid, curve, val, scaleMax: toNumber(val.scale_max_p) > 0 ? toNumber(val.scale_max_p) : 40,
     lines: layout ? pathLines(layout, val) : null, series: layout && curve ? pathValueSeries(curve, layout) : [],
     tvalue: tlayout ? timelineValue(curve, tlayout) : { past: [], future: [] },
@@ -6500,18 +6500,17 @@ function causeBars(today) {
 }
 const WEIGHT_PARTS = [["morning", "Morning"], ["midday", "Midday"], ["afternoon", "Afternoon"]];
 function weightPct(arr) { return Array.isArray(arr) ? arr.map((x) => (toNumber(x) === null ? "–" : Math.round(toNumber(x) * 100))) : null; }
-/** The comfort-band sentence from the newest entry of sensor.pe_diag_v2's `comfort`. */
+/** The everyday-range sentence from the newest entry of sensor.pe_diag_v2's `comfort` (hours above and below it). */
 function comfortSummary(diag, values) {
   const list = diag && Array.isArray(diag.comfort) ? diag.comfort : [];
   const c = list[list.length - 1];
   if (!c) return null;
   const v = values || {};
-  const lo = toNumber(v.comfort_low_soc), hi = toNumber(v.comfort_high_soc);
+  const lo = toNumber(v.range_low_soc), hi = toNumber(v.range_high_soc);
   const hrs = (n) => (toNumber(n) ? `${Math.round(toNumber(n) * 10) / 10} h` : "none");
-  const changed = toNumber(c.decisions_changed) || 0;
   return {
-    title: lo !== null && hi !== null ? `Comfort band (${lo} to ${hi}%)` : "Comfort band",
-    text: `${hrs(c.hours_above)} above${hi !== null ? ` ${hi}%` : ""}, ${hrs(c.hours_below)} below${lo !== null ? ` ${lo}%` : ""}. Gave up £${(toNumber(c.given_up) || 0).toFixed(2)} against no band; changed ${changed} decision${changed === 1 ? "" : "s"}.`,
+    title: lo !== null && hi !== null ? `Everyday range (${lo} to ${hi}%)` : "Everyday range",
+    text: `${hrs(c.hours_above)} above${hi !== null ? ` ${hi}%` : ""}, ${hrs(c.hours_below)} below${lo !== null ? ` ${lo}%` : ""}.`,
     date: c.date || "",
   };
 }
@@ -6684,19 +6683,15 @@ function v2Problem(st, value) {
 /** Settings that contradict each other: { key: message } (the app checks the same). */
 function v2Contradictions(values) {
   const v = values || {}, out = {};
-  const lo = toNumber(v.comfort_low_soc), hi = toNumber(v.comfort_high_soc);
-  if (lo !== null && hi !== null && lo >= hi) out.comfort_low_soc = "The lower edge must be below the upper edge";
-  ["solar", "load"].forEach((p) => {
-    const s = ["low", "mid", "high"].map((k) => toNumber(v[`${p}_${k}_pct`]));
-    if (s.every((x) => x !== null) && s[0] + s[1] + s[2] <= 0) out[`${p}_low_pct`] = "The weights can't all be 0";
-  });
+  const lo = toNumber(v.range_low_soc), hi = toNumber(v.range_high_soc);
+  if (lo !== null && hi !== null && lo >= hi) out.range_low_soc = "The bottom must be below the top";
   return out;
 }
 /** The values to show in the v2 group: what the app uses now, overlaid with the draft's own block. */
 function v2Values(catalogue, block) {
   return Object.assign({}, (catalogue && catalogue.values) || {}, block || {});
 }
-/** Readout under the comfort band, from sensor.pe_diag_v2. */
+/** Readout under the battery's range, from sensor.pe_diag_v2. */
 function comfortReadout(diag, values) {
   const c = comfortSummary(diag, values);
   return c ? `Latest day (${c.date || "today"}): ${c.text}` : null;
@@ -7718,7 +7713,7 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
 
 [["powerengine-engine-card", PowerEngineEngineCard, "PowerEngine engine v2", "Engine v2's mode, why, the value of a stored kWh against the buy and sell lines, and what ends the mode."],
   ["powerengine-v2-plan-card", PowerEngineV2PlanCard, "PowerEngine engine v2 plan", "Engine v2's expected timeline and the value map."],
-  ["powerengine-v2-health-card", PowerEngineV2HealthCard, "PowerEngine engine v2 health", "Engine v2's recalculations, flip-flops, comfort band and learned weights."],
+  ["powerengine-v2-health-card", PowerEngineV2HealthCard, "PowerEngine engine v2 health", "Engine v2's recalculations, flip-flops, everyday range and learned weights."],
   ["powerengine-engine-badge-card", PowerEngineEngineBadgeCard, "PowerEngine engine badge", "Active, Paused or Passive for one engine, with what that means (engine: v1 or v2)."],
   ["powerengine-v2-history-card", PowerEngineV2HistoryCard, "PowerEngine engine v2 history", "A day of engine v2: level as it ran against the expected level, the modes, prices and value, with a day picker."],
   ["powerengine-engine-compare-card", PowerEngineEngineCompareCard, "PowerEngine engines compared", "What engine v1, engine v2 and the best possible would have saved on each of the last days."],
