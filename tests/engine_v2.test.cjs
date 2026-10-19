@@ -689,3 +689,80 @@ test("the plan chart's hours already run use the runs, up to the last whole half
   const old = card.timelineLayout(timeline(), { now, recent: recent(3.5, 36) });                        // an older app: no runs
   assert.deepStrictEqual(old.bands.filter((b) => b.ran).map((b) => b.mode), ["self_use", "charge"]);
 });
+
+// --- history: the forecast, the real timing of the grid and the readout ----------------------------------------------------
+const NOW_L = new Date(2026, 9, 6, 12, 0).getTime();                         // local noon on the day shown
+const at = (hoursFromNow) => new Date(NOW_L + hoursFromNow * 3600000).toISOString();
+const fcTimeline = () => ({
+  now: at(0), floor_soc: 12, reserve_soc: 12,
+  items: [
+    { mode: "self_use", start: at(-1), end: at(3), level_start: 50, level_end: 40, until: "until 15:00", reason: "sun covers the house" },
+    { mode: "charge", start: at(3), end: at(8), level_start: 40, level_end: 90, until: "until 90%", reason: "cheap slot" },
+    { mode: "hold", start: at(8), end: at(20), level_start: 90, level_end: 90, until: "" },
+  ],
+  path: { start: at(0), step_min: 60, mid: [50, 45, 42, 40, 55, 70, 85, 90, 90, 90, 90, 90, 90], low: [50, 40, 36, 33, 45, 60, 80, 88, 90, 90, 90, 90, 90], high: [50, 48, 46, 45, 62, 80, 92, 92, 92, 92, 92, 92, 92] },
+  prices: [{ start: at(-1), end: at(3), import_p: 28.84, export_p: 15 }, { start: at(3), end: at(20), import_p: 6.99, export_p: 15, slot_prob: 0.7 }],
+});
+const ranDay = () => {
+  const half = (i, extra) => Object.assign({ t: new Date(2026, 9, 6, 0, 30 * i).toISOString(), mode: "self_use", level: 60 - i, import_p: 28.84, export_p: 15, value_p: 10, sent: true }, extra);
+  return Array.from({ length: 24 }, (_, i) => half(i));                      // midnight to noon
+};
+
+test("forecast: only what is still to come, in milliseconds, with the level range and the prices", () => {
+  const f = card.v2Forecast(fcTimeline(), NOW_L);
+  assert.ok(f.bands.every((b) => b.b > NOW_L) && f.bands.map((b) => b.mode).join() === "self_use,charge,hold");
+  assert.ok(f.steps.every((q) => q.b > NOW_L) && f.steps.some((q) => q.importP === 6.99));
+  assert.ok(f.mid.length > 5 && f.low.length === f.mid.length && f.high.length === f.mid.length);
+  assert.ok(Math.abs(f.mid[0].ms - NOW_L) < 1000);
+  assert.strictEqual(card.v2Forecast(null, NOW_L), null);
+  assert.strictEqual(card.v2Forecast({ items: [], prices: [] }, NOW_L), null);
+  const last = card.v2ForecastLastDay(f);
+  assert.strictEqual(last, "2026-10-07");                                    // 20 hours on from noon reaches the next morning
+});
+
+test("history view: today spans the whole day, with the forecast right of now and the grid at its real timing", () => {
+  const f = card.v2Forecast(fcTimeline(), NOW_L);
+  const start = new Date(2026, 9, 6, 0, 0).toISOString();
+  const flows = { date: "2026-10-06", start, bucket: 5, m: [120, 125, 600], imp: [1.5, 1.5, 0], exp: [0, 0, 2], car: [0, 1, 0] };
+  const v = card.v2HistoryView({ date: "2026-10-06", latest: "2026-10-06", series: ranDay(), in_control: "v2" }, NOW_L, { forecast: f, flows });
+  assert.strictEqual(v.kind, "ok");
+  assert.ok(Math.abs(v.spanH - 24) < 1e-9 && Math.abs(v.nowH - 12) < 1e-9);
+  assert.ok(v.forecast.bands.length === 3 && v.forecast.bands.every((b) => b.a >= v.nowH - 1e-9));
+  assert.ok(v.forecast.mid.every((p) => p.h >= v.nowH - 0.26));
+  assert.deepStrictEqual(v.flows.map((e) => [e.a, e.b]), [[2, 2 + 5 / 60], [2 + 5 / 60, 2 + 10 / 60], [10, 10 + 5 / 60]]);
+  assert.ok(v.energyMax >= 2);
+  const other = card.v2HistoryView({ date: "2026-10-06", latest: "2026-10-06", series: ranDay(), in_control: "v2" }, NOW_L, { flows: Object.assign({}, flows, { date: "2026-10-05" }) });
+  assert.strictEqual(other.flows, null);                                     // flows of another day are not drawn
+});
+
+test("history view: a coming day is the forecast alone; a past day gets none; nothing to show says so", () => {
+  const f = card.v2Forecast(fcTimeline(), NOW_L);
+  const tomorrow = card.v2HistoryView({ date: "2026-10-07", latest: "2026-10-06", series: [] }, NOW_L, { forecast: f });
+  assert.strictEqual(tomorrow.kind, "ok");
+  assert.strictEqual(tomorrow.control, "forecast");
+  assert.strictEqual(tomorrow.nowH, null);
+  assert.ok(tomorrow.forecast.bands.length > 0 && tomorrow.previewOnly === false && /Forecast/.test(tomorrow.banner));
+  const later = card.v2HistoryView({ date: "2026-10-09", latest: "2026-10-06", series: [] }, NOW_L, { forecast: f });
+  assert.strictEqual(later.kind, "empty");                                   // beyond what the timeline reaches
+  const past = card.v2HistoryView({ date: "2026-10-05", latest: "2026-10-06", series: [] }, NOW_L, { forecast: f });
+  assert.strictEqual(past.kind, "empty");
+  const old = card.v2HistoryView({ date: "2026-10-06", series: ranDay() }, NOW_L);
+  assert.strictEqual(old.forecast, null);                                    // no timeline given: as before
+});
+
+test("history readout: the mode, battery, prices, value and grid at a chosen time, ran or expected", () => {
+  const f = card.v2Forecast(fcTimeline(), NOW_L);
+  const start = new Date(2026, 9, 6, 0, 0).toISOString();
+  const flows = { date: "2026-10-06", start, bucket: 5, m: [120], imp: [1.5], exp: [0], car: [1] };
+  const v = card.v2HistoryView({ date: "2026-10-06", latest: "2026-10-06", series: ranDay(), in_control: "v2" }, NOW_L, { forecast: f, flows });
+  const clock = (h) => `h${h.toFixed(1)}`;
+  const past = card.v2HistoryReadout(v, 2.02, clock);
+  assert.ok(/happened/.test(past[0]) && past.some((l) => /^Self-use \(happened/.test(l)));
+  assert.ok(past.includes("Grid: importing 3.0 kW") && past.includes("Car: charging at 2.0 kW"));
+  assert.ok(past.some((l) => /^Import price: 28.84p/.test(l)) && past.some((l) => /^Battery: /.test(l)));
+  const soon = card.v2HistoryReadout(v, 16, clock);
+  assert.ok(/expected/.test(soon[0]) && soon.some((l) => /^Charge \(expected/.test(l)) && soon.includes("cheap slot"));
+  assert.ok(soon.some((l) => /^Battery: .*likely/.test(l)) && soon.some((l) => /^Import price: 6.99p, smart slot/.test(l)));
+  assert.deepStrictEqual(card.v2HistoryReadout(v, 99, clock), []);
+  assert.deepStrictEqual(card.v2HistoryReadout({ kind: "empty" }, 1, clock), []);
+});

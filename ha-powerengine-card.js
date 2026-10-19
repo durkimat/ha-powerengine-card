@@ -7396,7 +7396,29 @@ class PowerEngineEngineBadgeCard extends PowerEngineV2Card {
 // ---- engine v2 history: one day of what v2 did (sensor.pe_v2_history) ----
 const V2_HISTORY_SENSOR = "sensor.pe_v2_history";
 const V2_HISTORY_DAY_EVENT = "pe_v2_history_day";
+const V2_FLOWS = "sensor.pe_v2_flows";                 // the day's grid and car at the time they happened (newer apps)
 const V2_HISTORY_NONE = "Engine v2's history has not been recorded yet.";
+const V2_HISTORY_HINT = "Move over the chart, or tap it, to read the values at that time.";
+/** What the timeline sensor expects from `nowMs` on, in milliseconds (the history chart draws it dimmed, to the right of now):
+ *  {from, to, bands, steps, mid, low, high, value}. Null when there is no usable timeline. Pure. */
+function v2Forecast(tl, nowMs) {
+  if (!tl || typeof tl !== "object") return null;
+  const L = timelineLayout(tl, { now: nowMs });
+  const ms = (hr) => L.t0 + hr * HOUR_MS;
+  const bands = L.bands.filter((b) => b.state !== "past").map((b) => ({ mode: b.mode, a: b.startMs, b: b.endMs, reason: b.reason, until: b.until, levelStart: b.levelStart, levelEnd: b.levelEnd }));
+  const steps = L.steps.map((q) => ({ a: ms(q.a), b: ms(q.b), importP: q.importP, exportP: q.exportP, slot: q.slot, slotProb: q.slotProb, event: q.event, free: q.free, estimated: q.estimated }))
+    .filter((q) => q.b > nowMs);
+  const line = (pts, key) => pts.map((q) => ({ ms: ms(q.h), y: q[key] })).filter((q) => q.ms >= nowMs - 15 * 60000);
+  const out = { from: nowMs, to: L.t1, bands, steps, mid: line(L.mid, "level"), low: line(L.low, "level"), high: line(L.high, "level"), value: line(L.pathValue, "value") };
+  return bands.length || steps.length || out.mid.length ? out : null;
+}
+/** The date (YYYY-MM-DD, this browser's day) the forecast reaches, or "" without one. */
+function v2ForecastLastDay(fc) {
+  if (!fc || !Number.isFinite(fc.to)) return "";
+  const d = new Date(fc.to - 1);
+  const two = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
+}
 /** The day-picker call for the v2 history: the same rules as the plan history's (a date inside earliest to latest). */
 function v2HistoryDayPayload(value, earliest, latest) {
   return historyDayPayload(value, earliest, latest, V2_HISTORY_DAY_EVENT);
@@ -7410,18 +7432,22 @@ function runsOf(points) {
 }
 /** Everything the history card draws, from the attributes of sensor.pe_v2_history. kind: "none" | "empty" | "ok".
  *  Hours are from the start of the first half-hour. Pure. */
-function v2HistoryView(attrs, nowMs) {
+function v2HistoryView(attrs, nowMs, opts) {
+  const o = opts || {};
   const a = attrs && typeof attrs === "object" ? attrs : null;
   if (!a) return { kind: "none", text: V2_HISTORY_NONE };
   const date = typeof a.date === "string" ? a.date : "";
   const raw = (Array.isArray(a.series) ? a.series : []).filter((p) => p && v2Ms(p.t) !== null).sort((p, q) => v2Ms(p.t) - v2Ms(q.t));
   const base = { date, earliest: a.earliest || "", latest: a.latest || "", note: a.note ? String(a.note) : "" };
-  if (!raw.length) return Object.assign(base, { kind: "empty", text: date ? `Engine v2 has no record for ${date}.` : V2_HISTORY_NONE });
-  const t0 = v2Ms(raw[0].t);
+  // today and the days to come also show what the timeline expects, to the right of now, so the chart spans the whole day
+  const dayB = (() => { if (!ISO_DAY.test(date)) return null; const [y, m, d] = date.split("-").map(Number); return { a: new Date(y, m - 1, d).getTime(), b: new Date(y, m - 1, d + 1).getTime() }; })();
+  const fcOn = !!(o.forecast && dayB && date >= (a.latest || date) && o.forecast.to > dayB.a && o.forecast.from < dayB.b);
+  if (!raw.length && !fcOn) return Object.assign(base, { kind: "empty", text: date ? `Engine v2 has no record for ${date}.` : V2_HISTORY_NONE });
+  const t0 = fcOn ? dayB.a : v2Ms(raw[0].t);
   const gaps = raw.slice(1).map((p, i) => v2Ms(p.t) - v2Ms(raw[i].t)).filter((g) => g > 0);
   const stepMs = gaps.length ? Math.min(...gaps) : 30 * 60000;
   const h = (ms) => (ms - t0) / HOUR_MS;
-  const spanH = h(v2Ms(raw[raw.length - 1].t) + stepMs);
+  const spanH = fcOn ? (dayB.b - dayB.a) / HOUR_MS : h(v2Ms(raw[raw.length - 1].t) + stepMs);
   const sentOf = (p) => p.sent !== false;
   const bandsRaw = raw.map((p) => ({ mode: p.mode || "none", a: h(v2Ms(p.t)), b: h(v2Ms(p.t) + stepMs), preview: !sentOf(p) }));
   // the day as it ran, to the second, when the app publishes it (`runs`); else the mode that ran longest in each half-hour
@@ -7440,26 +7466,45 @@ function v2HistoryView(attrs, nowMs) {
   const levelPts = pts("level").concat(exact ? runs.filter((r) => r.level !== null).map((r) => ({ h: h(r.a), y: r.level })) : []).sort((p, q) => p.h - q.h);
   const stepPts = (key) => raw.map((p) => ({ a: h(v2Ms(p.t)), b: h(v2Ms(p.t) + stepMs), y: toNumber(p[key]) })).filter((s) => s.y !== null);
   const sentCount = raw.filter(sentOf).length;
-  const control = a.in_control === "v1" || a.in_control === "v2" || a.in_control === "mixed" ? a.in_control : (sentCount === 0 ? "v1" : sentCount === raw.length ? "v2" : "mixed");
+  const control = !raw.length ? "forecast" : a.in_control === "v1" || a.in_control === "v2" || a.in_control === "mixed" ? a.in_control : (sentCount === 0 ? "v1" : sentCount === raw.length ? "v2" : "mixed");
   const profile = typeof a.profile === "string" ? a.profile : "";
-  const previewOnly = sentCount === 0;
+  const previewOnly = raw.length > 0 && sentCount === 0;
   const partlyPreview = sentCount > 0 && sentCount < raw.length;
   const changes = (Array.isArray(a.changes) ? a.changes : []).filter((c) => c && v2Ms(c.at) !== null).sort((a, b) => v2Ms(b.at) - v2Ms(a.at)).map((c) => ({
     at: v2Hm(c.at), mode: v2Mode(c.mode).name, modeKey: c.mode || "none", reason: c.reason ? String(c.reason) : "",
   }));
-  const priceMax = Math.max(10, Math.ceil(Math.max(0, ...stepPts("import_p").map((s) => s.y), ...stepPts("export_p").map((s) => s.y), ...stepPts("buy_p").map((s) => s.y), ...stepPts("sell_p").map((s) => s.y), ...pts("value_p").map((p) => p.y || 0)) / 5) * 5);
+  const priceMax = Math.max(10, Math.ceil(Math.max(0, ...stepPts("import_p").map((s) => s.y), ...stepPts("export_p").map((s) => s.y), ...stepPts("buy_p").map((s) => s.y), ...stepPts("sell_p").map((s) => s.y), ...pts("value_p").map((p) => p.y || 0),
+    ...(fcOn ? o.forecast.steps.map((q) => Math.max(q.importP || 0, q.exportP || 0)).concat(o.forecast.value.map((q) => Math.min(q.y || 0, 60))) : [])) / 5) * 5);
   const energy = raw.map((p) => ({ a: h(v2Ms(p.t)), b: h(v2Ms(p.t) + stepMs), inK: toNumber(p.grid_in), outK: toNumber(p.grid_out), car: toNumber(p.car) }))
     .filter((e) => e.inK !== null || e.outK !== null || e.car !== null);
   const energyMax = Math.max(1, Math.ceil(Math.max(0, ...energy.map((e) => Math.max(e.inK || 0, e.outK || 0, e.car || 0))) * 2) / 2);
   const replans = (Array.isArray(a.replans) ? a.replans : []).map(v2Ms).filter((m) => m !== null && m >= t0 && m <= t0 + spanH * HOUR_MS).map(h);
   const valueVals = pts("value_p").filter((p) => p.y !== null).map((p) => p.y);
+  // what the timeline expects from now on, in hours from the left edge and inside this day
+  const nowInDay = fcOn && Number.isFinite(nowMs) && nowMs >= dayB.a && nowMs < dayB.b && date === a.latest;
+  const nowH = nowInDay ? h(nowMs) : null;
+  const fromH = nowInDay ? nowH : 0;
+  const fcClip = (x) => ({ a: Math.max(fromH, h(x.a)), b: Math.min(spanH, h(x.b)) });
+  const fcLine = (arr) => (arr || []).map((q) => ({ h: h(q.ms), y: q.y })).filter((q) => q.y !== null && q.h >= fromH - 0.26 && q.h <= spanH + 1e-9);
+  const forecast = fcOn ? {
+    bands: o.forecast.bands.map((b) => Object.assign({}, b, fcClip(b))).filter((b) => b.b > b.a),
+    steps: o.forecast.steps.map((q) => Object.assign({}, q, fcClip(q))).filter((q) => q.b > q.a),
+    mid: fcLine(o.forecast.mid), low: fcLine(o.forecast.low), high: fcLine(o.forecast.high), value: fcLine(o.forecast.value),
+  } : null;
+  const flowsRaw = o.flows && o.flows.date === date && Array.isArray(o.flows.m) && v2Ms(o.flows.start) !== null ? o.flows : null;
+  const flows = flowsRaw ? flowsRaw.m.map((m, i) => {
+    const w = (toNumber(flowsRaw.bucket) || 5) * 60000;
+    return { a: h(v2Ms(flowsRaw.start) + m * 60000), b: h(v2Ms(flowsRaw.start) + m * 60000 + w), inK: toNumber((flowsRaw.imp || [])[i]) || 0, outK: toNumber((flowsRaw.exp || [])[i]) || 0, car: toNumber((flowsRaw.car || [])[i]) || 0 };
+  }) : null;
+  const flowMax = flows ? Math.max(1, Math.ceil(Math.max(0, ...flows.map((e) => Math.max(e.inK, e.outK, e.car))) * 2) / 2) : 0;
   return Object.assign(base, {
-    kind: "ok", t0, spanH, stepMs, bands, previewOnly, partlyPreview, control, profile,
-    banner: previewOnly ? "Preview only: engine v1 was in control on this day, so nothing was sent to the inverter. The modes below are what engine v2 would have chosen."
+    kind: "ok", t0, spanH, stepMs, bands, previewOnly, partlyPreview, control, profile, forecast, nowH, flows, flowMax,
+    banner: !raw.length ? "Forecast: what engine v2 expects from its current plan. Nothing has happened on this day yet."
+      : previewOnly ? "Preview only: engine v1 was in control on this day, so nothing was sent to the inverter. The modes below are what engine v2 would have chosen."
       : partlyPreview ? "Control changed during the day: the dimmed bands are where engine v2 was only previewing." : "",
     level: runsOf(levelPts), expected: runsOf(pts("expected")), exact, value: runsOf(pts("value_p")),
     importSteps: stepPts("import_p"), exportSteps: stepPts("export_p"), priceMax, buySteps: stepPts("buy_p"), sellSteps: stepPts("sell_p"),
-    energy, energyMax, replans,
+    energy, energyMax: flows ? Math.max(energyMax, flowMax) : energyMax, replans,
     valueMax: valueVals.length ? Math.max(...valueVals) : 0,
     changes, ticks: (() => {
       const out = []; const d = new Date(t0); d.setMinutes(0, 0, 0);
@@ -7470,27 +7515,103 @@ function v2HistoryView(attrs, nowMs) {
   });
 }
 
+/** What the history chart says at `hour` (hours from its left edge), for the readout under it: lines, the first being the time.
+ *  `clock(hour)` gives "HH:MM". Pure. */
+function v2HistoryReadout(v, hour, clock) {
+  if (!v || v.kind !== "ok" || !Number.isFinite(hour) || hour < 0 || hour > v.spanH) return [];
+  const future = v.nowH !== null && v.nowH !== undefined && hour >= v.nowH;
+  const lines = [`${clock(hour)}${future ? " (expected)" : v.nowH !== null && v.nowH !== undefined ? " (happened)" : ""}`];
+  const ran = v.bands.find((b) => hour >= b.a && hour < b.b);
+  const plan = (v.forecast ? v.forecast.bands : []).find((b) => hour >= b.a && hour < b.b);
+  const band = future ? (plan || ran) : (ran || plan);
+  if (band) {
+    const isPlan = band === plan && band !== ran;
+    lines.push(`${v2Mode(band.mode).name} (${isPlan ? "expected" : "happened"}${band.preview ? ", only previewed" : ""}, ${clock(band.a)} to ${clock(band.b)})`);
+    if (isPlan && band.until) lines.push(`Until: ${band.until}`);
+    if (isPlan && band.reason) lines.push(band.reason);
+  }
+  const pts = (runs) => [].concat(...(runs || [])).map((q) => ({ h: q.h, level: q.y }));
+  const ranLevel = levelAtHour(pts(v.level), hour);
+  const planMid = v.forecast ? v.forecast.mid.map((q) => ({ h: q.h, level: q.y })) : [];
+  const planLevel = future ? levelAtHour(planMid, hour) : null;
+  if (planLevel !== null) {
+    const lo = levelAtHour(v.forecast.low.map((q) => ({ h: q.h, level: q.y })), hour), hi = levelAtHour(v.forecast.high.map((q) => ({ h: q.h, level: q.y })), hour);
+    lines.push(`Battery: ${v2Pct(planLevel)}${lo !== null && hi !== null ? ` (likely ${v2Pct(lo)} to ${v2Pct(hi)})` : ""}`);
+  } else if (ranLevel !== null) lines.push(`Battery: ${v2Pct(ranLevel)}`);
+  const exp = levelAtHour(pts(v.expected), hour);
+  if (exp !== null && !future) lines.push(`Expected at the start of the day: ${v2Pct(exp)}`);
+  const step = (v.importSteps.find((q) => hour >= q.a && hour < q.b)) || (v.forecast ? v.forecast.steps.find((q) => hour >= q.a && hour < q.b) : null);
+  if (step) {
+    const imp = step.importP !== undefined ? step.importP : step.y;
+    const tag = step.event ? ", grid event" : step.free ? ", free power" : step.slot ? ", smart slot" : step.estimated ? ", estimated" : "";
+    lines.push(`Import price: ${v2P(imp, 2)}${tag}`);
+  }
+  const ex = v.exportSteps.find((q) => hour >= q.a && hour < q.b) || (v.forecast ? v.forecast.steps.find((q) => hour >= q.a && hour < q.b) : null);
+  const exportP = ex ? (ex.exportP !== undefined ? ex.exportP : ex.y) : null;
+  if (exportP !== null && exportP !== undefined) lines.push(`Export price: ${v2P(exportP, 2)}`);
+  const vals = (future && v.forecast ? v.forecast.value : [].concat(...(v.value || [])).map((q) => ({ h: q.h, y: q.y })));
+  const near = vals.length ? vals.reduce((m, q) => (Math.abs(q.h - hour) < Math.abs(m.h - hour) ? q : m)) : null;
+  if (near && Math.abs(near.h - hour) <= 1) lines.push(`Value of a stored kWh: ${v2P(near.y, 1)}${future ? " (expected)" : ""}`);
+  const kw = (k) => `${(Math.round(k * 20) / 10).toFixed(1)} kW`;           // kWh per half-hour at that power -> kW
+  const flow = v.flows ? v.flows.find((e) => hour >= e.a && hour < e.b) : null;
+  if (flow) {
+    lines.push(flow.inK > 0 ? `Grid: importing ${kw(flow.inK)}` : flow.outK > 0 ? `Grid: exporting ${kw(flow.outK)}` : "Grid: quiet");
+    if (flow.car > 0) lines.push(`Car: charging at ${kw(flow.car)}`);
+  } else {
+    const e = v.energy.find((q) => hour >= q.a && hour < q.b);
+    if (e) {
+      lines.push(`Grid in this half-hour: ${e.inK === null ? "–" : `${e.inK.toFixed(2)} kWh in`}${e.outK ? `, ${e.outK.toFixed(2)} kWh out` : ""}`);
+      if (e.car) lines.push(`Car in this half-hour: ${e.car.toFixed(2)} kWh`);
+    }
+  }
+  return lines;
+}
+
 class PowerEngineV2HistoryCard extends PowerEngineV2Card {
   setConfig(config) {
     super.setConfig(Object.assign({ entity: V2_HISTORY_SENSOR }, config || {}));
     this._built = false;
   }
   getCardSize() { return 9; }
-  _ids() { return [(this._config && this._config.entity) || V2_HISTORY_SENSOR]; }
+  _ids() { return [(this._config && this._config.entity) || V2_HISTORY_SENSOR, V2_TIMELINE, V2_FLOWS]; }
   _entity() { return (this._config && this._config.entity) || V2_HISTORY_SENSOR; }
   _attrs(states) { return v2Attrs(states, this._entity()); }
+  // the line for now moves between the app's publishes: redraw once a minute
+  connectedCallback() { if (!this._timer && typeof setInterval !== "undefined") this._timer = setInterval(() => this._draw(), 60000); }
+  disconnectedCallback() { if (this._timer) { clearInterval(this._timer); this._timer = null; } }
+  /** The day to draw: what the app published, or (for a day after today, which it has no record of) that day with no
+   *  records, drawn from the timeline's forecast alone. Also the last day the forecast reaches, for the arrows. */
+  _model(states) {
+    const base = this._attrs(states);
+    const tl = v2Attrs(states, V2_TIMELINE);
+    const fc = v2Forecast(tl, Date.now());
+    this._lastDay = v2ForecastLastDay(fc);
+    let attrs = base;
+    if (base && this._local && base.latest && this._local > base.latest && this._lastDay && this._local <= this._lastDay) {
+      attrs = Object.assign({}, base, { date: this._local, series: [], runs: [], runs_until: null, changes: [], replans: [] });
+    } else this._local = null;
+    return { attrs, base, fc, flows: v2Attrs(states, V2_FLOWS) };
+  }
+  /** The last day the arrows and the date box reach: the forecast's, when it reaches past today. */
+  _latest(a) { return this._lastDay && a.latest && this._lastDay > a.latest ? this._lastDay : a.latest; }
   _admin() { return !!(this._hass && this._hass.user && this._hass.user.is_admin); }
   _draw() {
     if (this.shadowRoot && this.shadowRoot.activeElement && this.shadowRoot.activeElement.tagName === "INPUT") return;   // don't close the date box
     super._draw();
   }
   _day(a) {
+    if (this._local) return this._local;
     if (this._pending && Date.now() - this._pending.at < 8000 && (a || {}).date !== this._pending.day) return this._pending.day;
     this._pending = null;
     return (a || {}).date;
   }
   async _pick(value) {
     const a = this._attrs((this._hass || {}).states) || {};
+    if (a.latest && this._lastDay && ISO_DAY.test(value || "") && value > a.latest && value <= this._lastDay) {   // a coming day: nothing to ask the app for
+      this._local = value; this._sig = null; this._draw();
+      return;
+    }
+    this._local = null;
     const payload = v2HistoryDayPayload(value, a.earliest, a.latest);
     const note = this.shadowRoot.querySelector(".pick-note");
     if (!payload) { if (note) note.textContent = "That day isn't available."; return; }
@@ -7502,10 +7623,11 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
   _pickerHtml(a) {
     const admin = this._admin();
     const day = this._day(a) || "";
-    const prev = shiftHistoryDay(day, -1, a.earliest, a.latest), next = shiftHistoryDay(day, 1, a.earliest, a.latest);
+    const latest = this._latest(a);
+    const prev = shiftHistoryDay(day, -1, a.earliest, latest), next = shiftHistoryDay(day, 1, a.earliest, latest);
     const why = admin ? "" : "Only an admin user can change the day here";
     return `<div class="picker"><button class="prev" type="button" aria-label="Previous day" ${!admin || !prev ? "disabled" : ""} title="${escHtml(why || "Previous day")}">&#8249;</button>
-      <input type="date" aria-label="Day" value="${escHtml(day)}" min="${escHtml(a.earliest || "")}" max="${escHtml(a.latest || "")}" ${admin ? "" : "disabled"} title="${escHtml(why || "Show this day")}">
+      <input type="date" aria-label="Day" value="${escHtml(day)}" min="${escHtml(a.earliest || "")}" max="${escHtml(latest || "")}" ${admin ? "" : "disabled"} title="${escHtml(why || "Show this day")}">
       <button class="next" type="button" aria-label="Next day" ${!admin || !next ? "disabled" : ""} title="${escHtml(why || "Next day")}">&#8250;</button><span class="muted small pick-note"></span></div>`;
   }
   _wirePicker(a) {
@@ -7514,13 +7636,16 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
     if (!input) return;
     input.addEventListener("change", (ev) => this._pick(ev.target.value));
     const day = this._day(a);
-    root.querySelector(".prev").addEventListener("click", () => { const n = shiftHistoryDay(day, -1, a.earliest, a.latest); if (n) this._pick(n); });
-    root.querySelector(".next").addEventListener("click", () => { const n = shiftHistoryDay(day, 1, a.earliest, a.latest); if (n) this._pick(n); });
+    root.querySelector(".prev").addEventListener("click", () => { const n = shiftHistoryDay(day, -1, a.earliest, this._latest(a)); if (n) this._pick(n); });
+    root.querySelector(".next").addEventListener("click", () => { const n = shiftHistoryDay(day, 1, a.earliest, this._latest(a)); if (n) this._pick(n); });
   }
   _render(states) {
-    const attrs = this._attrs(states);
-    const v = v2HistoryView(attrs, Date.now());
+    const m = this._model(states);
+    const attrs = m.attrs;
+    const v = v2HistoryView(attrs, Date.now(), { forecast: m.fc, flows: m.flows });
+    this._v = v;
     const css = `<style>${V2_CSS}
+      .readout { font-size: 13px; min-height: 7em; background: var(--secondary-background-color); border-radius: 8px; padding: 8px 12px; line-height: 1.45; }
       .picker { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       .picker input, .picker button { font: inherit; color: var(--primary-text-color); background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 6px; }
       .picker input { padding: 6px 8px; }
@@ -7534,11 +7659,12 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
     const legend = (items) => items.map(([c, t]) => `<span><i class="sw" style="background:${c}"></i>${escHtml(t)}</span>`).join("");
     const modesUsed = Array.from(new Set(v.bands.map((b) => b.mode)));
     this.shadowRoot.innerHTML = `${css}<ha-card>
-      <div class="head"><span class="title">Engine v2 history${v.date ? ` · ${escHtml(v.date)}` : ""}</span>${v.kind === "ok" ? chartKeyHtml(["value", "buy", "sell", "energy", "replan"], this._hidden("history")) : ""}${v.kind === "ok" ? `<span class="chip${v.control === "v2" ? "" : " muted"}">${v.control === "v2" ? `Engine v2 in control${v.profile ? ` · ${escHtml(v.profile)}` : ""}` : v.control === "v1" ? "Preview" : "Control changed"}</span>` : ""}</div>
+      <div class="head"><span class="title">Engine v2 history${v.date ? ` · ${escHtml(v.date)}` : ""}</span>${v.kind === "ok" ? chartKeyHtml(["value", "buy", "sell", "energy", "replan"], this._hidden("history")) : ""}${v.kind === "ok" ? `<span class="chip${v.control === "v2" ? "" : " muted"}">${v.control === "v2" ? `Engine v2 in control${v.profile ? ` · ${escHtml(v.profile)}` : ""}` : v.control === "forecast" ? "Forecast" : v.control === "v1" ? "Preview" : "Control changed"}</span>` : ""}</div>
       ${this._pickerHtml(attrs || {})}
       ${v.kind === "empty" ? `<p class="muted">${escHtml(v.text)}</p>` : `${v.banner ? `<p class="preview-line" role="note">${escHtml(v.banner)}</p>` : ""}
       <div class="chart" id="hist"></div>
-      <div class="legend">${legend(modesUsed.map((k) => [`var(${v2Mode(k).colour})`, v2Mode(k).name]).concat([["var(--v2-battery)", "Battery as it ran (dashed: expected at the start of the day)"], ["var(--v2-price)", "Import price"], ["var(--m-export)", "Export price (dotted)"]]))}</div>
+      <p class="readout" id="hread" aria-live="polite">${escHtml(V2_HISTORY_HINT)}</p>
+      <div class="legend">${legend(modesUsed.concat(v.forecast ? v.forecast.bands.map((b) => b.mode) : []).filter((k, i, all) => all.indexOf(k) === i).map((k) => [`var(${v2Mode(k).colour})`, v2Mode(k).name]).concat([["var(--v2-battery)", "Battery as it ran (dashed: expected at the start of the day)"], ["var(--v2-price)", "Import price"], ["var(--m-export)", "Export price (dotted)"]]).concat(v.forecast ? [["var(--v2-battery)", "From now: dotted battery line (shaded: likely range), paler bands: what the plan expects"]] : []))}</div>
       ${v.partlyPreview || v.previewOnly ? '<p class="muted small">Dimmed bands: engine v2 was only previewing, nothing was sent.</p>' : ""}
       ${v.changes.length ? `<div><h3>Mode changes (newest first)</h3><div class="changes">${v.changes.map((c) => `<span class="num muted">${escHtml(c.at)}</span><span class="mode"><i class="sw" style="background:var(${v2Mode(c.modeKey).colour})"></i>${escHtml(c.mode)}</span><span>${escHtml(c.reason)}</span>`).join("")}</div></div>` : '<p class="muted small">No mode changes recorded for this day.</p>'}
       ${v.note ? `<p class="muted small">${escHtml(v.note)}</p>` : ""}`}
@@ -7551,7 +7677,8 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
     const G = { W: 900, L: 40, R: 46, T: 12, bandH: 26 };
     const topY = G.T + G.bandH + 10, levelH = 150, gap = 34, priceTop = topY + levelH + gap, priceH = 110;
     const hid = this._hidden("history");
-    const hasE = v.energy.length > 0 && !hid.has("energy"), enTop = priceTop + priceH + 34, enH = 80, H = (hasE ? enTop + enH : priceTop + priceH) + 28;
+    const flowBars = v.flows && v.flows.length ? v.flows : null;
+    const hasE = (flowBars || v.energy.length > 0) && !hid.has("energy"), enTop = priceTop + priceH + 34, enH = 80, H = (hasE ? enTop + enH : priceTop + priceH) + 28;
     const svg = svgEl("svg", { viewBox: `0 0 ${G.W} ${H}`, role: "img", "aria-label": "Engine v2's modes, battery level, prices and the value of a stored kWh over the day" }, host);
     const x = (hr) => G.L + (hr / v.spanH) * (G.W - G.L - G.R);
     const yL = (p) => topY + (1 - p / 100) * levelH;
@@ -7575,32 +7702,77 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
       const label = bandLabel({ mode: b.mode, until: "" }, x(b.b) - x(b.a)) + (b.preview && x(b.b) - x(b.a) > 120 ? " · Preview" : "");
       if (label) svgEl("text", { x: x(b.a) + 6, y: G.T + 17, "font-size": 11.5, "font-weight": 500, fill: b.preview ? "var(--primary-text-color)" : "#fff" }, svg, label);
     });
+    const fcl = v.forecast;
+    (fcl ? fcl.bands : []).forEach((b) => {                // what the plan expects: paler, with a dashed edge
+      const col = `var(${v2Mode(b.mode).colour})`;
+      svgEl("rect", { x: x(b.a), y: G.T, width: Math.max(0, x(b.b) - x(b.a) - 1), height: G.bandH, rx: 4, fill: col, "fill-opacity": 0.3, stroke: col, "stroke-dasharray": "4 3" }, svg);
+      const label = bandLabel({ mode: b.mode, until: "" }, x(b.b) - x(b.a));
+      if (label) svgEl("text", { x: x(b.a) + 6, y: G.T + 17, "font-size": 11.5, "font-weight": 500, fill: "var(--primary-text-color)" }, svg, label);
+    });
     const line = (runs, f, attrs) => runs.forEach((r) => {
       if (r.length > 1) svgEl("polyline", Object.assign({ points: r.map((p) => `${x(p.h)},${f(p.y)}`).join(" "), fill: "none" }, attrs), svg);
       else svgEl("circle", { cx: x(r[0].h), cy: f(r[0].y), r: 2.5, fill: attrs.stroke }, svg);
     });
+    if (fcl && fcl.low.length > 1 && fcl.high.length > 1) {   // the likely range from now on
+      const edge = fcl.high.map((p) => `${x(p.h)},${yL(p.y)}`).concat(fcl.low.slice().reverse().map((p) => `${x(p.h)},${yL(p.y)}`)).join(" ");
+      svgEl("polygon", { points: edge, fill: "var(--v2-battery)", "fill-opacity": 0.14 }, svg);
+    }
     line(v.expected, yL, { stroke: "var(--v2-battery)", "stroke-width": 2, "stroke-dasharray": "6 4", "stroke-opacity": 0.8 });
+    if (fcl && fcl.mid.length) line([fcl.mid], yL, { stroke: "var(--v2-battery)", "stroke-width": 2.5, "stroke-dasharray": "2 3" });
     line(v.level, yL, { stroke: "var(--v2-battery)", "stroke-width": 2.5 });
     v.importSteps.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: yP(s.y), y2: yP(s.y), stroke: "var(--v2-price)", "stroke-width": 2 }, svg));
     v.exportSteps.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: yP(s.y), y2: yP(s.y), stroke: "var(--m-export)", "stroke-width": 1.5, "stroke-dasharray": "2 3" }, svg));
     const dotted = (steps, col) => steps.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: yP(s.y), y2: yP(s.y), stroke: col, "stroke-width": 1.3, "stroke-opacity": 0.7, "stroke-dasharray": "1 3" }, svg));
+    (fcl ? fcl.steps : []).forEach((q) => {
+      svgEl("line", { x1: x(q.a), x2: x(q.b), y1: yP(q.importP), y2: yP(q.importP), stroke: "var(--v2-price)", "stroke-width": 2, "stroke-opacity": 0.7, "stroke-dasharray": q.slot || q.estimated ? "5 3" : "none" }, svg);
+      if (q.exportP !== null && q.exportP !== undefined) svgEl("line", { x1: x(q.a), x2: x(q.b), y1: yP(q.exportP), y2: yP(q.exportP), stroke: "var(--m-export)", "stroke-width": 1.5, "stroke-opacity": 0.7, "stroke-dasharray": "2 3" }, svg);
+    });
     if (!hid.has("buy")) dotted(v.buySteps, "var(--v2-buy)");
     if (!hid.has("sell")) dotted(v.sellSteps, "var(--v2-sell)");
-    if (!hid.has("value")) line(v.value, yP, { stroke: "var(--v2-good)", "stroke-width": 2.2 });
+    if (!hid.has("value")) {
+      line(v.value, yP, { stroke: "var(--v2-good)", "stroke-width": 2.2 });
+      if (fcl && fcl.value.length) line([fcl.value], yP, { stroke: "var(--v2-good)", "stroke-width": 2.2, "stroke-dasharray": "6 3", "stroke-opacity": 0.8 });
+    }
     svgEl("text", { x: G.L, y: priceTop - 8, "font-size": 11, fill: muted }, svg, "Prices, buy and sell lines and the value of a stored kWh (pence per kWh)");
     if (hasE) {                                          // grid energy per half-hour: import up, export down; the car outlined (it is part of the load)
       const mid = enTop + enH / 2, yE = (k) => (k / v.energyMax) * (enH / 2 - 4);
       svgEl("line", { x1: G.L, x2: G.W - G.R, y1: mid, y2: mid, stroke: "var(--divider-color)" }, svg);
       svgEl("text", { x: G.L - 6, y: mid + 4, "text-anchor": "end", "font-size": 11, fill: muted }, svg, "0");
       svgEl("text", { x: G.L - 6, y: mid - yE(v.energyMax) + 4, "text-anchor": "end", "font-size": 11, fill: muted }, svg, `${v.energyMax}`);
-      svgEl("text", { x: G.L, y: enTop - 8, "font-size": 11, fill: muted }, svg, "Grid energy per half-hour (kWh): import up, export down; outline: the car");
-      v.energy.forEach((e) => {
-        const bx = x(e.a) + 1, bw = Math.max(1, x(e.b) - x(e.a) - 2);
+      svgEl("text", { x: G.L, y: enTop - 8, "font-size": 11, fill: muted }, svg, flowBars ? "Grid power as it happened, as kWh per half-hour: import up, export down; grey: the car" : "Grid energy per half-hour (kWh): import up, export down; outline: the car");
+      (flowBars || v.energy).forEach((e) => {
+        const inset = flowBars ? 0 : 1;
+        const bx = x(e.a) + inset, bw = Math.max(1, x(e.b) - x(e.a) - 2 * inset);
         if (e.inK) svgEl("rect", { x: bx, y: mid - yE(e.inK), width: bw, height: yE(e.inK), fill: "var(--v2-price)", "fill-opacity": 0.75 }, svg);
         if (e.outK) svgEl("rect", { x: bx, y: mid, width: bw, height: yE(e.outK), fill: "var(--m-export)", "fill-opacity": 0.75 }, svg);
-        if (e.car) svgEl("rect", { x: bx + 1, y: mid - yE(e.car), width: Math.max(1, bw - 2), height: yE(e.car), fill: "none", stroke: "var(--primary-text-color)", "stroke-width": 1.2, "stroke-opacity": 0.8 }, svg);
+        if (e.car && flowBars) svgEl("rect", { x: bx, y: mid - yE(e.car), width: bw, height: yE(e.car), fill: "var(--primary-text-color)", "fill-opacity": 0.28 }, svg);
+        else if (e.car) svgEl("rect", { x: bx + 1, y: mid - yE(e.car), width: Math.max(1, bw - 2), height: yE(e.car), fill: "none", stroke: "var(--primary-text-color)", "stroke-width": 1.2, "stroke-opacity": 0.8 }, svg);
       });
     }
+    const bottom = H - 30;
+    if (v.nowH !== null && v.nowH !== undefined) {         // the present moment
+      svgEl("line", { x1: x(v.nowH), x2: x(v.nowH), y1: G.T, y2: bottom, stroke: "var(--error-color, #e53935)", "stroke-width": 1.5 }, svg);
+      svgEl("text", { x: x(v.nowH) + 3, y: bottom + 12, "font-size": 11, fill: "var(--error-color, #e53935)" }, svg, "Now");
+    }
+    const cursor = svgEl("line", { x1: 0, x2: 0, y1: G.T, y2: bottom, stroke: "var(--primary-text-color)", "stroke-width": 1, "stroke-opacity": 0.6, visibility: "hidden", "pointer-events": "none" }, svg);
+    const clock = (hr) => v2Hm(new Date(v.t0 + hr * HOUR_MS).toISOString());
+    const read = this.shadowRoot.getElementById("hread");
+    const paint = (hr) => {
+      cursor.setAttribute("x1", x(hr)); cursor.setAttribute("x2", x(hr)); cursor.setAttribute("visibility", "visible");
+      const lines = v2HistoryReadout(v, hr, clock);
+      if (read && lines.length) read.innerHTML = `<b>${escHtml(lines[0])}</b><br>${lines.slice(1).map(escHtml).join("<br>")}`;
+    };
+    const at = (ev) => {
+      const r = svg.getBoundingClientRect();
+      if (!r.width) return;
+      const hr = (((ev.clientX - r.left) / r.width) * G.W - G.L) / (G.W - G.L - G.R) * v.spanH;
+      if (hr < 0 || hr > v.spanH) return;
+      this._sel = { hour: hr, date: v.date };
+      paint(hr);
+    };
+    svg.addEventListener("pointermove", at);
+    svg.addEventListener("pointerdown", at);
+    if (this._sel && this._sel.date === v.date) paint(this._sel.hour);          // a redraw keeps the time you picked
     (hid.has("replan") ? [] : v.replans).forEach((rh) => svgEl("line", { x1: x(rh), x2: x(rh), y1: H - 26, y2: H - 17, stroke: "var(--primary-text-color)", "stroke-width": 1.5, "stroke-opacity": 0.7 }, svg));
   }
 }
@@ -7726,7 +7898,7 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
 });
 
 if (typeof module !== "undefined") {
-  module.exports = { runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
+  module.exports = { v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
