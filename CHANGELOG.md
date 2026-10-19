@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.157
+
+### Behaviour changes
+
+- **The engine v2 settings page uses the new range.** The readout under "The battery's range" shows the hours above and below your everyday range. It also shows where a grid event stops. The page refuses a range whose bottom is not below its top. The "comfort band gave up" figure is gone, because the comfort band no longer exists.
+
 ## 0.9.153
 
 ### Behaviour changes
