@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.165
+
+### Behaviour changes
+
+- **The engine v2 history chart no longer draws the dashed blue line for the day's opening plan** (the battery path expected at the first plan after midnight, which stopped at midnight). The plan usually moves for good reasons, so the comparison told you little and the line was hard to read. The solid line (what the battery did) and the dotted line (the forecast from now) stay, and the hover line no longer prints "Expected at the start of the day".
+
 ## 0.9.164
 
 ### Behaviour changes
