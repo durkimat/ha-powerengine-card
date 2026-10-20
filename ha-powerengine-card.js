@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.161";
+const CARD_VERSION = "0.9.164";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -6118,6 +6118,7 @@ function valueBarSummary(g) {
 const HOUR_MS = 3600000;
 const HISTORY_HOURS = 18;          // how far back the plan chart scrolls
 const VIEW_PAST_HOURS = 1;         // how much of that is in view before the person scrolls (now sits near the left edge)
+const FORECAST_HOURS = 48 - HISTORY_HOURS;   // how far ahead the plan chart reaches (its layout is 48 hours, HISTORY_HOURS of them already run); the history chart reaches as far
 const TIMELINE_MIN_W = 560;          // the least width, in pixels, the hours in view are spread over
 
 /** The half-hours of sensor.pe_v2_recent that fall in the `hours` before `nowMs`, oldest first, as
@@ -6129,7 +6130,7 @@ function recentRows(recent, nowMs, hours) {
   const from = nowMs - (hours || HISTORY_HOURS) * HOUR_MS;
   return r.series.filter((x) => x && v2Ms(x.t) !== null)
     .map((x) => ({ a: v2Ms(x.t), b: v2Ms(x.t) + stepMs, mode: x.mode || "none", level: toNumber(x.level), importP: toNumber(x.import_p),
-      exportP: toNumber(x.export_p), valueP: toNumber(x.value_p), buyP: toNumber(x.buy_p), sellP: toNumber(x.sell_p), sent: x.sent !== false, preview: x.preview === true }))
+      exportP: toNumber(x.export_p), valueP: toNumber(x.value_p), buyP: toNumber(x.buy_p), sellP: toNumber(x.sell_p), sent: x.sent !== false, preview: x.preview === true, slot: x.slot === true }))
     .filter((x) => x.b > from && x.a < nowMs).sort((p, q) => p.a - q.a);
 }
 
@@ -6205,7 +6206,7 @@ function timelineLayout(tl, opts) {
   });
   const bands = histBands.concat(planBands);
   const histSteps = hist.filter((r) => r.importP !== null).map((r) => ({ a: Math.max(0, h(r.a)), b: h(r.b), importP: r.importP, exportP: r.exportP,
-    slot: false, slotProb: null, event: false, free: false, estimated: false, ran: true }));
+    slot: r.slot === true, slotProb: null, event: false, free: false, estimated: false, ran: true }));
   const planSteps = prices.map((x) => {
     const c = clip(x);
     return Object.assign(c, { importP: toNumber(x.import_p), exportP: toNumber(x.export_p), slot: x.slot_prob !== null && x.slot_prob !== undefined,
@@ -6775,6 +6776,24 @@ class PowerEngineV2Card extends V2Base {
       this._draw();
     }));
   }
+  /** Run `draw` once the scroll box has a width. Inside Home Assistant `ha-card` is itself a custom element that renders its slot a
+   *  moment after it is created, so a box built in the same breath has no width: the plot was sized for a made-up width and the scroll
+   *  position was ignored, which is why the chart opened at the start of the history and went back there on every redraw (a plain
+   *  `ha-card`, as in a test page, has a width at once and hid this). Waits up to ~1 s of frames, then draws anyway and stays stale. */
+  _whenLaidOut(draw, boxId) {
+    const token = (this._layoutToken = (this._layoutToken || 0) + 1);
+    const box = () => this.shadowRoot && this.shadowRoot.getElementById(boxId || "tl-scroll");
+    const ready = () => { const b = box(); return !b || b.clientWidth > 0; };
+    if (ready() || typeof requestAnimationFrame === "undefined") { draw(); return; }
+    this._stale = true;
+    let frames = 0;
+    const step = () => {
+      if (token !== this._layoutToken) return;                // a newer render replaced this box
+      if (ready() || ++frames > 60) { draw(); if (ready()) this._stale = false; return; }
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
   setConfig(config) {
     this._config = config || {};
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
@@ -7023,24 +7042,6 @@ class PowerEngineV2PlanCard extends PowerEngineV2Card {
       const b = this.shadowRoot.getElementById("replan");
       if (b) b.disabled = false;
     }
-  }
-  /** Run `draw` once the scroll box has a width. Inside Home Assistant `ha-card` is itself a custom element that renders its slot a
-   *  moment after it is created, so a box built in the same breath has no width: the plot was sized for a made-up width and the scroll
-   *  position was ignored, which is why the chart opened at the start of the history and went back there on every redraw (a plain
-   *  `ha-card`, as in a test page, has a width at once and hid this). Waits up to ~1 s of frames, then draws anyway and stays stale. */
-  _whenLaidOut(draw) {
-    const token = (this._layoutToken = (this._layoutToken || 0) + 1);
-    const box = () => this.shadowRoot && this.shadowRoot.getElementById("tl-scroll");
-    const ready = () => { const b = box(); return !b || b.clientWidth > 0; };
-    if (ready() || typeof requestAnimationFrame === "undefined") { draw(); return; }
-    this._stale = true;
-    let frames = 0;
-    const step = () => {
-      if (token !== this._layoutToken) return;                // a newer render replaced this box
-      if (ready() || ++frames > 60) { draw(); if (ready()) this._stale = false; return; }
-      requestAnimationFrame(step);
-    };
-    requestAnimationFrame(step);
   }
   _geom(extra) {
     return Object.assign({ W: 900, H: 300, L: 40, R: 46, T: 14, B: 34 }, extra || {});
@@ -7411,7 +7412,7 @@ function v2Forecast(tl, nowMs) {
   const line = (pts, key) => pts.map((q) => ({ ms: ms(q.h), y: q[key] })).filter((q) => q.ms >= nowMs - 15 * 60000);
   const kwLine = (pts) => (pts || []).map((q) => ({ ms: ms(q.h), kw: q.kw }));
   const sun = L.sun ? { mid: kwLine(L.sun.mid), low: kwLine(L.sun.low), high: kwLine(L.sun.high), house: kwLine(L.sun.house) } : null;
-  const out = { from: nowMs, to: L.t1, bands, steps, mid: line(L.mid, "level"), low: line(L.low, "level"), high: line(L.high, "level"), value: line(L.pathValue, "value"), sun };
+  const out = { from: nowMs, to: Math.min(L.t1, nowMs + FORECAST_HOURS * HOUR_MS), bands, steps, mid: line(L.mid, "level"), low: line(L.low, "level"), high: line(L.high, "level"), value: line(L.pathValue, "value"), sun };
   return bands.length || steps.length || out.mid.length ? out : null;
 }
 /** The date (YYYY-MM-DD, this browser's day) the forecast reaches, or "" without one. */
@@ -7468,7 +7469,7 @@ function v2HistoryView(attrs, nowMs, opts) {
   const pts = (key) => raw.map((p) => ({ h: h(v2Ms(p.t) + stepMs), y: toNumber(p[key]) }));     // level and value are at the half-hour's end
   // the level as it ran: also where each run began, so a change inside a half-hour sits where it happened
   const levelPts = pts("level").concat(exact ? runs.filter((r) => r.level !== null).map((r) => ({ h: h(r.a), y: r.level })) : []).sort((p, q) => p.h - q.h);
-  const stepPts = (key) => raw.map((p) => ({ a: h(v2Ms(p.t)), b: h(v2Ms(p.t) + stepMs), y: toNumber(p[key]) })).filter((s) => s.y !== null);
+  const stepPts = (key) => raw.map((p) => ({ a: h(v2Ms(p.t)), b: h(v2Ms(p.t) + stepMs), y: toNumber(p[key]), slot: p.slot === true })).filter((s) => s.y !== null);
   const sentCount = raw.filter(sentOf).length;
   const control = !raw.length ? "forecast" : a.in_control === "v1" || a.in_control === "v2" || a.in_control === "mixed" ? a.in_control : (sentCount === 0 ? "v1" : sentCount === raw.length ? "v2" : "mixed");
   const profile = typeof a.profile === "string" ? a.profile : "";
@@ -7518,7 +7519,7 @@ function v2HistoryView(attrs, nowMs, opts) {
   const hasSun = sunTop > 0;
   const flowMax = flows ? Math.max(1, Math.ceil(Math.max(0, ...flows.map((e) => Math.max(e.inK, e.outK, e.car))) * 2) / 2) : 0;
   return Object.assign(base, {
-    kind: "ok", t0, spanH, stepMs, bands, previewOnly, partlyPreview, control, profile, forecast, nowH, flows, flowMax,
+    kind: "ok", t0, spanH, stepMs, viewH: nowH === null ? 0 : Math.max(0, nowH - VIEW_PAST_HOURS), bands, previewOnly, partlyPreview, control, profile, forecast, nowH, flows, flowMax,
     sunActual, houseActual, sunMax, hasSun, dayEndH: fcOn ? h(dayB.b) : null,
     banner: !raw.length ? "Forecast: what engine v2 expects from its current plan. Nothing has happened on this day yet."
       : previewOnly ? "Preview only: engine v1 was in control on this day, so nothing was sent to the inverter. The modes below are what engine v2 would have chosen."
@@ -7646,8 +7647,33 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
   _entity() { return (this._config && this._config.entity) || V2_HISTORY_SENSOR; }
   _attrs(states) { return v2Attrs(states, this._entity()); }
   // the line for now moves between the app's publishes: redraw once a minute
-  connectedCallback() { if (!this._timer && typeof setInterval !== "undefined") this._timer = setInterval(() => this._draw(), 60000); }
-  disconnectedCallback() { if (this._timer) { clearInterval(this._timer); this._timer = null; } }
+  connectedCallback() {
+    if (!this._timer && typeof setInterval !== "undefined") this._timer = setInterval(() => this._draw(), 60000);
+    if (!this._resize && typeof ResizeObserver !== "undefined") {              // a box built before it had a width, or a new width: draw again
+      this._resize = new ResizeObserver(() => {
+        const w = Math.round(this.clientWidth || 0);
+        if (!w || (!this._stale && Math.abs(w - (this._drawnWidth || 0)) < 3)) return;
+        clearTimeout(this._resizeTimer);
+        this._resizeTimer = setTimeout(() => this._draw(), 150);
+      });
+      this._resize.observe(this);
+    }
+  }
+  disconnectedCallback() {
+    if (this._timer) { clearInterval(this._timer); this._timer = null; }
+    clearTimeout(this._resizeTimer); clearTimeout(this._idleTimer);
+    if (this._resize) { this._resize.disconnect(); this._resize = null; }
+  }
+  /** Is the person's finger on the chart, or is it still scrolling? A redraw replaces the scroll box, which would cancel the gesture,
+   *  so one that arrives meanwhile waits until they let go (as the plan chart does). */
+  _busy() { return (!!this._touching && Date.now() - (this._touchAt || 0) < 10000) || Date.now() - (this._lastScrollAt || 0) < 700; }
+  _armIdle() {
+    clearTimeout(this._idleTimer);
+    this._idleTimer = setTimeout(() => {
+      if (this._busy()) { this._armIdle(); return; }
+      if (this._pendingDraw) this._draw();
+    }, 800);
+  }
   /** The day to draw: what the app published, or (for a day after today, which it has no record of) that day with no
    *  records, drawn from the timeline's forecast alone. Also the last day the forecast reaches, for the arrows. */
   _model(states) {
@@ -7666,6 +7692,8 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
   _admin() { return !!(this._hass && this._hass.user && this._hass.user.is_admin); }
   _draw() {
     if (this.shadowRoot && this.shadowRoot.activeElement && this.shadowRoot.activeElement.tagName === "INPUT") return;   // don't close the date box
+    if (this._busy()) { this._pendingDraw = true; this._armIdle(); return; }
+    this._pendingDraw = false;
     super._draw();
   }
   _day(a) {
@@ -7722,50 +7750,71 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
       .picker button:disabled, .picker input:disabled { opacity: .45; cursor: default; }
       .changes { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 4px 12px; font-size: 13px; align-items: baseline; max-height: 320px; overflow-y: auto; }
       .changes .mode { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-      @media (max-width: 520px) { .chart svg { min-width: 460px; } .changes { grid-template-columns: auto minmax(0, 1fr); } .changes .num { grid-column: 1 / -1; margin-top: 4px; } }
+      .hbox { position: relative; display: grid; grid-template-columns: 44px minmax(0, 1fr); align-items: start; min-width: 0; }
+      .hbox svg { display: block; }
+      .hscroll { overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; min-width: 0; }
+      .hbox .over { position: absolute; left: 44px; top: 0; pointer-events: none; }
+      @media (max-width: 520px) { .changes { grid-template-columns: auto minmax(0, 1fr); } .changes .num { grid-column: 1 / -1; margin-top: 4px; } }
     </style>`;
     if (v.kind === "none") { this._message("Engine v2 history", v.text); return; }
+    // read where the person has the chart now, from the live box, before it is replaced
+    if (this._hDate !== v.date) { this._hUser = false; this._hLeftMs = null; this._hGeom = null; }
+    const prevBox = this.shadowRoot.getElementById("h-scroll");
+    const intent = prevBox ? scrollIntent({ placed: prevBox._placed === true, laidOut: prevBox.clientWidth > 0, scrollLeft: prevBox.scrollLeft }, this._hGeom) : null;
+    if (intent) { this._hUser = intent.user; this._hLeftMs = intent.leftMs; }
+    this._hDate = v.date;
+    this._stale = false;
     const legend = (items) => items.map(([c, t]) => `<span><i class="sw" style="background:${c}"></i>${escHtml(t)}</span>`).join("");
     const modesUsed = Array.from(new Set(v.bands.map((b) => b.mode)));
     this.shadowRoot.innerHTML = `${css}<ha-card>
       <div class="head"><span class="title">Engine v2 history${v.date ? ` · ${escHtml(v.date)}` : ""}</span>${v.kind === "ok" ? chartKeyHtml(["value", "buy", "sell", "energy", "sun", "replan"], this._hidden("history")) : ""}${v.kind === "ok" ? `<span class="chip${v.control === "v2" ? "" : " muted"}">${v.control === "v2" ? `Engine v2 in control${v.profile ? ` · ${escHtml(v.profile)}` : ""}` : v.control === "forecast" ? "Forecast" : v.control === "v1" ? "Preview" : "Control changed"}</span>` : ""}</div>
       ${this._pickerHtml(attrs || {})}
       ${v.kind === "empty" ? `<p class="muted">${escHtml(v.text)}</p>` : `${v.banner ? `<p class="preview-line" role="note">${escHtml(v.banner)}</p>` : ""}
-      <div class="chart" id="hist"></div>
+      <div class="hbox" id="hist"><svg id="h-axl" aria-hidden="true"></svg><div class="hscroll" id="h-scroll"><div id="h-plot"></div></div><svg id="h-axt" class="over" aria-hidden="true"></svg></div>
       <p class="readout" id="hread" aria-live="polite">${escHtml(V2_HISTORY_HINT)}</p>
-      <div class="legend">${legend(modesUsed.concat(v.forecast ? v.forecast.bands.map((b) => b.mode) : []).filter((k, i, all) => all.indexOf(k) === i).map((k) => [`var(${v2Mode(k).colour})`, v2Mode(k).name]).concat([["var(--v2-battery)", "Battery as it ran (dashed: expected at the start of the day)"], ["var(--v2-price)", "Import price"], ["var(--m-export)", "Export price (dotted)"]]).concat(v.forecast ? [["var(--v2-battery)", "From now: dotted battery line (shaded: likely range), paler bands: what the plan expects"]] : []).concat(v.hasSun ? [["var(--v2-sun)", "Sun"], ["var(--v2-house)", "House use (dashed: expected)"]] : []))}</div>
+      <div class="legend">${legend(modesUsed.concat(v.forecast ? v.forecast.bands.map((b) => b.mode) : []).filter((k, i, all) => all.indexOf(k) === i).map((k) => [`var(${v2Mode(k).colour})`, v2Mode(k).name]).concat([["var(--v2-battery)", "Battery as it ran (dashed: expected at the start of the day)"], ["var(--v2-price)", "Import price (dashed: smart slot)"], ["var(--m-export)", "Export price (dotted)"]]).concat(v.forecast ? [["var(--v2-battery)", "From now: dotted battery line (shaded: likely range), paler bands: what the plan expects"]] : []).concat(v.hasSun ? [["var(--v2-sun)", "Sun"], ["var(--v2-house)", "House use (dashed: expected)"]] : []))}</div>
       ${v.partlyPreview || v.previewOnly ? '<p class="muted small">Dimmed bands: engine v2 was only previewing, nothing was sent.</p>' : ""}
       ${v.changes.length ? `<div><h3>Mode changes (newest first)</h3><div class="changes">${v.changes.map((c) => `<span class="num muted">${escHtml(c.at)}</span><span class="mode"><i class="sw" style="background:var(${v2Mode(c.modeKey).colour})"></i>${escHtml(c.mode)}</span><span>${escHtml(c.reason)}</span>`).join("")}</div></div>` : '<p class="muted small">No mode changes recorded for this day.</p>'}
       ${v.note ? `<p class="muted small">${escHtml(v.note)}</p>` : ""}`}
     </ha-card>`;
     this._wirePicker(attrs || {});
     this._wireKey("history");
-    if (v.kind === "ok") this._drawChart(this.shadowRoot.getElementById("hist"), v);
+    if (v.kind === "ok") this._whenLaidOut(() => this._drawChart(this.shadowRoot.getElementById("h-plot"), v), "h-scroll");
   }
+  /** The chart in pixels: as wide as its hours need (the hours in view fill the box, what came before lies to the left, reached by
+   *  scrolling), with the scales in a fixed strip on the left so they stay in view while it scrolls, as the plan chart does. */
   _drawChart(host, v) {
-    const G = { W: 900, L: 40, R: 46, T: 12, bandH: 26 };
+    const G = { T: 12, bandH: 26 };
+    const root = this.shadowRoot, scroller = root.getElementById("h-scroll"), axl = root.getElementById("h-axl"), axt = root.getElementById("h-axt");
+    const boxW = Math.max(260, scroller.clientWidth || 620);
+    const pph = Math.max(boxW, TIMELINE_MIN_W) / Math.max(1, v.spanH - v.viewH);       // pixels per hour; never so tight the hour labels collide (a phone scrolls)
+    const plotW = Math.max(boxW, v.spanH * pph);
+    this._drawnWidth = Math.round(this.clientWidth || 0);
     const topY = G.T + G.bandH + 10, levelH = 150, gap = 34, priceTop = topY + levelH + gap, priceH = 110;
     const hid = this._hidden("history");
     const flowBars = v.flows && v.flows.length ? v.flows : null;
     const hasE = (flowBars || v.energy.length > 0) && !hid.has("energy"), enTop = priceTop + priceH + 34, enH = 80;
     const hasS = v.hasSun && !hid.has("sun"), sunTop = (hasE ? enTop + enH : priceTop + priceH) + 34, sunH = 80;
     const H = (hasS ? sunTop + sunH : hasE ? enTop + enH : priceTop + priceH) + 28;
-    const svg = svgEl("svg", { viewBox: `0 0 ${G.W} ${H}`, role: "img", "aria-label": "Engine v2's modes, battery level, prices and the value of a stored kWh over the day" }, host);
-    const x = (hr) => G.L + (hr / v.spanH) * (G.W - G.L - G.R);
+    const svg = svgEl("svg", { width: plotW, height: H, viewBox: `0 0 ${plotW} ${H}`, role: "img", "aria-label": "Engine v2's modes, battery level, prices and the value of a stored kWh over the day" }, host);
+    axl.setAttribute("width", 44); axl.setAttribute("height", H);                    // the scales (left) and the panel titles (over the plot) do not scroll
+    axt.setAttribute("width", boxW); axt.setAttribute("height", H);
+    const x = (hr) => hr * pph;
+    const title = (y, text) => svgEl("text", { x: 6, y, "font-size": 11, fill: "var(--secondary-text-color)" }, axt, text);
     const yL = (p) => topY + (1 - p / 100) * levelH;
     const yP = (p) => priceTop + (1 - Math.min(p, v.priceMax) / v.priceMax) * priceH;
     const muted = "var(--secondary-text-color)";
     for (let p = 0; p <= 100; p += 25) {
-      svgEl("line", { x1: G.L, x2: G.W - G.R, y1: yL(p), y2: yL(p), stroke: "var(--divider-color)" }, svg);
-      svgEl("text", { x: G.L - 6, y: yL(p) + 4, "text-anchor": "end", "font-size": 11, fill: muted }, svg, `${p}%`);
+      svgEl("line", { x1: 0, x2: plotW, y1: yL(p), y2: yL(p), stroke: "var(--divider-color)" }, svg);
+      svgEl("text", { x: 38, y: yL(p) + 4, "text-anchor": "end", "font-size": 11, fill: muted }, axl, `${p}%`);
     }
     for (let p = 0; p <= v.priceMax; p += v.priceMax <= 20 ? 5 : 10) {
-      svgEl("line", { x1: G.L, x2: G.W - G.R, y1: yP(p), y2: yP(p), stroke: "var(--divider-color)", "stroke-opacity": 0.6 }, svg);
-      svgEl("text", { x: G.L - 6, y: yP(p) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--v2-price)" }, svg, `${p}p`);
+      svgEl("line", { x1: 0, x2: plotW, y1: yP(p), y2: yP(p), stroke: "var(--divider-color)", "stroke-opacity": 0.6 }, svg);
+      svgEl("text", { x: 38, y: yP(p) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--v2-price)" }, axl, `${p}p`);
     }
     v.ticks.forEach((t) => {
       const label = v2Hm(new Date(t.ms).toISOString());
-      svgEl("text", { x: x(t.h), y: H - 8, "text-anchor": "middle", "font-size": 11, fill: muted }, svg, t.day ? `${new Date(t.ms).toLocaleDateString("en-GB", { weekday: "short" })} ${label}` : label);
+      if (x(t.h) > 6 && x(t.h) < plotW - 6) svgEl("text", { x: x(t.h), y: H - 8, "text-anchor": "middle", "font-size": 11, fill: muted }, svg, t.day ? `${new Date(t.ms).toLocaleDateString("en-GB", { weekday: "short" })} ${label}` : label);
       svgEl("line", { x1: x(t.h), x2: x(t.h), y1: topY, y2: topY + levelH, stroke: "var(--divider-color)", "stroke-opacity": 0.5 }, svg);
     });
     v.bands.forEach((b) => {
@@ -7792,7 +7841,7 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
     line(v.expected, yL, { stroke: "var(--v2-battery)", "stroke-width": 2, "stroke-dasharray": "6 4", "stroke-opacity": 0.8 });
     if (fcl && fcl.mid.length) line([fcl.mid], yL, { stroke: "var(--v2-battery)", "stroke-width": 2.5, "stroke-dasharray": "2 3" });
     line(v.level, yL, { stroke: "var(--v2-battery)", "stroke-width": 2.5 });
-    v.importSteps.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: yP(s.y), y2: yP(s.y), stroke: "var(--v2-price)", "stroke-width": 2 }, svg));
+    v.importSteps.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: yP(s.y), y2: yP(s.y), stroke: "var(--v2-price)", "stroke-width": 2, "stroke-dasharray": s.slot ? "5 3" : "none" }, svg));   // a smart slot stays dashed once it has run
     v.exportSteps.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: yP(s.y), y2: yP(s.y), stroke: "var(--m-export)", "stroke-width": 1.5, "stroke-dasharray": "2 3" }, svg));
     const dotted = (steps, col) => steps.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: yP(s.y), y2: yP(s.y), stroke: col, "stroke-width": 1.3, "stroke-opacity": 0.7, "stroke-dasharray": "1 3" }, svg));
     (fcl ? fcl.steps : []).forEach((q) => {
@@ -7805,14 +7854,14 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
       line(v.value, yP, { stroke: "var(--v2-good)", "stroke-width": 2.2 });
       if (fcl && fcl.value.length) line([fcl.value], yP, { stroke: "var(--v2-good)", "stroke-width": 2.2, "stroke-dasharray": "6 3", "stroke-opacity": 0.8 });
     }
-    svgEl("text", { x: G.L, y: priceTop - 8, "font-size": 11, fill: muted }, svg, "Prices, buy and sell lines and the value of a stored kWh (pence per kWh)");
+    title(priceTop - 8, "Prices (dashed: smart slot), buy and sell lines and the value of a stored kWh (pence per kWh)");
     const mid = enTop + enH / 2, yE = (k) => (k / v.energyMax) * (enH / 2 - 4);
     const yS = (kw) => sunTop + sunH - (kw / v.sunMax) * sunH;
     if (hasE) {                                          // grid energy per half-hour: import up, export down; the car outlined (it is part of the load)
-      svgEl("line", { x1: G.L, x2: G.W - G.R, y1: mid, y2: mid, stroke: "var(--divider-color)" }, svg);
-      svgEl("text", { x: G.L - 6, y: mid + 4, "text-anchor": "end", "font-size": 11, fill: muted }, svg, "0");
-      svgEl("text", { x: G.L - 6, y: mid - yE(v.energyMax) + 4, "text-anchor": "end", "font-size": 11, fill: muted }, svg, `${v.energyMax}`);
-      svgEl("text", { x: G.L, y: enTop - 8, "font-size": 11, fill: muted }, svg, flowBars ? "Grid power as it happened, as kWh per half-hour: import up, export down; grey: the car" : "Grid energy per half-hour (kWh): import up, export down; outline: the car");
+      svgEl("line", { x1: 0, x2: plotW, y1: mid, y2: mid, stroke: "var(--divider-color)" }, svg);
+      svgEl("text", { x: 38, y: mid + 4, "text-anchor": "end", "font-size": 11, fill: muted }, axl, "0");
+      svgEl("text", { x: 38, y: mid - yE(v.energyMax) + 4, "text-anchor": "end", "font-size": 11, fill: muted }, axl, `${v.energyMax}`);
+      title(enTop - 8, flowBars ? "Grid power as it happened, as kWh per half-hour: import up, export down; grey: the car" : "Grid energy per half-hour (kWh): import up, export down; outline: the car");
       (flowBars || v.energy).forEach((e) => {
         const inset = flowBars ? 0 : 1;
         const bx = x(e.a) + inset, bw = Math.max(1, x(e.b) - x(e.a) - 2 * inset);
@@ -7824,10 +7873,10 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
     }
     if (hasS) {                                          // the sun and the house in kW: as they happened, then as expected (paler, dashed)
       const fs = v.forecast ? v.forecast.sun : null;
-      svgEl("line", { x1: G.L, x2: G.W - G.R, y1: sunTop + sunH, y2: sunTop + sunH, stroke: "var(--divider-color)" }, svg);
-      svgEl("text", { x: G.L - 6, y: sunTop + sunH + 4, "text-anchor": "end", "font-size": 11, fill: muted }, svg, "0");
-      svgEl("text", { x: G.L - 6, y: sunTop + 4, "text-anchor": "end", "font-size": 11, fill: muted }, svg, `${v.sunMax} kW`);
-      svgEl("text", { x: G.L, y: sunTop - 8, "font-size": 11, fill: muted }, svg, fs ? "Sun and house (kW): as they happened, then expected (dashed)" : "Sun and house (kW), as they happened");
+      svgEl("line", { x1: 0, x2: plotW, y1: sunTop + sunH, y2: sunTop + sunH, stroke: "var(--divider-color)" }, svg);
+      svgEl("text", { x: 38, y: sunTop + sunH + 4, "text-anchor": "end", "font-size": 11, fill: muted }, axl, "0");
+      svgEl("text", { x: 38, y: sunTop + 4, "text-anchor": "end", "font-size": 11, fill: muted }, axl, `${v.sunMax} kW`);
+      title(sunTop - 8, fs ? "Sun and house (kW): as they happened, then expected (dashed)" : "Sun and house (kW), as they happened");
       (v.sunActual || []).forEach((e) => { if (e.kw > 0) svgEl("rect", { x: x(e.a), y: yS(e.kw), width: Math.max(1, x(e.b) - x(e.a)), height: sunTop + sunH - yS(e.kw), fill: "var(--v2-sun)", "fill-opacity": 0.45 }, svg); });
       const runs = []; let cur = null;
       (v.houseActual || []).forEach((e) => { if (cur && Math.abs(cur[cur.length - 1].b - e.a) < 1e-6) cur.push(e); else { cur = [e]; runs.push(cur); } });
@@ -7857,7 +7906,7 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
       let ty = py;
       while (taken.some((t) => Math.abs(t - ty) < 14)) ty += 14;
       taken.push(ty);
-      const w = text.length * 6.4 + 8, left = px > G.W - G.R - w - 16, bx = left ? px - 8 - w : px + 8;
+      const w = text.length * 6.4 + 8, left = px > plotW - w - 16, bx = left ? px - 8 - w : px + 8;
       if (py !== null) svgEl("circle", { cx: px, cy: py, r: 3.5, fill: colour, stroke: "var(--card-background-color)", "stroke-width": 1 }, probeG);
       svgEl("rect", { x: bx, y: ty - 8, width: w, height: 15, rx: 4, fill: "var(--card-background-color)", "fill-opacity": 0.88, stroke: colour, "stroke-opacity": 0.6 }, probeG);
       svgEl("text", { x: bx + 4, y: ty + 3.5, "font-size": 11, "font-weight": 600, fill: colour }, probeG, text);
@@ -7871,8 +7920,8 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
       if (!q) return;
       const pct = (n) => `${Math.round(n)}%`, kw1 = (n) => `${n.toFixed(1)} kW`;
       const time = clock(hr), tw = time.length * 6.4 + 10;
-      svgEl("rect", { x: Math.min(Math.max(px - tw / 2, 0), G.W - tw), y: topY - 15, width: tw, height: 14, rx: 4, fill: "var(--primary-text-color)" }, probeG);
-      svgEl("text", { x: Math.min(Math.max(px, tw / 2), G.W - tw / 2), y: topY - 5, "text-anchor": "middle", "font-size": 10.5, "font-weight": 600, fill: "var(--card-background-color)" }, probeG, time);
+      svgEl("rect", { x: Math.min(Math.max(px - tw / 2, 0), plotW - tw), y: topY - 15, width: tw, height: 14, rx: 4, fill: "var(--primary-text-color)" }, probeG);
+      svgEl("text", { x: Math.min(Math.max(px, tw / 2), plotW - tw / 2), y: topY - 5, "text-anchor": "middle", "font-size": 10.5, "font-weight": 600, fill: "var(--card-background-color)" }, probeG, time);
       const lvl = [];
       if (q.battery !== null) tag(px, yL(q.battery), `${pct(q.battery)}${q.low !== null && q.high !== null ? ` (${Math.round(q.low)}–${Math.round(q.high)})` : ""}`, "var(--v2-battery)", lvl);
       const pr = [];
@@ -7892,7 +7941,7 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
     const at = (ev) => {
       const r = svg.getBoundingClientRect();
       if (!r.width) return;
-      const hr = (((ev.clientX - r.left) / r.width) * G.W - G.L) / (G.W - G.L - G.R) * v.spanH;
+      const hr = (((ev.clientX - r.left) / r.width) * plotW) / pph;
       if (hr < 0 || hr > v.spanH) return;
       this._sel = { hour: hr, date: v.date };
       paint(hr);
@@ -7901,6 +7950,33 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
     svg.addEventListener("pointerdown", at);
     if (this._sel && this._sel.date === v.date) paint(this._sel.hour);          // a redraw keeps the time you picked
     (hid.has("replan") ? [] : v.replans).forEach((rh) => svgEl("line", { x1: x(rh), x2: x(rh), y1: H - 26, y2: H - 17, stroke: "var(--primary-text-color)", "stroke-width": 1.5, "stroke-opacity": 0.7 }, svg));
+    this._placeScroll(scroller, v, pph, plotW, boxW);
+  }
+  /** Where the scroll box opens: on the default view (VIEW_PAST_HOURS before now, or the start of a past day) until the person scrolls;
+   *  after that where they left it, kept by the time at its left edge so a redraw does not move it. */
+  _placeScroll(scroller, v, pph, plotW, boxW) {
+    const maxPx = Math.max(0, plotW - boxW), defPx = Math.min(maxPx, v.viewH * pph);
+    let px = defPx;
+    if (this._hUser && this._hLeftMs !== null && this._hLeftMs !== undefined) px = Math.min(maxPx, Math.max(0, ((this._hLeftMs - v.t0) / HOUR_MS) * pph));
+    this._hGeom = { t0: v.t0, pph, defPx };
+    const laidOut = scroller.clientWidth > 0;
+    scroller.scrollLeft = px;
+    scroller._placed = laidOut && Math.abs(scroller.scrollLeft - px) < 2;      // a box with no width ignores the position: that is not the person's choice
+    this._hSetPx = scroller.scrollLeft;
+    if (!laidOut) this._stale = true;
+    scroller.addEventListener("scroll", () => {
+      if (!scroller.isConnected || scroller !== this.shadowRoot.getElementById("h-scroll")) return;
+      if (Math.abs(scroller.scrollLeft - this._hSetPx) < 2) return;           // our own placing
+      this._lastScrollAt = Date.now();
+      this._hSetPx = scroller.scrollLeft;
+      this._hLeftMs = v.t0 + (scroller.scrollLeft / pph) * HOUR_MS;
+      this._hUser = Math.abs(scroller.scrollLeft - defPx) > 8;
+      this._armIdle();
+    });
+    scroller.addEventListener("touchstart", () => { this._touching = true; this._touchAt = Date.now(); }, { passive: true });
+    const lift = () => { this._touching = false; this._lastScrollAt = Date.now(); this._armIdle(); };
+    scroller.addEventListener("touchend", lift, { passive: true });
+    scroller.addEventListener("touchcancel", lift, { passive: true });
   }
 }
 

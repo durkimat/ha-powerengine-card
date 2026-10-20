@@ -736,6 +736,30 @@ test("history view: today spans the whole day, with the forecast right of now an
   assert.strictEqual(other.flows, null);                                     // flows of another day are not drawn
 });
 
+test("history forecast reaches as far as the plan chart's: 30 hours on from now, never more", () => {
+  const long = fcTimeline();
+  long.prices = [{ start: at(-1), end: at(60), import_p: 28.84, export_p: 15 }];
+  long.items = [{ mode: "hold", start: at(-1), end: at(60), level_start: 50, level_end: 50, until: "" }];
+  const f = card.v2Forecast(long, NOW_L);
+  assert.strictEqual(f.to, NOW_L + 30 * 3600000);
+  assert.strictEqual(card.v2Forecast(fcTimeline(), NOW_L).to, NOW_L + 20 * 3600000);        // a shorter timeline stays as long as it is
+  const L = card.timelineLayout(long, { now: NOW_L, recent: { hours: 18, step_min: 30, series: Array.from({ length: 36 }, (_, i) => ({ t: new Date(NOW_L - (18 - i / 2) * 3600000).toISOString(), mode: "hold", level: 50, import_p: 7, export_p: 15, sent: true })) } });
+  assert.ok(Math.abs(L.t1 - NOW_L - 30 * 3600000) < 1000);                                    // the plan chart's own end
+});
+
+test("history view: a smart slot stays marked once it has run, and the view opens near now", () => {
+  const f = card.v2Forecast(fcTimeline(), NOW_L);
+  const series = ranDay().map((r, i) => (i >= 2 && i < 4 ? Object.assign({}, r, { import_p: 6.99, slot: true }) : r));
+  const v = card.v2HistoryView({ date: "2026-10-06", latest: "2026-10-06", series, in_control: "v2" }, NOW_L, { forecast: f });
+  assert.deepStrictEqual(v.importSteps.filter((s) => s.slot).map((s) => s.a), [1, 1.5]);
+  assert.strictEqual(v.importSteps.filter((s) => !s.slot).length, 22);
+  assert.ok(Math.abs(v.viewH - 11) < 1e-9);                                                  // an hour before now, as the plan chart opens
+  const past = card.v2HistoryView({ date: "2026-10-06", series }, NOW_L);
+  assert.strictEqual(past.viewH, 0);                                                         // a day with no now opens at its start
+  const rows = card.timelineLayout(fcTimeline(), { now: NOW_L, recent: { hours: 18, step_min: 30, series: [{ t: new Date(NOW_L - 3600000).toISOString(), mode: "charge", level: 50, import_p: 6.99, export_p: 15, sent: true, slot: true }] } });
+  assert.ok(rows.steps.some((s) => s.ran && s.slot));                                        // and the plan chart's hours already run
+});
+
 test("history view: a coming day is the forecast alone; a past day gets none; nothing to show says so", () => {
   const f = card.v2Forecast(fcTimeline(), NOW_L);
   const tomorrow = card.v2HistoryView({ date: "2026-10-07", latest: "2026-10-06", series: [] }, NOW_L, { forecast: f });
