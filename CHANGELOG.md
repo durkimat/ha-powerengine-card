@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.161
+
+### Behaviour changes
+
+- **The engine v2 history chart shows its numbers on the chart.** Move over the chart, or touch it, and each value floats where the inspection line meets its line: the battery level (with its likely range ahead), the import price, the value of a stored kWh, the grid and car power, and the sun and house power (with the sun's likely range ahead). The time shows above the chart. The large box underneath is gone, leaving one line with the time, the mode and why.
+
 ## 0.9.160
 
 ### Behaviour changes

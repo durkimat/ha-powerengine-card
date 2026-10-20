@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.160";
+const CARD_VERSION = "0.9.161";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -7536,6 +7536,41 @@ function v2HistoryView(attrs, nowMs, opts) {
   });
 }
 
+/** The numbers at `hour` for the labels drawn where the cursor meets each line: {future, battery, low, high, importP, value,
+ *  grid ({kind: "import"|"export"|"quiet", kw}), car, sun, sunLow, sunHigh, house}; each null when there is none. Pure. */
+function v2HistoryProbe(v, hour) {
+  if (!v || v.kind !== "ok" || !Number.isFinite(hour) || hour < 0 || hour > v.spanH) return null;
+  const future = v.nowH !== null && v.nowH !== undefined && hour >= v.nowH;
+  const fc = v.forecast;
+  const pts = (arr) => (arr || []).map((q) => ({ h: q.h, level: q.y }));
+  const ran = levelAtHour(pts([].concat(...(v.level || []))), hour);
+  const planned = future && fc ? levelAtHour(pts(fc.mid), hour) : null;
+  const out = { future, battery: planned !== null ? planned : ran, low: null, high: null, importP: null, value: null, grid: null, car: null, sun: null, sunLow: null, sunHigh: null, house: null };
+  if (planned !== null) { out.low = levelAtHour(pts(fc.low), hour); out.high = levelAtHour(pts(fc.high), hour); }
+  const step = v.importSteps.find((q) => hour >= q.a && hour < q.b) || (fc ? fc.steps.find((q) => hour >= q.a && hour < q.b) : null);
+  if (step) out.importP = step.importP !== undefined ? step.importP : step.y;
+  const vals = future && fc ? fc.value : [].concat(...(v.value || [])).map((q) => ({ h: q.h, y: q.y }));
+  const near = vals.length ? vals.reduce((m, q) => (Math.abs(q.h - hour) < Math.abs(m.h - hour) ? q : m)) : null;
+  if (near && Math.abs(near.h - hour) <= 1) out.value = near.y;
+  const flow = v.flows ? v.flows.find((e) => hour >= e.a && hour < e.b) : null;
+  const e = flow || v.energy.find((q) => hour >= q.a && hour < q.b);
+  if (e && !(future && !flow)) {
+    const kwOf = (k) => k * 2;                               // kWh per half-hour -> kW
+    const inK = e.inK || 0, outK = e.outK || 0;
+    out.grid = inK > 0 ? { kind: "import", kw: kwOf(inK) } : outK > 0 ? { kind: "export", kw: kwOf(outK) } : { kind: "quiet", kw: 0 };
+    if (e.car) out.car = kwOf(e.car);
+  }
+  const stepAt = (arr) => (arr || []).find((q) => hour >= q.a && hour < q.b);
+  if (future && fc && fc.sun) {
+    const at = (arr) => { for (let i = 0; i + 1 < (arr || []).length; i += 2) if (hour >= arr[i].h - 1e-9 && hour <= arr[i + 1].h + 1e-9) return arr[i].kw; return null; };
+    out.sun = at(fc.sun.mid); out.sunLow = at(fc.sun.low); out.sunHigh = at(fc.sun.high); out.house = at(fc.sun.house);
+  } else if (!future) {
+    const sa = stepAt(v.sunActual), ha = stepAt(v.houseActual);
+    out.sun = sa ? sa.kw : null; out.house = ha ? ha.kw : null;
+  }
+  return out;
+}
+
 /** What the history chart says at `hour` (hours from its left edge), for the readout under it: lines, the first being the time.
  *  `clock(hour)` gives "HH:MM". Pure. */
 function v2HistoryReadout(v, hour, clock) {
@@ -7679,7 +7714,7 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
     const v = v2HistoryView(attrs, Date.now(), { forecast: m.fc, flows: m.flows });
     this._v = v;
     const css = `<style>${V2_CSS}
-      .readout { font-size: 13px; min-height: 7em; background: var(--secondary-background-color); border-radius: 8px; padding: 8px 12px; line-height: 1.45; }
+      .readout { font-size: 13px; min-height: 1.5em; margin: 0; color: var(--secondary-text-color); }
       .picker { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       .picker input, .picker button { font: inherit; color: var(--primary-text-color); background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 6px; }
       .picker input { padding: 6px 8px; }
@@ -7771,8 +7806,9 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
       if (fcl && fcl.value.length) line([fcl.value], yP, { stroke: "var(--v2-good)", "stroke-width": 2.2, "stroke-dasharray": "6 3", "stroke-opacity": 0.8 });
     }
     svgEl("text", { x: G.L, y: priceTop - 8, "font-size": 11, fill: muted }, svg, "Prices, buy and sell lines and the value of a stored kWh (pence per kWh)");
+    const mid = enTop + enH / 2, yE = (k) => (k / v.energyMax) * (enH / 2 - 4);
+    const yS = (kw) => sunTop + sunH - (kw / v.sunMax) * sunH;
     if (hasE) {                                          // grid energy per half-hour: import up, export down; the car outlined (it is part of the load)
-      const mid = enTop + enH / 2, yE = (k) => (k / v.energyMax) * (enH / 2 - 4);
       svgEl("line", { x1: G.L, x2: G.W - G.R, y1: mid, y2: mid, stroke: "var(--divider-color)" }, svg);
       svgEl("text", { x: G.L - 6, y: mid + 4, "text-anchor": "end", "font-size": 11, fill: muted }, svg, "0");
       svgEl("text", { x: G.L - 6, y: mid - yE(v.energyMax) + 4, "text-anchor": "end", "font-size": 11, fill: muted }, svg, `${v.energyMax}`);
@@ -7787,7 +7823,6 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
       });
     }
     if (hasS) {                                          // the sun and the house in kW: as they happened, then as expected (paler, dashed)
-      const yS = (kw) => sunTop + sunH - (kw / v.sunMax) * sunH;
       const fs = v.forecast ? v.forecast.sun : null;
       svgEl("line", { x1: G.L, x2: G.W - G.R, y1: sunTop + sunH, y2: sunTop + sunH, stroke: "var(--divider-color)" }, svg);
       svgEl("text", { x: G.L - 6, y: sunTop + sunH + 4, "text-anchor": "end", "font-size": 11, fill: muted }, svg, "0");
@@ -7816,10 +7851,43 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
     const cursor = svgEl("line", { x1: 0, x2: 0, y1: G.T, y2: bottom, stroke: "var(--primary-text-color)", "stroke-width": 1, "stroke-opacity": 0.6, visibility: "hidden", "pointer-events": "none" }, svg);
     const clock = (hr) => v2Hm(new Date(v.t0 + hr * HOUR_MS).toISOString());
     const read = this.shadowRoot.getElementById("hread");
+    const probeG = svgEl("g", { "pointer-events": "none" }, svg);
+    // a number floating where the cursor meets its line: dot, then the figure on a card-coloured chip (right of the cursor, left near the right edge)
+    const tag = (px, py, text, colour, taken) => {
+      let ty = py;
+      while (taken.some((t) => Math.abs(t - ty) < 14)) ty += 14;
+      taken.push(ty);
+      const w = text.length * 6.4 + 8, left = px > G.W - G.R - w - 16, bx = left ? px - 8 - w : px + 8;
+      if (py !== null) svgEl("circle", { cx: px, cy: py, r: 3.5, fill: colour, stroke: "var(--card-background-color)", "stroke-width": 1 }, probeG);
+      svgEl("rect", { x: bx, y: ty - 8, width: w, height: 15, rx: 4, fill: "var(--card-background-color)", "fill-opacity": 0.88, stroke: colour, "stroke-opacity": 0.6 }, probeG);
+      svgEl("text", { x: bx + 4, y: ty + 3.5, "font-size": 11, "font-weight": 600, fill: colour }, probeG, text);
+    };
     const paint = (hr) => {
       cursor.setAttribute("x1", x(hr)); cursor.setAttribute("x2", x(hr)); cursor.setAttribute("visibility", "visible");
+      while (probeG.firstChild) probeG.removeChild(probeG.firstChild);
       const lines = v2HistoryReadout(v, hr, clock);
-      if (read && lines.length) read.innerHTML = `<b>${escHtml(lines[0])}</b><br>${lines.slice(1).map(escHtml).join("<br>")}`;
+      if (read && lines.length) read.textContent = lines.slice(0, 3).join(" · ");     // the time, the mode and why; the numbers float on the chart
+      const q = v2HistoryProbe(v, hr), px = x(hr);
+      if (!q) return;
+      const pct = (n) => `${Math.round(n)}%`, kw1 = (n) => `${n.toFixed(1)} kW`;
+      const time = clock(hr), tw = time.length * 6.4 + 10;
+      svgEl("rect", { x: Math.min(Math.max(px - tw / 2, 0), G.W - tw), y: topY - 15, width: tw, height: 14, rx: 4, fill: "var(--primary-text-color)" }, probeG);
+      svgEl("text", { x: Math.min(Math.max(px, tw / 2), G.W - tw / 2), y: topY - 5, "text-anchor": "middle", "font-size": 10.5, "font-weight": 600, fill: "var(--card-background-color)" }, probeG, time);
+      const lvl = [];
+      if (q.battery !== null) tag(px, yL(q.battery), `${pct(q.battery)}${q.low !== null && q.high !== null ? ` (${Math.round(q.low)}–${Math.round(q.high)})` : ""}`, "var(--v2-battery)", lvl);
+      const pr = [];
+      if (q.importP !== null && q.importP !== undefined) tag(px, yP(q.importP), `${q.importP.toFixed(1)}p`, "var(--v2-price)", pr);
+      if (q.value !== null && !hid.has("value")) tag(px, yP(q.value), `value ${q.value.toFixed(1)}p`, "var(--v2-good)", pr);
+      if (hasE && q.grid) {
+        const g = q.grid, base = g.kind === "export" ? mid + yE(g.kw / 2) : mid - yE(g.kw / 2), en = [];
+        tag(px, base, g.kind === "quiet" ? "grid 0" : `${g.kind === "import" ? "import" : "export"} ${kw1(g.kw)}`, g.kind === "export" ? "var(--m-export)" : "var(--v2-price)", en);
+        if (q.car) tag(px, mid - yE(q.car / 2), `car ${kw1(q.car)}`, "var(--primary-text-color)", en);
+      }
+      if (hasS) {
+        const su = [];
+        if (q.sun !== null) tag(px, yS(q.sun), `sun ${kw1(q.sun)}${q.sunLow !== null && q.sunHigh !== null ? ` (${q.sunLow.toFixed(1)}–${q.sunHigh.toFixed(1)})` : ""}`, "var(--v2-sun)", su);
+        if (q.house !== null) tag(px, yS(q.house), `house ${kw1(q.house)}`, "var(--v2-house)", su);
+      }
     };
     const at = (ev) => {
       const r = svg.getBoundingClientRect();
@@ -7957,7 +8025,7 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
 });
 
 if (typeof module !== "undefined") {
-  module.exports = { v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
+  module.exports = { v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
