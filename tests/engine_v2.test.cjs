@@ -788,3 +788,27 @@ test("history view: the sun and the house, as they happened and as expected", ()
   const bare = card.v2HistoryView({ date: "2026-10-06", latest: "2026-10-06", series: ranDay() }, NOW_L, { forecast: card.v2Forecast(fcTimeline(), NOW_L) });
   assert.strictEqual(bare.hasSun, false);                                      // an older app / no sun series: no panel
 });
+
+test("history probe: the numbers at a time, for the labels on the chart", () => {
+  const tl = fcTimeline();
+  tl.sun = { start: at(0), step_min: 60, low: [0, 0.5, 1], mid: [0, 1, 2], high: [0, 1.5, 3], house: [0.4, 0.5, 0.6] };
+  const f = card.v2Forecast(tl, NOW_L);
+  const start = new Date(2026, 9, 6, 0, 0).toISOString();
+  const flows = { date: "2026-10-06", start, bucket: 5, m: [600, 605], imp: [1.5, 0], exp: [0, 2], car: [1, 0], sun: [1.0, 1.5], house: [0.2, 0.25] };
+  const v = card.v2HistoryView({ date: "2026-10-06", latest: "2026-10-06", series: ranDay(), in_control: "v2" }, NOW_L, { forecast: f, flows });
+  const past = card.v2HistoryProbe(v, 10.02);
+  assert.strictEqual(past.future, false);
+  assert.deepStrictEqual(past.grid, { kind: "import", kw: 3 });
+  assert.strictEqual(past.car, 2);
+  assert.strictEqual(past.sun, 2);
+  assert.strictEqual(past.house, 0.4);
+  assert.ok(past.battery !== null && past.importP === 28.84);
+  assert.strictEqual(card.v2HistoryProbe(v, 10.1).grid.kind, "export");
+  const soon = card.v2HistoryProbe(v, 12.5);
+  assert.strictEqual(soon.future, true);
+  assert.ok(soon.battery !== null && soon.low !== null && soon.high !== null && soon.importP !== null);
+  assert.ok(soon.sun !== null && soon.house !== null && soon.sunHigh >= soon.sun);
+  assert.strictEqual(soon.grid, null);                                        // no grid reading for a time that has not come
+  assert.strictEqual(card.v2HistoryProbe(v, 99), null);
+  assert.strictEqual(card.v2HistoryProbe({ kind: "empty" }, 1), null);
+});
