@@ -6754,7 +6754,7 @@ const V2Base = typeof HTMLElement !== "undefined" ? HTMLElement : class {};
 /** The key above a chart: a tick box per line that can be hidden. Which are hidden is kept in this browser only (localStorage, tried and caught). */
 const CHART_KEYS = {
   value: ["--v2-good", "Value of a stored kWh"], buy: ["--v2-buy", "Buy line"], sell: ["--v2-sell", "Sell line"],
-  replan: ["--primary-text-color", "Re-plans"], energy: ["--v2-price", "Grid energy"],
+  replan: ["--primary-text-color", "Re-plans"], energy: ["--v2-price", "Grid energy"], sun: ["--v2-sun", "Sun and house"],
 };
 function chartHidden(id) {
   try { const raw = typeof localStorage !== "undefined" ? localStorage.getItem(`pe_chart_hide_${id}`) : null; return new Set(raw ? JSON.parse(raw) : []); } catch (e) { return new Set(); }
@@ -7400,7 +7400,7 @@ const V2_FLOWS = "sensor.pe_v2_flows";                 // the day's grid and car
 const V2_HISTORY_NONE = "Engine v2's history has not been recorded yet.";
 const V2_HISTORY_HINT = "Move over the chart, or tap it, to read the values at that time.";
 /** What the timeline sensor expects from `nowMs` on, in milliseconds (the history chart draws it dimmed, to the right of now):
- *  {from, to, bands, steps, mid, low, high, value}. Null when there is no usable timeline. Pure. */
+ *  {from, to, bands, steps, mid, low, high, value, sun}; `sun` (null without one) holds mid/low/high/house as {ms, kw} points. Null when there is no usable timeline. Pure. */
 function v2Forecast(tl, nowMs) {
   if (!tl || typeof tl !== "object") return null;
   const L = timelineLayout(tl, { now: nowMs });
@@ -7409,7 +7409,9 @@ function v2Forecast(tl, nowMs) {
   const steps = L.steps.map((q) => ({ a: ms(q.a), b: ms(q.b), importP: q.importP, exportP: q.exportP, slot: q.slot, slotProb: q.slotProb, event: q.event, free: q.free, estimated: q.estimated }))
     .filter((q) => q.b > nowMs);
   const line = (pts, key) => pts.map((q) => ({ ms: ms(q.h), y: q[key] })).filter((q) => q.ms >= nowMs - 15 * 60000);
-  const out = { from: nowMs, to: L.t1, bands, steps, mid: line(L.mid, "level"), low: line(L.low, "level"), high: line(L.high, "level"), value: line(L.pathValue, "value") };
+  const kwLine = (pts) => (pts || []).map((q) => ({ ms: ms(q.h), kw: q.kw }));
+  const sun = L.sun ? { mid: kwLine(L.sun.mid), low: kwLine(L.sun.low), high: kwLine(L.sun.high), house: kwLine(L.sun.house) } : null;
+  const out = { from: nowMs, to: L.t1, bands, steps, mid: line(L.mid, "level"), low: line(L.low, "level"), high: line(L.high, "level"), value: line(L.pathValue, "value"), sun };
   return bands.length || steps.length || out.mid.length ? out : null;
 }
 /** The date (YYYY-MM-DD, this browser's day) the forecast reaches, or "" without one. */
@@ -7447,7 +7449,9 @@ function v2HistoryView(attrs, nowMs, opts) {
   const gaps = raw.slice(1).map((p, i) => v2Ms(p.t) - v2Ms(raw[i].t)).filter((g) => g > 0);
   const stepMs = gaps.length ? Math.min(...gaps) : 30 * 60000;
   const h = (ms) => (ms - t0) / HOUR_MS;
-  const spanH = fcOn ? (dayB.b - dayB.a) / HOUR_MS : h(v2Ms(raw[raw.length - 1].t) + stepMs);
+  // today runs on to the end of what the timeline covers, as the plan chart does; a coming day is just that day
+  const endMs = fcOn ? (date === a.latest ? Math.max(dayB.b, o.forecast.to) : dayB.b) : null;
+  const spanH = fcOn ? (endMs - dayB.a) / HOUR_MS : h(v2Ms(raw[raw.length - 1].t) + stepMs);
   const sentOf = (p) => p.sent !== false;
   const bandsRaw = raw.map((p) => ({ mode: p.mode || "none", a: h(v2Ms(p.t)), b: h(v2Ms(p.t) + stepMs), preview: !sentOf(p) }));
   // the day as it ran, to the second, when the app publishes it (`runs`); else the mode that ran longest in each half-hour
@@ -7485,20 +7489,37 @@ function v2HistoryView(attrs, nowMs, opts) {
   const nowH = nowInDay ? h(nowMs) : null;
   const fromH = nowInDay ? nowH : 0;
   const fcClip = (x) => ({ a: Math.max(fromH, h(x.a)), b: Math.min(spanH, h(x.b)) });
+  const sunClip = (arr) => {                         // points come in pairs (a step's start and end): keep the part inside, still in pairs
+    const out = [];
+    for (let i = 0; i + 1 < (arr || []).length; i += 2) {
+      const a0 = h(arr[i].ms), b0 = h(arr[i + 1].ms), kw = arr[i].kw;
+      if (kw === null || b0 <= fromH + 1e-9 || a0 >= spanH - 1e-9) continue;
+      out.push({ h: Math.max(a0, fromH), kw }, { h: Math.min(b0, spanH), kw });
+    }
+    return out;
+  };
   const fcLine = (arr) => (arr || []).map((q) => ({ h: h(q.ms), y: q.y })).filter((q) => q.y !== null && q.h >= fromH - 0.26 && q.h <= spanH + 1e-9);
   const forecast = fcOn ? {
     bands: o.forecast.bands.map((b) => Object.assign({}, b, fcClip(b))).filter((b) => b.b > b.a),
     steps: o.forecast.steps.map((q) => Object.assign({}, q, fcClip(q))).filter((q) => q.b > q.a),
     mid: fcLine(o.forecast.mid), low: fcLine(o.forecast.low), high: fcLine(o.forecast.high), value: fcLine(o.forecast.value),
+    sun: o.forecast.sun ? { mid: sunClip(o.forecast.sun.mid), low: sunClip(o.forecast.sun.low), high: sunClip(o.forecast.sun.high), house: sunClip(o.forecast.sun.house) } : null,
   } : null;
   const flowsRaw = o.flows && o.flows.date === date && Array.isArray(o.flows.m) && v2Ms(o.flows.start) !== null ? o.flows : null;
   const flows = flowsRaw ? flowsRaw.m.map((m, i) => {
     const w = (toNumber(flowsRaw.bucket) || 5) * 60000;
     return { a: h(v2Ms(flowsRaw.start) + m * 60000), b: h(v2Ms(flowsRaw.start) + m * 60000 + w), inK: toNumber((flowsRaw.imp || [])[i]) || 0, outK: toNumber((flowsRaw.exp || [])[i]) || 0, car: toNumber((flowsRaw.car || [])[i]) || 0 };
   }) : null;
+  const flowKw = (key) => flowsRaw && Array.isArray(flowsRaw[key]) ? flows.map((e, i) => ({ a: e.a, b: e.b, kw: (toNumber(flowsRaw[key][i]) || 0) * 2 })) : null;
+  const sunActual = flowKw("sun"), houseActual = flowKw("house");
+  const sunTop = Math.max(0, ...(sunActual || []).map((e) => e.kw), ...(houseActual || []).map((e) => e.kw),
+    ...(forecast && forecast.sun ? forecast.sun.high.concat(forecast.sun.mid, forecast.sun.house).map((q) => q.kw) : []));
+  const sunMax = Math.max(1, Math.ceil(sunTop * 2) / 2);
+  const hasSun = sunTop > 0;
   const flowMax = flows ? Math.max(1, Math.ceil(Math.max(0, ...flows.map((e) => Math.max(e.inK, e.outK, e.car))) * 2) / 2) : 0;
   return Object.assign(base, {
     kind: "ok", t0, spanH, stepMs, bands, previewOnly, partlyPreview, control, profile, forecast, nowH, flows, flowMax,
+    sunActual, houseActual, sunMax, hasSun, dayEndH: fcOn ? h(dayB.b) : null,
     banner: !raw.length ? "Forecast: what engine v2 expects from its current plan. Nothing has happened on this day yet."
       : previewOnly ? "Preview only: engine v1 was in control on this day, so nothing was sent to the inverter. The modes below are what engine v2 would have chosen."
       : partlyPreview ? "Control changed during the day: the dimmed bands are where engine v2 was only previewing." : "",
@@ -7509,7 +7530,7 @@ function v2HistoryView(attrs, nowMs, opts) {
     changes, ticks: (() => {
       const out = []; const d = new Date(t0); d.setMinutes(0, 0, 0);
       while (d.getTime() < t0 || d.getHours() % 3 !== 0) d.setTime(d.getTime() + HOUR_MS);
-      for (let t = d.getTime(); t <= t0 + spanH * HOUR_MS + 1; t += 3 * HOUR_MS) out.push({ h: h(t), ms: t });
+      for (let t = d.getTime(); t <= t0 + spanH * HOUR_MS + 1; t += 3 * HOUR_MS) out.push({ h: h(t), ms: t, day: t > t0 + 1 && new Date(t).getHours() === 0 });
       return out;
     })(),
   });
@@ -7553,6 +7574,19 @@ function v2HistoryReadout(v, hour, clock) {
   const near = vals.length ? vals.reduce((m, q) => (Math.abs(q.h - hour) < Math.abs(m.h - hour) ? q : m)) : null;
   if (near && Math.abs(near.h - hour) <= 1) lines.push(`Value of a stored kWh: ${v2P(near.y, 1)}${future ? " (expected)" : ""}`);
   const kw = (k) => `${(Math.round(k * 20) / 10).toFixed(1)} kW`;           // kWh per half-hour at that power -> kW
+  const kwAt = (pts) => { for (let i = 0; i + 1 < (pts || []).length; i += 2) if (hour >= pts[i].h - 1e-9 && hour <= pts[i + 1].h + 1e-9) return pts[i].kw; return null; };   // points come in pairs: a step's start and end
+  const fs = future && v.forecast ? v.forecast.sun : null;
+  if (fs) {
+    const sm = kwAt(fs.mid), sl = kwAt(fs.low), sh = kwAt(fs.high), hs = kwAt(fs.house);
+    const k1 = (x) => `${x.toFixed(1)} kW`;
+    if (sm !== null) lines.push(`Sun expected: ${k1(sm)}${sl !== null && sh !== null ? ` (${k1(sl)} to ${k1(sh)})` : ""}`);
+    if (hs !== null) lines.push(`House use expected: ${k1(hs)}`);
+  } else if (!future) {
+    const at = (arr) => (arr || []).find((e) => hour >= e.a && hour < e.b);
+    const sa = at(v.sunActual), ha = at(v.houseActual);
+    if (sa) lines.push(`Sun: ${sa.kw.toFixed(1)} kW`);
+    if (ha) lines.push(`House: ${ha.kw.toFixed(1)} kW`);
+  }
   const flow = v.flows ? v.flows.find((e) => hour >= e.a && hour < e.b) : null;
   if (flow) {
     lines.push(flow.inK > 0 ? `Grid: importing ${kw(flow.inK)}` : flow.outK > 0 ? `Grid: exporting ${kw(flow.outK)}` : "Grid: quiet");
@@ -7659,12 +7693,12 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
     const legend = (items) => items.map(([c, t]) => `<span><i class="sw" style="background:${c}"></i>${escHtml(t)}</span>`).join("");
     const modesUsed = Array.from(new Set(v.bands.map((b) => b.mode)));
     this.shadowRoot.innerHTML = `${css}<ha-card>
-      <div class="head"><span class="title">Engine v2 history${v.date ? ` · ${escHtml(v.date)}` : ""}</span>${v.kind === "ok" ? chartKeyHtml(["value", "buy", "sell", "energy", "replan"], this._hidden("history")) : ""}${v.kind === "ok" ? `<span class="chip${v.control === "v2" ? "" : " muted"}">${v.control === "v2" ? `Engine v2 in control${v.profile ? ` · ${escHtml(v.profile)}` : ""}` : v.control === "forecast" ? "Forecast" : v.control === "v1" ? "Preview" : "Control changed"}</span>` : ""}</div>
+      <div class="head"><span class="title">Engine v2 history${v.date ? ` · ${escHtml(v.date)}` : ""}</span>${v.kind === "ok" ? chartKeyHtml(["value", "buy", "sell", "energy", "sun", "replan"], this._hidden("history")) : ""}${v.kind === "ok" ? `<span class="chip${v.control === "v2" ? "" : " muted"}">${v.control === "v2" ? `Engine v2 in control${v.profile ? ` · ${escHtml(v.profile)}` : ""}` : v.control === "forecast" ? "Forecast" : v.control === "v1" ? "Preview" : "Control changed"}</span>` : ""}</div>
       ${this._pickerHtml(attrs || {})}
       ${v.kind === "empty" ? `<p class="muted">${escHtml(v.text)}</p>` : `${v.banner ? `<p class="preview-line" role="note">${escHtml(v.banner)}</p>` : ""}
       <div class="chart" id="hist"></div>
       <p class="readout" id="hread" aria-live="polite">${escHtml(V2_HISTORY_HINT)}</p>
-      <div class="legend">${legend(modesUsed.concat(v.forecast ? v.forecast.bands.map((b) => b.mode) : []).filter((k, i, all) => all.indexOf(k) === i).map((k) => [`var(${v2Mode(k).colour})`, v2Mode(k).name]).concat([["var(--v2-battery)", "Battery as it ran (dashed: expected at the start of the day)"], ["var(--v2-price)", "Import price"], ["var(--m-export)", "Export price (dotted)"]]).concat(v.forecast ? [["var(--v2-battery)", "From now: dotted battery line (shaded: likely range), paler bands: what the plan expects"]] : []))}</div>
+      <div class="legend">${legend(modesUsed.concat(v.forecast ? v.forecast.bands.map((b) => b.mode) : []).filter((k, i, all) => all.indexOf(k) === i).map((k) => [`var(${v2Mode(k).colour})`, v2Mode(k).name]).concat([["var(--v2-battery)", "Battery as it ran (dashed: expected at the start of the day)"], ["var(--v2-price)", "Import price"], ["var(--m-export)", "Export price (dotted)"]]).concat(v.forecast ? [["var(--v2-battery)", "From now: dotted battery line (shaded: likely range), paler bands: what the plan expects"]] : []).concat(v.hasSun ? [["var(--v2-sun)", "Sun"], ["var(--v2-house)", "House use (dashed: expected)"]] : []))}</div>
       ${v.partlyPreview || v.previewOnly ? '<p class="muted small">Dimmed bands: engine v2 was only previewing, nothing was sent.</p>' : ""}
       ${v.changes.length ? `<div><h3>Mode changes (newest first)</h3><div class="changes">${v.changes.map((c) => `<span class="num muted">${escHtml(c.at)}</span><span class="mode"><i class="sw" style="background:var(${v2Mode(c.modeKey).colour})"></i>${escHtml(c.mode)}</span><span>${escHtml(c.reason)}</span>`).join("")}</div></div>` : '<p class="muted small">No mode changes recorded for this day.</p>'}
       ${v.note ? `<p class="muted small">${escHtml(v.note)}</p>` : ""}`}
@@ -7678,7 +7712,9 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
     const topY = G.T + G.bandH + 10, levelH = 150, gap = 34, priceTop = topY + levelH + gap, priceH = 110;
     const hid = this._hidden("history");
     const flowBars = v.flows && v.flows.length ? v.flows : null;
-    const hasE = (flowBars || v.energy.length > 0) && !hid.has("energy"), enTop = priceTop + priceH + 34, enH = 80, H = (hasE ? enTop + enH : priceTop + priceH) + 28;
+    const hasE = (flowBars || v.energy.length > 0) && !hid.has("energy"), enTop = priceTop + priceH + 34, enH = 80;
+    const hasS = v.hasSun && !hid.has("sun"), sunTop = (hasE ? enTop + enH : priceTop + priceH) + 34, sunH = 80;
+    const H = (hasS ? sunTop + sunH : hasE ? enTop + enH : priceTop + priceH) + 28;
     const svg = svgEl("svg", { viewBox: `0 0 ${G.W} ${H}`, role: "img", "aria-label": "Engine v2's modes, battery level, prices and the value of a stored kWh over the day" }, host);
     const x = (hr) => G.L + (hr / v.spanH) * (G.W - G.L - G.R);
     const yL = (p) => topY + (1 - p / 100) * levelH;
@@ -7693,7 +7729,8 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
       svgEl("text", { x: G.L - 6, y: yP(p) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--v2-price)" }, svg, `${p}p`);
     }
     v.ticks.forEach((t) => {
-      svgEl("text", { x: x(t.h), y: H - 8, "text-anchor": "middle", "font-size": 11, fill: muted }, svg, v2Hm(new Date(t.ms).toISOString()));
+      const label = v2Hm(new Date(t.ms).toISOString());
+      svgEl("text", { x: x(t.h), y: H - 8, "text-anchor": "middle", "font-size": 11, fill: muted }, svg, t.day ? `${new Date(t.ms).toLocaleDateString("en-GB", { weekday: "short" })} ${label}` : label);
       svgEl("line", { x1: x(t.h), x2: x(t.h), y1: topY, y2: topY + levelH, stroke: "var(--divider-color)", "stroke-opacity": 0.5 }, svg);
     });
     v.bands.forEach((b) => {
@@ -7748,6 +7785,28 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
         if (e.car && flowBars) svgEl("rect", { x: bx, y: mid - yE(e.car), width: bw, height: yE(e.car), fill: "var(--primary-text-color)", "fill-opacity": 0.28 }, svg);
         else if (e.car) svgEl("rect", { x: bx + 1, y: mid - yE(e.car), width: Math.max(1, bw - 2), height: yE(e.car), fill: "none", stroke: "var(--primary-text-color)", "stroke-width": 1.2, "stroke-opacity": 0.8 }, svg);
       });
+    }
+    if (hasS) {                                          // the sun and the house in kW: as they happened, then as expected (paler, dashed)
+      const yS = (kw) => sunTop + sunH - (kw / v.sunMax) * sunH;
+      const fs = v.forecast ? v.forecast.sun : null;
+      svgEl("line", { x1: G.L, x2: G.W - G.R, y1: sunTop + sunH, y2: sunTop + sunH, stroke: "var(--divider-color)" }, svg);
+      svgEl("text", { x: G.L - 6, y: sunTop + sunH + 4, "text-anchor": "end", "font-size": 11, fill: muted }, svg, "0");
+      svgEl("text", { x: G.L - 6, y: sunTop + 4, "text-anchor": "end", "font-size": 11, fill: muted }, svg, `${v.sunMax} kW`);
+      svgEl("text", { x: G.L, y: sunTop - 8, "font-size": 11, fill: muted }, svg, fs ? "Sun and house (kW): as they happened, then expected (dashed)" : "Sun and house (kW), as they happened");
+      (v.sunActual || []).forEach((e) => { if (e.kw > 0) svgEl("rect", { x: x(e.a), y: yS(e.kw), width: Math.max(1, x(e.b) - x(e.a)), height: sunTop + sunH - yS(e.kw), fill: "var(--v2-sun)", "fill-opacity": 0.45 }, svg); });
+      const runs = []; let cur = null;
+      (v.houseActual || []).forEach((e) => { if (cur && Math.abs(cur[cur.length - 1].b - e.a) < 1e-6) cur.push(e); else { cur = [e]; runs.push(cur); } });
+      runs.forEach((r) => svgEl("polyline", { points: r.map((e) => `${x(e.a)},${yS(e.kw)} ${x(e.b)},${yS(e.kw)}`).join(" "), fill: "none", stroke: "var(--v2-house)", "stroke-width": 1.5 }, svg));
+      if (fs && fs.mid.length) {
+        if (fs.high.length && fs.low.length) svgEl("polygon", { points: fs.high.map((p) => `${x(p.h)},${yS(p.kw)}`).concat(fs.low.slice().reverse().map((p) => `${x(p.h)},${yS(p.kw)}`)).join(" "), fill: "var(--v2-sun)", "fill-opacity": 0.18 }, svg);
+        const midPts = fs.mid.map((p) => `${x(p.h)},${yS(p.kw)}`).join(" ");
+        svgEl("polygon", { points: `${x(fs.mid[0].h)},${sunTop + sunH} ${midPts} ${x(fs.mid[fs.mid.length - 1].h)},${sunTop + sunH}`, fill: "var(--v2-sun)", "fill-opacity": 0.22 }, svg);
+        svgEl("polyline", { points: midPts, fill: "none", stroke: "var(--v2-sun)", "stroke-width": 1.5, "stroke-dasharray": "4 3" }, svg);
+        if (fs.house.length) svgEl("polyline", { points: fs.house.map((p) => `${x(p.h)},${yS(p.kw)}`).join(" "), fill: "none", stroke: "var(--v2-house)", "stroke-width": 1.8, "stroke-dasharray": "4 3" }, svg);
+      }
+    }
+    if (v.dayEndH !== null && v.dayEndH < v.spanH - 0.01) {                 // today runs on into tomorrow: mark midnight
+      svgEl("line", { x1: x(v.dayEndH), x2: x(v.dayEndH), y1: topY, y2: H - 30, stroke: "var(--divider-color)", "stroke-width": 1.5, "stroke-dasharray": "2 4" }, svg);
     }
     const bottom = H - 30;
     if (v.nowH !== null && v.nowH !== undefined) {         // the present moment
