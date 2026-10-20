@@ -3,6 +3,14 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.159
+
+### Behaviour changes
+
+- **The engine v2 history chart now looks ahead.** On today it shows what happened up to now, a red Now line, and, dimmed to the right, what the engine expects: modes, battery with its likely range, prices and value. The next arrow steps on to tomorrow's forecast, as far as the engine's 36-hour timeline reaches.
+- **Pick a time.** Hover or tap the chart for a cursor and a readout underneath: the mode and why, battery level, import and export price, value, grid and car power.
+- **Grid and car bars follow their real timing** (5-minute steps) when the app is 0.9.159 or newer; older apps keep the half-hour bars.
+
 ## 0.9.157
 
 ### Behaviour changes
