@@ -91,7 +91,7 @@ test("v2HistoryView: bands merge by mode, levels split at gaps, steps and axes",
   assert.strictEqual(v.level.length, 2);                                      // the null level splits the line
   assert.strictEqual(v.level[0].length, 3);
   assert.strictEqual(v.level[0][0].h, 0.5);                                   // level is at the half-hour's end
-  assert.strictEqual(v.expected.length, 1);
+  assert.strictEqual(v.expected, undefined);                                   // the opening plan is no longer drawn
   assert.strictEqual(v.importSteps.length, 5);
   assert.strictEqual(v.priceMax, 30);
   assert.strictEqual(v.valueMax, 20);
