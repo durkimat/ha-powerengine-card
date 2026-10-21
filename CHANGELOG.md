@@ -3,6 +3,13 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.166
+
+### Behaviour changes
+
+- **The engine v2 history chart separates its charts more clearly.** Each of the four (battery and modes, prices, grid, sun and house) sits on a lightly shaded background with a darker line along its bottom.
+- **The battery scale starts at the battery's own lowest level** (your hard floor, 12% here), not 0%, since it can never go lower. That gives the level line more room. Without a known floor the scale runs 0 to 100% as before.
+
 ## 0.9.165
 
 ### Behaviour changes
