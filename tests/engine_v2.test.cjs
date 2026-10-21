@@ -760,6 +760,14 @@ test("history view: a smart slot stays marked once it has run, and the view open
   assert.ok(rows.steps.some((s) => s.ran && s.slot));                                        // and the plan chart's hours already run
 });
 
+test("history view: the battery scale starts at the battery's own lowest level when it is known", () => {
+  const a = { date: "2026-10-06", latest: "2026-10-06", series: ranDay(), in_control: "v2" };
+  assert.strictEqual(card.v2HistoryView(a, NOW_L, { floor: 12 }).floor, 12);
+  assert.strictEqual(card.v2HistoryView(a, NOW_L, {}).floor, 0);
+  assert.strictEqual(card.v2HistoryView(a, NOW_L, { floor: null }).floor, 0);
+  assert.strictEqual(card.v2HistoryView(a, NOW_L, { floor: 95 }).floor, 0);                  // not a believable floor: the full scale
+});
+
 test("history view: a coming day is the forecast alone; a past day gets none; nothing to show says so", () => {
   const f = card.v2Forecast(fcTimeline(), NOW_L);
   const tomorrow = card.v2HistoryView({ date: "2026-10-07", latest: "2026-10-06", series: [] }, NOW_L, { forecast: f });

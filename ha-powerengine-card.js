@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.165";
+const CARD_VERSION = "0.9.166";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -7439,6 +7439,7 @@ function v2HistoryView(attrs, nowMs, opts) {
   const o = opts || {};
   const a = attrs && typeof attrs === "object" ? attrs : null;
   if (!a) return { kind: "none", text: V2_HISTORY_NONE };
+  const floor = toNumber(o.floor) !== null && o.floor > 0 && o.floor < 60 ? toNumber(o.floor) : 0;     // the battery's own lowest level: the scale starts there
   const date = typeof a.date === "string" ? a.date : "";
   const raw = (Array.isArray(a.series) ? a.series : []).filter((p) => p && v2Ms(p.t) !== null).sort((p, q) => v2Ms(p.t) - v2Ms(q.t));
   const base = { date, earliest: a.earliest || "", latest: a.latest || "", note: a.note ? String(a.note) : "" };
@@ -7519,7 +7520,7 @@ function v2HistoryView(attrs, nowMs, opts) {
   const hasSun = sunTop > 0;
   const flowMax = flows ? Math.max(1, Math.ceil(Math.max(0, ...flows.map((e) => Math.max(e.inK, e.outK, e.car))) * 2) / 2) : 0;
   return Object.assign(base, {
-    kind: "ok", t0, spanH, stepMs, viewH: nowH === null ? 0 : Math.max(0, nowH - VIEW_PAST_HOURS), bands, previewOnly, partlyPreview, control, profile, forecast, nowH, flows, flowMax,
+    kind: "ok", t0, spanH, stepMs, floor, viewH: nowH === null ? 0 : Math.max(0, nowH - VIEW_PAST_HOURS), bands, previewOnly, partlyPreview, control, profile, forecast, nowH, flows, flowMax,
     sunActual, houseActual, sunMax, hasSun, dayEndH: fcOn ? h(dayB.b) : null,
     banner: !raw.length ? "Forecast: what engine v2 expects from its current plan. Nothing has happened on this day yet."
       : previewOnly ? "Preview only: engine v1 was in control on this day, so nothing was sent to the inverter. The modes below are what engine v2 would have chosen."
@@ -7683,7 +7684,7 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
     if (base && this._local && base.latest && this._local > base.latest && this._lastDay && this._local <= this._lastDay) {
       attrs = Object.assign({}, base, { date: this._local, series: [], runs: [], runs_until: null, changes: [], replans: [] });
     } else this._local = null;
-    return { attrs, base, fc, flows: v2Attrs(states, V2_FLOWS) };
+    return { attrs, base, fc, flows: v2Attrs(states, V2_FLOWS), floor: tl ? toNumber(tl.floor_soc) : null };
   }
   /** The last day the arrows and the date box reach: the forecast's, when it reaches past today. */
   _latest(a) { return this._lastDay && a.latest && this._lastDay > a.latest ? this._lastDay : a.latest; }
@@ -7737,7 +7738,7 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
   _render(states) {
     const m = this._model(states);
     const attrs = m.attrs;
-    const v = v2HistoryView(attrs, Date.now(), { forecast: m.fc, flows: m.flows });
+    const v = v2HistoryView(attrs, Date.now(), { forecast: m.fc, flows: m.flows, floor: m.floor });
     this._v = v;
     const css = `<style>${V2_CSS}
       .readout { font-size: 13px; min-height: 1.5em; margin: 0; color: var(--secondary-text-color); }
@@ -7799,12 +7800,23 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
     axt.setAttribute("width", boxW); axt.setAttribute("height", H);
     const x = (hr) => hr * pph;
     const title = (y, text) => svgEl("text", { x: 6, y, "font-size": 11, fill: "var(--secondary-text-color)" }, axt, text);
-    const yL = (p) => topY + (1 - p / 100) * levelH;
+    const fl = v.floor;
+    const yL = (p) => topY + (1 - (Math.max(p, fl) - fl) / (100 - fl)) * levelH;           // the scale starts at the battery's lowest level
     const yP = (p) => priceTop + (1 - Math.min(p, v.priceMax) / v.priceMax) * priceH;
     const muted = "var(--secondary-text-color)";
-    for (let p = 0; p <= 100; p += 25) {
+    // each chart on a lightly shaded ground with a darker base line, so the separate charts read as separate
+    const ground = (top, h) => {
+      [[svg, plotW], [axl, 44]].forEach(([t, w]) => {
+        svgEl("rect", { x: 0, y: top, width: w, height: h, fill: "var(--primary-text-color)", "fill-opacity": 0.045 }, t);
+        svgEl("line", { x1: 0, x2: w, y1: top + h, y2: top + h, stroke: "var(--secondary-text-color)", "stroke-opacity": 0.55 }, t);
+      });
+    };
+    ground(topY, levelH); ground(priceTop, priceH);
+    if (hasE) ground(enTop, enH);
+    if (hasS) ground(sunTop, sunH);
+    for (const p of [fl].concat([25, 50, 75, 100].filter((q) => q - fl >= 8))) {
       svgEl("line", { x1: 0, x2: plotW, y1: yL(p), y2: yL(p), stroke: "var(--divider-color)" }, svg);
-      svgEl("text", { x: 38, y: yL(p) + 4, "text-anchor": "end", "font-size": 11, fill: muted }, axl, `${p}%`);
+      svgEl("text", { x: 38, y: yL(p) + 4, "text-anchor": "end", "font-size": 11, fill: muted }, axl, `${Math.round(p)}%`);
     }
     for (let p = 0; p <= v.priceMax; p += v.priceMax <= 20 ? 5 : 10) {
       svgEl("line", { x1: 0, x2: plotW, y1: yP(p), y2: yP(p), stroke: "var(--divider-color)", "stroke-opacity": 0.6 }, svg);
