@@ -92,7 +92,7 @@ const FEATURES = [
   ["optimised_plan", "Optimised planning", "The optimiser chooses each half-hour's action for the lowest cost (arbitrage band and safety rules included), with plain-English reasons. Off: the simpler rule-based planner."],
   ["learn_taper", "Learn: charge and discharge slow-down", "Plan with how much charging slows from 90% and 95%, and how much discharging slows below 40%, 30% and 20%, as seen: the overnight charge starts early enough to finish, and deep sales are planned at the speed they really run. Health tab, Learned from use, shows each learned figure and how many half-hours it's based on."],
   ["learn_conversion", "Learn: inverter conversion losses", "Measure how much grid energy reaches the battery when charging, and how much of the battery's output reaches the house and grid when selling (no solar, full rate). Plans then use the real grid-to-grid round trip, so arbitrage is only planned where it pays after all losses. Works for any inverter and battery, and re-learns if either changes."],
-  ["learn_reserve", "Learn: where discharging stops", "Plan with the charge level where the battery has been seen to stop supplying the house. Only ever raises the Minimum reserve, never lowers it."],
+  ["learn_reserve", "Learn: where discharging stops", "Plan with the charge level where the battery has been seen to stop supplying the house. It only ever raises the reserve (engine 1) or the hard floor (engine 2), never lowers it."],
   ["learn_export", "Learn: export ceiling", "If selling is seen to top out below the battery's own rate (a grid limit), plan with that ceiling."],
   ["learn_car", "Learn: car charge rate", "Plan the car's share of smart-charge slots with its real charging kW instead of Car charger power."],
   ["cold_caution", "Cold battery caution", "Plan a slower charge when the battery is likely to be cold, estimated from the outside temperature (Open-Meteo forecast for your home's location) with a lag, so a cold spell is expected to chill it gradually and it stays cautious until the weather has been milder for a while. Settings under Cold battery."],
@@ -174,14 +174,25 @@ function summariseAttribute(attr, value, now) {
   return `${value.length} items`;
 }
 
+/** The app's "In use" sentence for a figure that can be measured or learned (sensor.pe_diag_learned, attribute use), or null. */
+function inUseFor(hass, key) {
+  const st = hass && hass.states && hass.states["sensor.pe_diag_learned"];
+  const u = st && st.attributes && st.attributes.use && st.attributes.use[key];
+  return u && u.text ? u : null;
+}
+/** "Now: ..." for a readout; the app's "In use: ..." sentence already says what it is. */
+function nowText(r) { return /^In use/.test(r.text) ? r.text : "Now: " + r.text; }
+
 /**
  * What to show next to an input: the raw value, and for signed inputs how
- * PowerEngine will read it after the optional invert.
+ * PowerEngine will read it after the optional invert. `inUse` is the app's sentence for a measurable figure: with a
+ * typed value, it says which figure the plan really uses (typed, measured or learned) and why.
  */
-function readout(role, spec, stateObj, now) {
+function readout(role, spec, stateObj, now, inUse) {
   now = now || new Date();
   if (!spec) return { text: "", readsAs: "" };
   if (spec.value !== undefined && spec.value !== "") {
+    if (inUse && inUse.text) return { text: inUse.text, readsAs: "" };
     return { text: `Fixed: ${spec.value} ${role.static_unit || ""}`.trim(), readsAs: "" };
   }
   if (!stateObj) return { text: "", readsAs: "" };
@@ -267,7 +278,7 @@ const TOPICS = [
     settings: ["cold_caution_temp_c", "cold_charge_pct", "cold_release_c", "battery_temp_lag_h"],
     roles: ["outside_temperature", "battery_temperature"] },
   { key: "control", title: "Inverter control (needed to go live)",
-    note: "Written only when PowerEngine is live. Map them now so it can show what it would set (Health tab) and count your current setup's writes. Windows 2 and 3 are found from window 1's entities. RAM remote control uses SolaX Modbus's Battery control override entities, found by name (the timed windows are still mapped: they're closed when it takes over, and used if those entities go missing).",
+    note: "Written only when PowerEngine is live. Map them now so it can show what it would set (Health tab) and count your current setup's writes. Windows 2 and 3 are found from window 1's entities. RAM remote control uses the inverter integration's Battery control override entities, found by name (the timed windows are still mapped: they're closed when it takes over, and used if those entities go missing).",
     roles: ["timed_charge_start_hour", "timed_charge_start_minute", "timed_charge_end_hour", "timed_charge_end_minute",
       "timed_charge_current", "timed_discharge_start_hour", "timed_discharge_start_minute", "timed_discharge_end_hour",
       "timed_discharge_end_minute", "timed_discharge_current", "timed_update_button", "storage_mode",
@@ -1059,6 +1070,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const allSettings = this._settings.safety || [];
     const settingByKey = Object.fromEntries(allSettings.map((x) => [x.key, x]));
     this._settingRows = [];
+    this._useRows = [];
     const grouping = engineGrouping(roles.map((r) => r.key), allSettings.map((x) => x.key), FEATURES.map((f) => f[0]),
       (this._settings.system || []).map((x) => x.key), !!this._v2);
     const renderTopic = (t) => {
@@ -1314,7 +1326,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       sec.keys.forEach((k) => body.append(track(this._v2Row(byKey[k], `v2_${sec.key}`), "setting", `${byKey[k].label} ${byKey[k].help} ${k} engine v2`)));
       const readout = (fn) => { const box = el("div", { class: "readline" }); body.append(box); this._v2Readouts.push({ box, fn }); };
       if (sec.key === "range") readout(() => comfortReadout(this._v2Diag(), v2Values(this._v2, this._draft.engine_v2)));
-      if (sec.key === "range") readout(() => floorsReadout(this._draft.safety, v2Values(this._v2, this._draft.engine_v2)));
+      if (sec.key === "range") readout(() => floorsReadout(this._draft.safety, v2Values(this._v2, this._draft.engine_v2), inUseFor(this._hass, "battery_floor_soc")));
       if (sec.key === "forecast") readout(() => weightsReadout(this._v2Diag()));
     });
   }
@@ -1415,9 +1427,11 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       onchange: (ev) => { this._draft.safety[st.key] = ev.target.value; this._refresh(); } });
     const problem = el("div", { class: "problem" });
     this._settingRows.push({ st, problem, section: this._currentSection });
+    const use = el("div", { class: "readline" });                 // what the plan really uses, where it can differ from this
+    (this._useRows = this._useRows || []).push({ box: use, key: st.key });
     return el("div", { class: "row" },
       el("div", { class: "head" }, el("span", { class: "label" }, st.label), el("span", { class: "badge" }, `default ${st.default}${st.unit ? " " + st.unit : ""}`)),
-      el("div", { class: "desc" }, st.help),
+      el("div", { class: "desc" }, st.help), use,
       el("div", { class: "ctl" }, input, el("span", { class: "muted" }, st.unit || "")), problem);
   }
 
@@ -1582,9 +1596,9 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
         return;
       }
       const st = s && s.entity ? states[s.entity] : null;
-      const r = readout(role, s, st);
+      const r = readout(role, s, st, undefined, inUseFor(this._hass, role.key));
       live.textContent = "";
-      if (r.text) live.append("Now: " + r.text);
+      if (r.text) live.append(nowText(r));
       if (r.readsAs) live.append(el("span", { class: "reads" }, `(${r.readsAs})`));
       const p = role.required === "yes" || s ? instantProblem(role, s, st) : "";
       problem.textContent = p;
@@ -1614,6 +1628,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       const was = savedSafety[st.key] !== undefined ? savedSafety[st.key] : st.default;
       if (Number(this._draft.safety[st.key]) !== Number(was)) tally(section, "unsaved");
     });
+    (this._useRows || []).forEach(({ box, key }) => { const u = inUseFor(this._hass, key); box.textContent = u ? u.text : ""; box.style.display = u ? "" : "none"; });
     if (this._v2) {                                         // engine v2 settings and the engine choice
       const savedV2 = saved.engine_v2 || {};
       const vals = v2Values(this._v2, this._draft.engine_v2);
@@ -2084,9 +2099,9 @@ const TESTS = [
     checks: "'Worked' if the battery stayed within 300 W of zero throughout." },
   { key: "rc_failsafe", group: "rc", label: "RC failsafe (stop re-sending)", minutes: 12, power: true,
     defPower: 2000,
-    what: "Force charges for 2 minutes, then stops the command being re-sent by reloading the SolaX Modbus " +
+    what: "Force charges for 2 minutes, then stops the command being re-sent by reloading the inverter's Modbus " +
       "integration, without writing Off. This is what would happen if HA or AppDaemon died: the inverter should " +
-      "drop the command by itself after its RC timeout (reported as 5 to 30 minutes). SolaX entities show as " +
+      "drop the command by itself after its RC timeout (reported as 5 to 30 minutes). Its entities show as " +
       "unavailable for a few seconds during the reload; that's expected.",
     watch: "Charging starts, then keeps going for a while after the reload. Note the time it stops by itself " +
       "and the battery goes back to Self-Use. If it's still charging when the test ends, the test switches it " +
@@ -2299,7 +2314,7 @@ class PowerEngineTestCard extends (typeof HTMLElement !== "undefined" ? HTMLElem
     const need = t.group !== "rc" ? [] : ["rc_mode", t.key === "rc_discharge" ? "rc_discharge_power" : "rc_charge_power"];
     const gone = need.filter((r) => !rc[r]);
     q(".rc").textContent = t.group !== "rc" ? "" : gone.length
-      ? "Remote-control entities not found in HA: " + gone.join(", ") + ". SolaX Modbus needs to expose the Solis 'Battery control override' entities."
+      ? "Remote-control entities not found in HA: " + gone.join(", ") + ". The inverter integration needs to expose the 'Battery control override' entities."
       : "Remote-control entities: " + need.map((r) => `${rc[r]} (${(states[rc[r]] || {}).state})`).join(", ");
     q(".start").disabled = running || !q(".confirm").checked || gone.length > 0;
     q(".stop").disabled = !running;
@@ -5653,8 +5668,8 @@ class PowerEngineSystemCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     this._flowLive.push(() => {
       const s = getSpec() || {};
       const st = s.entity ? this._hass.states[s.entity] : null;
-      const rr = role.plant ? { text: st ? `${st.state} ${((st.attributes || {}).unit_of_measurement) || ""}`.trim() : "", readsAs: "" } : readout(role, s, st);
-      live.textContent = rr.text ? `Now: ${rr.text}${rr.readsAs ? ` (${rr.readsAs})` : ""}` : "";
+      const rr = role.plant ? { text: st ? `${st.state} ${((st.attributes || {}).unit_of_measurement) || ""}`.trim() : "", readsAs: "" } : readout(role, s, st, undefined, inUseFor(this._hass, role.key));
+      live.textContent = rr.text ? `${nowText(rr)}${rr.readsAs ? ` (${rr.readsAs})` : ""}` : "";
       const spec = role.plant ? { entity: s.entity } : s;
       const rl = role.plant ? { key: role.key, kind: role.plant === "power" ? "power" : "energy", domains: ["sensor"], required: "yes" } : role;
       const p = (s.entity || s.value !== undefined) ? instantProblem(rl, spec, st) : "";
@@ -6706,11 +6721,14 @@ function weightsReadout(diag) {
   return `Learned now (midday): ${mid.join(" / ")}${days ? ` from ${days} day${days === 1 ? "" : "s"}` : ""}. Morning and afternoon are on the engine's Health page.`;
 }
 /** Readout under the floors: the shared hard floor and where a grid event stops. */
-function floorsReadout(safety, values) {
-  const f = toNumber((safety || {}).battery_floor_soc);
-  if (f === null) return null;
+function floorsReadout(safety, values, inUse) {
+  const typed = toNumber((safety || {}).battery_floor_soc);
+  if (typed === null) return null;
+  const used = inUse && inUse.used ? toNumber(String(inUse.used).replace("%", "")) : null;
+  const f = used !== null ? used : typed;                          // the floor really in use (raised where the battery was seen to stop)
   const m = toNumber((values || {}).hard_floor_margin_pct);
-  return `Hard floor ${f}% (the battery's own limit, set under Your house).${m !== null ? ` Grid events stop at ${f + m}%.` : ""}`;
+  const why = f !== typed ? `raised from the ${typed}% you entered to where the battery was seen to stop` : "the battery's own limit, set under Your house";
+  return `Hard floor ${f}% (${why}).${m !== null ? ` Grid events stop at ${f + m}%.` : ""}`;
 }
 
 // ---- the cards -------------------------------------------------------------------------------------------------
@@ -8110,7 +8128,7 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
 });
 
 if (typeof module !== "undefined") {
-  module.exports = { v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
+  module.exports = { v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,

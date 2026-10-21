@@ -84,7 +84,7 @@
   [
    "learn_reserve",
    "Learn: where discharging stops",
-   "Plan with the charge level where the battery has been seen to stop supplying the house. Only ever raises the Minimum reserve, never lowers it."
+   "Plan with the charge level where the battery has been seen to stop supplying the house. It only ever raises the reserve (engine 1) or the hard floor (engine 2), never lowers it."
   ],
   [
    "learn_export",
@@ -176,7 +176,7 @@
   {
    "key": "control",
    "title": "Inverter control (needed to go live)",
-   "note": "Written only when PowerEngine is live. Map them now so it can show what it would set (Health tab) and count your current setup's writes. Windows 2 and 3 are found from window 1's entities. RAM remote control uses SolaX Modbus's Battery control override entities, found by name (the timed windows are still mapped: they're closed when it takes over, and used if those entities go missing)."
+   "note": "Written only when PowerEngine is live. Map them now so it can show what it would set (Health tab) and count your current setup's writes. Windows 2 and 3 are found from window 1's entities. RAM remote control uses the inverter integration's Battery control override entities, found by name (the timed windows are still mapped: they're closed when it takes over, and used if those entities go missing)."
   },
   {
    "key": "damping",
