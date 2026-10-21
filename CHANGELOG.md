@@ -3,6 +3,17 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.167
+
+### Behaviour changes
+
+- **The line under a measurable setting shows what is in use**, from the app's new `use` attribute on `sensor.pe_diag_learned` ("In use: 17.02 kWh, measured (you entered 18 kWh)"), replacing "Fixed: 18 kWh". Car charger power, Export limit, Minimum reserve and the Battery's hard floor get the same line, and the engine v2 hard-floor readout shows the floor in use. With an older app the card shows what it showed before.
+- Text fixes as in the app notes: "SolaX Modbus" removed from the control and test texts, "Learn: where discharging stops" says which floor it raises.
+
+### Behind the scenes
+
+- `inUseFor`, `nowText`, `readout(…, inUse)`, `floorsReadout(…, inUse)`; tests in `tests/inuse.test.cjs`; `tests/card_texts_before_names.json` updated for the two reworded texts.
+
 ## 0.9.166
 
 ### Behaviour changes
