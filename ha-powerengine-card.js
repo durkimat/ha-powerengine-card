@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.164";
+const CARD_VERSION = "0.9.165";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -7524,7 +7524,7 @@ function v2HistoryView(attrs, nowMs, opts) {
     banner: !raw.length ? "Forecast: what engine v2 expects from its current plan. Nothing has happened on this day yet."
       : previewOnly ? "Preview only: engine v1 was in control on this day, so nothing was sent to the inverter. The modes below are what engine v2 would have chosen."
       : partlyPreview ? "Control changed during the day: the dimmed bands are where engine v2 was only previewing." : "",
-    level: runsOf(levelPts), expected: runsOf(pts("expected")), exact, value: runsOf(pts("value_p")),
+    level: runsOf(levelPts), exact, value: runsOf(pts("value_p")),
     importSteps: stepPts("import_p"), exportSteps: stepPts("export_p"), priceMax, buySteps: stepPts("buy_p"), sellSteps: stepPts("sell_p"),
     energy, energyMax: flows ? Math.max(energyMax, flowMax) : energyMax, replans,
     valueMax: valueVals.length ? Math.max(...valueVals) : 0,
@@ -7595,8 +7595,6 @@ function v2HistoryReadout(v, hour, clock) {
     const lo = levelAtHour(v.forecast.low.map((q) => ({ h: q.h, level: q.y })), hour), hi = levelAtHour(v.forecast.high.map((q) => ({ h: q.h, level: q.y })), hour);
     lines.push(`Battery: ${v2Pct(planLevel)}${lo !== null && hi !== null ? ` (likely ${v2Pct(lo)} to ${v2Pct(hi)})` : ""}`);
   } else if (ranLevel !== null) lines.push(`Battery: ${v2Pct(ranLevel)}`);
-  const exp = levelAtHour(pts(v.expected), hour);
-  if (exp !== null && !future) lines.push(`Expected at the start of the day: ${v2Pct(exp)}`);
   const step = (v.importSteps.find((q) => hour >= q.a && hour < q.b)) || (v.forecast ? v.forecast.steps.find((q) => hour >= q.a && hour < q.b) : null);
   if (step) {
     const imp = step.importP !== undefined ? step.importP : step.y;
@@ -7772,7 +7770,7 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
       ${v.kind === "empty" ? `<p class="muted">${escHtml(v.text)}</p>` : `${v.banner ? `<p class="preview-line" role="note">${escHtml(v.banner)}</p>` : ""}
       <div class="hbox" id="hist"><svg id="h-axl" aria-hidden="true"></svg><div class="hscroll" id="h-scroll"><div id="h-plot"></div></div><svg id="h-axt" class="over" aria-hidden="true"></svg></div>
       <p class="readout" id="hread" aria-live="polite">${escHtml(V2_HISTORY_HINT)}</p>
-      <div class="legend">${legend(modesUsed.concat(v.forecast ? v.forecast.bands.map((b) => b.mode) : []).filter((k, i, all) => all.indexOf(k) === i).map((k) => [`var(${v2Mode(k).colour})`, v2Mode(k).name]).concat([["var(--v2-battery)", "Battery as it ran (dashed: expected at the start of the day)"], ["var(--v2-price)", "Import price (dashed: smart slot)"], ["var(--m-export)", "Export price (dotted)"]]).concat(v.forecast ? [["var(--v2-battery)", "From now: dotted battery line (shaded: likely range), paler bands: what the plan expects"]] : []).concat(v.hasSun ? [["var(--v2-sun)", "Sun"], ["var(--v2-house)", "House use (dashed: expected)"]] : []))}</div>
+      <div class="legend">${legend(modesUsed.concat(v.forecast ? v.forecast.bands.map((b) => b.mode) : []).filter((k, i, all) => all.indexOf(k) === i).map((k) => [`var(${v2Mode(k).colour})`, v2Mode(k).name]).concat([["var(--v2-battery)", "Battery as it ran"], ["var(--v2-price)", "Import price (dashed: smart slot)"], ["var(--m-export)", "Export price (dotted)"]]).concat(v.forecast ? [["var(--v2-battery)", "From now: dotted battery line (shaded: likely range), paler bands: what the plan expects"]] : []).concat(v.hasSun ? [["var(--v2-sun)", "Sun"], ["var(--v2-house)", "House use (dashed: expected)"]] : []))}</div>
       ${v.partlyPreview || v.previewOnly ? '<p class="muted small">Dimmed bands: engine v2 was only previewing, nothing was sent.</p>' : ""}
       ${v.changes.length ? `<div><h3>Mode changes (newest first)</h3><div class="changes">${v.changes.map((c) => `<span class="num muted">${escHtml(c.at)}</span><span class="mode"><i class="sw" style="background:var(${v2Mode(c.modeKey).colour})"></i>${escHtml(c.mode)}</span><span>${escHtml(c.reason)}</span>`).join("")}</div></div>` : '<p class="muted small">No mode changes recorded for this day.</p>'}
       ${v.note ? `<p class="muted small">${escHtml(v.note)}</p>` : ""}`}
@@ -7838,7 +7836,6 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
       const edge = fcl.high.map((p) => `${x(p.h)},${yL(p.y)}`).concat(fcl.low.slice().reverse().map((p) => `${x(p.h)},${yL(p.y)}`)).join(" ");
       svgEl("polygon", { points: edge, fill: "var(--v2-battery)", "fill-opacity": 0.14 }, svg);
     }
-    line(v.expected, yL, { stroke: "var(--v2-battery)", "stroke-width": 2, "stroke-dasharray": "6 4", "stroke-opacity": 0.8 });
     if (fcl && fcl.mid.length) line([fcl.mid], yL, { stroke: "var(--v2-battery)", "stroke-width": 2.5, "stroke-dasharray": "2 3" });
     line(v.level, yL, { stroke: "var(--v2-battery)", "stroke-width": 2.5 });
     v.importSteps.forEach((s) => svgEl("line", { x1: x(s.a), x2: x(s.b), y1: yP(s.y), y2: yP(s.y), stroke: "var(--v2-price)", "stroke-width": 2, "stroke-dasharray": s.slot ? "5 3" : "none" }, svg));   // a smart slot stays dashed once it has run
