@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.169
+
+### Behaviour changes
+
+- The Free-power sessions block lists the new **All free sessions** input (see the app notes). An older app does not know it, and the block looks as before.
+
 ## 0.9.167
 
 ### Behaviour changes

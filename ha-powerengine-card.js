@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.167";
+const CARD_VERSION = "0.9.169";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -272,7 +272,7 @@ const TOPICS = [
     roles: ["axle_event_active", "axle_event_start", "axle_event_end", "axle_direction"],
     settings: ["pre_axle_lookahead_h", "axle_margin_soc"] },
   { key: "free", title: "Free-power sessions", main: "free_power_days", features: ["free_power_days"],
-    roles: ["free_power_active", "free_power_next_start", "free_power_next_end"] },
+    roles: ["free_power_active", "free_power_next_start", "free_power_next_end", "free_power_events"] },
   { key: "cold", title: "Cold battery", main: "cold_caution", features: ["cold_caution"], learning: ["cold_learning"],
     system: ["battery_location"],
     settings: ["cold_caution_temp_c", "cold_charge_pct", "cold_release_c", "battery_temp_lag_h"],
