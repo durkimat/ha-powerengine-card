@@ -272,7 +272,7 @@ const TOPICS = [
     roles: ["axle_event_active", "axle_event_start", "axle_event_end", "axle_direction"],
     settings: ["pre_axle_lookahead_h", "axle_margin_soc"] },
   { key: "free", title: "Free-power sessions", main: "free_power_days", features: ["free_power_days"],
-    roles: ["free_power_active", "free_power_next_start", "free_power_next_end"] },
+    roles: ["free_power_active", "free_power_next_start", "free_power_next_end", "free_power_events"] },
   { key: "cold", title: "Cold battery", main: "cold_caution", features: ["cold_caution"], learning: ["cold_learning"],
     system: ["battery_location"],
     settings: ["cold_caution_temp_c", "cold_charge_pct", "cold_release_c", "battery_temp_lag_h"],
