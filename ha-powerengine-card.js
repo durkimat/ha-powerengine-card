@@ -6145,7 +6145,7 @@ function recentRows(recent, nowMs, hours) {
   const from = nowMs - (hours || HISTORY_HOURS) * HOUR_MS;
   return r.series.filter((x) => x && v2Ms(x.t) !== null)
     .map((x) => ({ a: v2Ms(x.t), b: v2Ms(x.t) + stepMs, mode: x.mode || "none", level: toNumber(x.level), importP: toNumber(x.import_p),
-      exportP: toNumber(x.export_p), valueP: toNumber(x.value_p), buyP: toNumber(x.buy_p), sellP: toNumber(x.sell_p), sent: x.sent !== false, preview: x.preview === true, slot: x.slot === true }))
+      exportP: toNumber(x.export_p), valueP: toNumber(x.value_p), buyP: toNumber(x.buy_p), sellP: toNumber(x.sell_p), sent: x.sent !== false, preview: x.preview === true, slot: x.slot === true, free: x.free === true }))
     .filter((x) => x.b > from && x.a < nowMs).sort((p, q) => p.a - q.a);
 }
 
@@ -6221,7 +6221,7 @@ function timelineLayout(tl, opts) {
   });
   const bands = histBands.concat(planBands);
   const histSteps = hist.filter((r) => r.importP !== null).map((r) => ({ a: Math.max(0, h(r.a)), b: h(r.b), importP: r.importP, exportP: r.exportP,
-    slot: r.slot === true, slotProb: null, event: false, free: false, estimated: false, ran: true }));
+    slot: r.slot === true, slotProb: null, event: false, free: r.free === true, estimated: false, ran: true }));
   const planSteps = prices.map((x) => {
     const c = clip(x);
     return Object.assign(c, { importP: toNumber(x.import_p), exportP: toNumber(x.export_p), slot: x.slot_prob !== null && x.slot_prob !== undefined,

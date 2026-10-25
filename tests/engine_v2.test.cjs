@@ -513,6 +513,15 @@ test("the layout's now is the clock when given, else the plan's own stamp", () =
   assert.strictEqual(card.planCardView({ "sensor.pe_v2_timeline": st(iso(3), tl), "sensor.pe_v2_value_curve": st(iso(3), curve()) }, T0 + 5 * 3600000).layout.nowH, 5);
 });
 
+test("recentRows: a half-hour in a free session carries its flag and its price", () => {
+  const r = recent(3, 2);
+  r.series[0].free = true;
+  r.series[0].import_p = 0;
+  const rows = card.recentRows(r, T0 + 3 * 3600000, 18);
+  assert.deepStrictEqual(rows.map((x) => x.free), [true, false]);
+  assert.strictEqual(rows[0].importP, 0);
+});
+
 test("recentRows: only the last hours, oldest first, bad rows dropped", () => {
   const r = recent(3, 4);
   r.series.push({ t: "nope" }, null);
