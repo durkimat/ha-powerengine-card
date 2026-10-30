@@ -880,7 +880,7 @@ test("versionWarnings warns only when the other side is older than its minimum",
   // nothing to compare: no sensor, unavailable, no attribute (an older app)
   assert.deepEqual(h.versionWarnings({}), []);
   assert.deepEqual(h.versionWarnings(st("unavailable")), []);
-  assert.deepEqual(h.versionWarnings(st("0.9.140", {})), []);
+  assert.deepEqual(h.versionWarnings(st("0.9.180", {})), []);
 });
 
 test("history day payload accepts a date inside the range and nothing else", () => {
