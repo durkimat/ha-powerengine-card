@@ -226,6 +226,12 @@
    false
   ],
   [
+   "alexa",
+   "Alexa announcements",
+   "Spoken reminders before a grid event, saying whether the battery looks ready. Choose the speakers and the allowed hours below.",
+   false
+  ],
+  [
    "simulator",
    "Tariff opportunities",
    "When the overnight Simulator finds a tariff that would have cost noticeably less (at least £5 and 5% a month), or new tariffs appear.",
