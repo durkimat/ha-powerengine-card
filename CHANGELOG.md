@@ -3,6 +3,16 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.174
+
+### Behaviour changes
+
+- **Alexa announcements settings.** The Notifications section of the Config page gains the "Alexa announcements" switch, a tick-list of your Alexa Media Player speakers ("Everywhere" is all of them), the earliest time on a weekday and at the weekend, the latest time, the opening words ("Daddybot here." by default), and the hours before a grid event each reminder is said. Saving no longer drops them.
+
+### Behind the scenes
+
+- `alexaDraft`, `parseHoursBefore` and `alexaSpeakerName` (tested in `tests/helpers.test.cjs`); `MIN_APP_VERSION` is 0.9.174 (the app that reads `notifications.alexa`).
+
 ## 0.9.170
 
 ### Behaviour changes
