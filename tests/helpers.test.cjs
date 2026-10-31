@@ -859,20 +859,20 @@ test("versionOlder compares numbers, not text, and says nothing when it can't re
 });
 
 test("MIN_APP_VERSION is a real version no newer than the card", () => {
-  assert.equal(h.MIN_APP_VERSION, "0.9.175");
-  assert.deepEqual(h.parseVersion(h.MIN_APP_VERSION), [0, 9, 175]);
+  assert.equal(h.MIN_APP_VERSION, "0.9.179");
+  assert.deepEqual(h.parseVersion(h.MIN_APP_VERSION), [0, 9, 179]);
   assert.equal(h.versionOlder(h.CARD_VERSION, h.MIN_APP_VERSION), false);
 });
 
 test("versionWarnings warns only when the other side is older than its minimum", () => {
   const st = (state, attrs) => ({ "sensor.pe_diag_version": { state, attributes: attrs || {} } });
   // a different but supported app: no warning, whichever way round
-  assert.deepEqual(h.versionWarnings(st("0.9.175", { min_card_version: "0.9.110" })), []);
-  assert.deepEqual(h.versionWarnings(st("0.9.180", { min_card_version: "0.9.70" })), []);
+  assert.deepEqual(h.versionWarnings(st("0.9.179", { min_card_version: "0.9.110" })), []);
+  assert.deepEqual(h.versionWarnings(st("0.9.185", { min_card_version: "0.9.70" })), []);
   // an app older than the card's minimum
-  const old = h.versionWarnings(st("0.9.174"));
+  const old = h.versionWarnings(st("0.9.178"));
   assert.equal(old.length, 1);
-  assert.match(old[0], /0\.9\.175 or newer.*0\.9\.174/);
+  assert.match(old[0], /0\.9\.179 or newer.*0\.9\.178/);
   // a card older than the app's minimum
   const oldCard = h.versionWarnings(st("0.9.180", { min_card_version: "99.0.0" }));
   assert.equal(oldCard.length, 1);
@@ -988,4 +988,12 @@ test("Alexa speaker list: groups (Amazon Speaker Group devices and Everywhere) a
   assert.deepEqual(alexaSpeakerKinds(names, devices), { speakers: ["alexa_media_daddy_dot", "alexa_media_juliette_s_echo_dot"], groups: ["alexa_media_everywhere", "alexa_media_kitchen"] });
   // no device registry (older HA, or not an admin): only Everywhere is known to be a group
   assert.deepEqual(alexaSpeakerKinds(names, undefined), { speakers: ["alexa_media_daddy_dot", "alexa_media_juliette_s_echo_dot", "alexa_media_kitchen"], groups: ["alexa_media_everywhere"] });
+});
+
+test("the heating set-back is a grid-event feature, off by default, with its switch and pump overrun beside it", () => {
+  const axle = h.TOPICS.find((t) => t.key === "axle");
+  assert.ok(axle.features.includes("axle_heating_setback"));
+  assert.ok(axle.roles.includes("heating_setback") && axle.settings.includes("heating_pump_overrun_min"));
+  assert.equal(h.FEATURE_DEFAULTS.axle_heating_setback, false);
+  assert.ok(h.FEATURES.some((f) => f[0] === "axle_heating_setback"));
 });
