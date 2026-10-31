@@ -11,7 +11,7 @@ const CARD_VERSION = "0.9.174";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
-const MIN_APP_VERSION = "0.9.174";   // 0.9.174: notifications.alexa (the Alexa announcements)
+const MIN_APP_VERSION = "0.9.175";   // 0.9.175: pe_alexa_test (the Announcements test button); 0.9.174: notifications.alexa
 
 /** "0.9.70" -> [0, 9, 70]; null when it isn't a plain dotted number ("?", "unavailable", "0.9.70-beta"). */
 function parseVersion(v) {
@@ -46,6 +46,8 @@ const MAPPING_SENSOR = "sensor.pe_map_config";
 const SAVE_EVENT = "pe_config_save";
 const NOT_SET_UP = "Not set up yet";      // what the app's Mode and Health say before there is a config
 const RESULT_EVENT = "pe_config_result";
+const ALEXA_TEST_EVENT = "pe_alexa_test", ALEXA_TEST_RESULT = "pe_alexa_test_result";
+const ALEXA_TEST_WAIT_MS = 20000;
 // How long a save waits for PowerEngine's answer. A late answer still replaces the message (the subscription stays open).
 const SAVE_WAIT_MS = 45000;
 const SAVE_NO_REPLY = "No reply from PowerEngine yet. It may be busy, and the change may still go through: refresh this page in a minute to check. If it hasn't, look at the AppDaemon log.";
@@ -130,6 +132,11 @@ function parseHoursBefore(text) {
   return parts.length && parts.every((h) => Number.isFinite(h) && h >= 0 && h <= 48) ? [...new Set(parts)].sort((x, y) => y - x) : null;
 }
 /** A speaker's name from its notify service: notify.alexa_media_kitchen -> "Kitchen". */
+/** What the test button fires: the speakers ticked now (saved or not) and the opening words as typed. */
+function alexaTestPayload(draft) {
+  const a = alexaDraft(((draft || {}).notifications || {}).alexa);
+  return { services: a.services.filter((x) => /^notify\.alexa_media_[a-z0-9_]+$/.test(x) && x !== "notify.alexa_media_last_called"), intro: a.intro };
+}
 function alexaSpeakerName(service) {
   const name = String(service).replace(/^notify\.(alexa_media_)?/, "").replace(/_s_/g, "'s ").replace(/_/g, " ").trim();
   return name === "everywhere" ? "Everywhere (every speaker)" : (name ? name.charAt(0).toUpperCase() + name.slice(1) : service);
@@ -857,9 +864,42 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
         this._refresh();
       }, RESULT_EVENT);
     } catch (e) { /* non-admin users can't subscribe; saving is admin-only anyway */ }
+    try {
+      this._unsubTest = await this._hass.connection.subscribeEvents((ev) => {
+        const d = ev.data || {};
+        clearTimeout(this._testTimer);
+        this._setTestStatus(d.ok ? "ok" : "error", d.message || (d.ok ? "Played." : "Could not play."));
+      }, ALEXA_TEST_RESULT);
+    } catch (e) { /* the test button is admin-only too */ }
   }
 
-  disconnectedCallback() { if (this._unsub) { this._unsub(); this._unsub = null; } }
+  _setTestStatus(kind, text) {
+    if (!this._testStatus) return;
+    this._testStatus.textContent = text;
+    this._testStatus.className = kind === "error" ? "warning" : "muted";
+  }
+
+  /** Play "<opening words> Test message." on the ticked speakers now, whatever the allowed hours say. */
+  async _alexaTest() {
+    const payload = alexaTestPayload(this._draft);
+    if (!payload.services.length) { this._setTestStatus("error", "Tick at least one speaker first."); return; }
+    this._setTestStatus("ok", "Sending…");
+    clearTimeout(this._testTimer);
+    this._testTimer = setTimeout(() => this._setTestStatus("error",
+      "No reply from PowerEngine. Check it is running version 0.9.175 or later, then look at the AppDaemon log."), ALEXA_TEST_WAIT_MS);
+    try {
+      await this._hass.callWS({ type: "fire_event", event_type: ALEXA_TEST_EVENT, event_data: payload });
+    } catch (e) {
+      clearTimeout(this._testTimer);
+      this._setTestStatus("error", `Could not send the test: ${e && e.message ? e.message : e}`);
+    }
+  }
+
+  disconnectedCallback() {
+    if (this._unsub) { this._unsub(); this._unsub = null; }
+    if (this._unsubTest) { this._unsubTest(); this._unsubTest = null; }
+    clearTimeout(this._testTimer);
+  }
 
   _renderMessage(text) {
     if (!this.shadowRoot) return;
@@ -1178,15 +1218,25 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     nb.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Send to")),
       el("div", { class: "desc" }, "Notification area: nothing to set up; each one clears itself when the problem is over. Phone: your notify service, usually notify.mobile_app_<phone name>."), el("div", { class: "ctl" }, svcSel)),
       "setting", "notifications send to notify service phone notification area bell"));
-    NOTIFY_EVENTS.forEach(([key, rawLabel, rawDesc]) => {
+    NOTIFY_EVENTS.filter(([key]) => key !== "alexa").forEach(([key, rawLabel, rawDesc]) => {   // Alexa has its own section below
       const [label, desc] = [T(rawLabel), T(rawDesc)];
       const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.notifications.events[key] = ev.target.checked; this._refresh(); } });
       cb.checked = !!this._draft.notifications.events[key];
       nb.append(track(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc)),
         "setting", `notification ${label} ${desc}`));
     });
-    // Alexa announcements: which speakers, the allowed hours, and how long before an event each reminder is said
+    // Announcements: spoken reminders on Alexa speakers. Their own heading and section, apart from the engine settings
+    // above (they work with either engine) and from Home Assistant's notification area.
+    host = content;
+    content.append(el("div", { class: "grouphead" }, el("h3", {}, "Announcements")));
+    const ab = section("announcements", "Alexa announcements",
+      "Spoken reminders on your Alexa speakers. They work with either engine, and are separate from the notifications above.");
     const alexa = this._draft.notifications.alexa;
+    const [, alexaLabel, alexaDesc] = NOTIFY_EVENTS.find(([k]) => k === "alexa");
+    const onBox = el("input", { type: "checkbox", onchange: (ev) => { this._draft.notifications.events.alexa = ev.target.checked; this._refresh(); } });
+    onBox.checked = !!this._draft.notifications.events.alexa;
+    ab.append(track(el("div", { class: "row" }, el("label", { class: "head" }, onBox, el("span", { class: "label" }, T(alexaLabel))), el("div", { class: "desc" }, T(alexaDesc))),
+      "setting", `alexa announcements switch on off ${alexaLabel} ${alexaDesc}`));
     const speakers = Object.keys((this._hass.services || {}).notify || {}).filter((s) => /^alexa_media_/.test(s) && s !== "alexa_media_last_called").sort();
     alexa.services.forEach((s) => { if (!speakers.includes(s.slice(7))) speakers.push(s.slice(7)); });
     const picks = el("div", { class: "ctl" }, speakers.length ? speakers.map((s) => {
@@ -1196,26 +1246,31 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       cb.checked = alexa.services.includes(`notify.${s}`);
       return el("label", { class: "head" }, cb, el("span", { class: "label" }, alexaSpeakerName(`notify.${s}`)));
     }) : el("span", { class: "muted" }, "No Alexa speakers found. Install Alexa Media Player in Home Assistant."));
-    nb.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Alexa speakers")),
-      el("div", { class: "desc" }, "Announcements play on every speaker ticked. \"Everywhere\" is all of them."), picks),
+    ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Speakers")),
+      el("div", { class: "desc" }, "Announcements play on every speaker ticked. \"Everywhere\" is all of them. A speaker added to Alexa Media Player later appears here after the page is reloaded."), picks),
       "setting", "alexa announcements speakers devices echo"));
+    this._testStatus = el("span", { class: "muted" });
+    ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Test announcement")),
+      el("div", { class: "desc" }, "Plays the opening words and \"Test message\" on the speakers ticked above, now, without saving first. It ignores the allowed hours."),
+      el("div", { class: "ctl" }, el("button", { onclick: () => this._alexaTest() }, "Play a test announcement"), " ", this._testStatus)),
+      "setting", "alexa announcements test announcement play button"));
     const timeRow = (label, desc, key) => {
       const input = el("input", { type: "time", onchange: (ev) => { if (TIME_OF_DAY.test(ev.target.value)) alexa[key] = ev.target.value; this._refresh(); } });
       input.value = alexa[key];
       return track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc), el("div", { class: "ctl" }, input)),
         "setting", `alexa announcements quiet hours ${label} ${desc}`);
     };
-    nb.append(timeRow("Alexa: earliest on a weekday", "Nothing is announced before this on Monday to Friday.", "earliest_weekday"),
-      timeRow("Alexa: earliest at the weekend", "Nothing is announced before this on Saturday or Sunday.", "earliest_weekend"),
-      timeRow("Alexa: latest", "Nothing is announced from this time until the earliest time next morning.", "latest"));
+    ab.append(timeRow("Earliest on a weekday", "Nothing is announced before this on Monday to Friday.", "earliest_weekday"),
+      timeRow("Earliest at the weekend", "Nothing is announced before this on Saturday or Sunday.", "earliest_weekend"),
+      timeRow("Latest", "Nothing is announced from this time until the earliest time next morning.", "latest"));
     const introInput = el("input", { type: "text", size: 30, maxlength: 80, onchange: (ev) => { alexa.intro = ev.target.value.trim(); this._refresh(); } });
     introInput.value = alexa.intro;
-    nb.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Alexa: opening words")),
+    ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Opening words")),
       el("div", { class: "desc" }, "Said at the start of every announcement, so the household knows who it is from. Leave empty for none."), el("div", { class: "ctl" }, introInput)),
       "setting", "alexa announcements opening words intro name"));
     const hoursInput = el("input", { type: "text", size: 14, onchange: (ev) => { const h = parseHoursBefore(ev.target.value); if (h) alexa.hours_before = h; this._refresh(); } });
     hoursInput.value = alexa.hours_before.join(", ");
-    nb.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Alexa: hours before a grid event")),
+    ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Hours before a grid event")),
       el("div", { class: "desc" }, "When each reminder is said, in hours before the event starts; 0 is as it starts. A reminder that falls outside the allowed hours is skipped."), el("div", { class: "ctl" }, hoursInput)),
       "setting", "alexa announcements hours before reminders times"));
     this._currentSection = null;
@@ -8185,7 +8240,7 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
 });
 
 if (typeof module !== "undefined") {
-  module.exports = { alexaDraft, parseHoursBefore, alexaSpeakerName, ALEXA_DEFAULT, v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
+  module.exports = { alexaTestPayload, ALEXA_TEST_EVENT, alexaDraft, parseHoursBefore, alexaSpeakerName, ALEXA_DEFAULT, v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
