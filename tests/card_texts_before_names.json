@@ -62,6 +62,11 @@
    "While a grid event (Axle) runs, set the car charger (Zappi) to Stopped, so the battery's export isn't charged into the car, and put its mode back when the event ends. Without this, a smart-charge slot or a manual charge can take the whole event's energy and the event earns almost nothing. Needs the Charger mode entity (a select) mapped. Applies in Active mode only."
   ],
   [
+   "axle_heating_setback",
+   "Turn the heating down before grid events",
+   "Turn your heating's set-back switch on shortly before a grid event (Axle) starts and off when it ends, so the boiler's pump isn't drawing power while the battery is exporting. Choose the switch below (for example input_boolean.heating_off) and how long before the event to start: the pump's overrun. A switch that is already on is left alone, and one you turn off during the set-back stays off. Applies in Active mode only."
+  ],
+  [
    "free_power_days",
    "Free-power sessions",
    "Make full use of EDF free-electricity sessions."
