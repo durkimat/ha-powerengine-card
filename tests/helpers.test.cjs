@@ -859,20 +859,20 @@ test("versionOlder compares numbers, not text, and says nothing when it can't re
 });
 
 test("MIN_APP_VERSION is a real version no newer than the card", () => {
-  assert.equal(h.MIN_APP_VERSION, "0.9.174");
-  assert.deepEqual(h.parseVersion(h.MIN_APP_VERSION), [0, 9, 174]);
+  assert.equal(h.MIN_APP_VERSION, "0.9.175");
+  assert.deepEqual(h.parseVersion(h.MIN_APP_VERSION), [0, 9, 175]);
   assert.equal(h.versionOlder(h.CARD_VERSION, h.MIN_APP_VERSION), false);
 });
 
 test("versionWarnings warns only when the other side is older than its minimum", () => {
   const st = (state, attrs) => ({ "sensor.pe_diag_version": { state, attributes: attrs || {} } });
   // a different but supported app: no warning, whichever way round
-  assert.deepEqual(h.versionWarnings(st("0.9.174", { min_card_version: "0.9.110" })), []);
+  assert.deepEqual(h.versionWarnings(st("0.9.175", { min_card_version: "0.9.110" })), []);
   assert.deepEqual(h.versionWarnings(st("0.9.180", { min_card_version: "0.9.70" })), []);
   // an app older than the card's minimum
-  const old = h.versionWarnings(st("0.9.173"));
+  const old = h.versionWarnings(st("0.9.174"));
   assert.equal(old.length, 1);
-  assert.match(old[0], /0\.9\.174 or newer.*0\.9\.173/);
+  assert.match(old[0], /0\.9\.175 or newer.*0\.9\.174/);
   // a card older than the app's minimum
   const oldCard = h.versionWarnings(st("0.9.180", { min_card_version: "99.0.0" }));
   assert.equal(oldCard.length, 1);
@@ -970,4 +970,12 @@ test("Alexa announcements: defaults, saved values survive a save, bad values fal
   assert.equal(parseHoursBefore("99"), null);
   assert.equal(alexaSpeakerName("notify.alexa_media_juliette_s_echo_dot"), "Juliette's echo dot");
   assert.equal(alexaSpeakerName("notify.alexa_media_everywhere"), "Everywhere (every speaker)");
+});
+
+test("the Alexa test announcement fires for the ticked speakers and the typed opening words, saved or not", () => {
+  const { initialDraft, alexaTestPayload, ALEXA_TEST_EVENT } = require("../ha-powerengine-card.js");
+  assert.equal(ALEXA_TEST_EVENT, "pe_alexa_test");
+  const { draft } = initialDraft({ inputs: {}, notifications: { alexa: { services: ["notify.alexa_media_kitchen", "notify.alexa_media_last_called", "notify.mobile_app_pixel", "notify.alexa_media_everywhere"], intro: "Hello there." } } }, [], [], {});
+  assert.deepEqual(alexaTestPayload(draft), { services: ["notify.alexa_media_kitchen", "notify.alexa_media_everywhere"], intro: "Hello there." });
+  assert.deepEqual(alexaTestPayload({}), { services: ["notify.alexa_media_everywhere"], intro: "Daddybot here." });   // the default
 });
