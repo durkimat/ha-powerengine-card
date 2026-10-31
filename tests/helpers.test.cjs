@@ -136,7 +136,7 @@ test("notifications default to HA's notification area; off and phone are saved",
   assert.equal(buildConfig(draft).notifications.service, "persistent_notification");
   draft.notifications.service = "notify.mobile_app_pixel";
   draft.notifications.events.daily = true;
-  assert.deepEqual(buildConfig(draft).notifications, { service: "notify.mobile_app_pixel", events: { health: true, inputs: true, axle: true, free_power: true, daily: true, alexa: false, simulator: true }, alexa: { services: ["notify.alexa_media_everywhere"], hours_before: [8, 5, 2, 1, 0], earliest_weekday: "07:30", earliest_weekend: "09:00", latest: "21:00", intro: "Daddybot here." } });
+  assert.deepEqual(buildConfig(draft).notifications, { service: "notify.mobile_app_pixel", events: { health: true, inputs: true, axle: true, free_power: true, daily: true, alexa: false, simulator: true }, alexa: { services: ["notify.alexa_media_everywhere"], hours_before: [8, 5, 2, 1, 0], earliest_weekday: "07:30", earliest_weekend: "09:00", latest: "21:00", intro: "Daddybot here.", finish: true } });
   const off = initialDraft({ inputs: {}, notifications: { service: "" } }, [], [], {}).draft;
   assert.equal(off.notifications.service, "off");
   assert.equal(buildConfig(off).notifications.service, "off");
@@ -859,28 +859,28 @@ test("versionOlder compares numbers, not text, and says nothing when it can't re
 });
 
 test("MIN_APP_VERSION is a real version no newer than the card", () => {
-  assert.equal(h.MIN_APP_VERSION, "0.9.179");
-  assert.deepEqual(h.parseVersion(h.MIN_APP_VERSION), [0, 9, 179]);
+  assert.equal(h.MIN_APP_VERSION, "0.9.182");
+  assert.deepEqual(h.parseVersion(h.MIN_APP_VERSION), [0, 9, 182]);
   assert.equal(h.versionOlder(h.CARD_VERSION, h.MIN_APP_VERSION), false);
 });
 
 test("versionWarnings warns only when the other side is older than its minimum", () => {
   const st = (state, attrs) => ({ "sensor.pe_diag_version": { state, attributes: attrs || {} } });
   // a different but supported app: no warning, whichever way round
-  assert.deepEqual(h.versionWarnings(st("0.9.179", { min_card_version: "0.9.110" })), []);
-  assert.deepEqual(h.versionWarnings(st("0.9.185", { min_card_version: "0.9.70" })), []);
+  assert.deepEqual(h.versionWarnings(st("0.9.182", { min_card_version: "0.9.110" })), []);
+  assert.deepEqual(h.versionWarnings(st("0.9.190", { min_card_version: "0.9.70" })), []);
   // an app older than the card's minimum
-  const old = h.versionWarnings(st("0.9.178"));
+  const old = h.versionWarnings(st("0.9.181"));
   assert.equal(old.length, 1);
-  assert.match(old[0], /0\.9\.179 or newer.*0\.9\.178/);
+  assert.match(old[0], /0\.9\.182 or newer.*0\.9\.181/);
   // a card older than the app's minimum
-  const oldCard = h.versionWarnings(st("0.9.180", { min_card_version: "99.0.0" }));
+  const oldCard = h.versionWarnings(st("0.9.190", { min_card_version: "99.0.0" }));
   assert.equal(oldCard.length, 1);
   assert.match(oldCard[0], /card 99\.0\.0 or newer/);
   // nothing to compare: no sensor, unavailable, no attribute (an older app)
   assert.deepEqual(h.versionWarnings({}), []);
   assert.deepEqual(h.versionWarnings(st("unavailable")), []);
-  assert.deepEqual(h.versionWarnings(st("0.9.180", {})), []);
+  assert.deepEqual(h.versionWarnings(st("0.9.190", {})), []);
 });
 
 test("history day payload accepts a date inside the range and nothing else", () => {
@@ -961,8 +961,8 @@ test("Alexa announcements: defaults, saved values survive a save, bad values fal
   assert.deepEqual(draft.notifications.alexa.services, ["notify.alexa_media_kitchen", "notify.alexa_media_daddy_dot"]);
   const out = buildConfig(draft).notifications;
   assert.equal(out.events.alexa, true);
-  assert.deepEqual(out.alexa, { services: ["notify.alexa_media_kitchen", "notify.alexa_media_daddy_dot"], hours_before: [1, 0], earliest_weekday: "07:45", earliest_weekend: "09:00", latest: "20:30", intro: "Daddybot here." });
-  assert.deepEqual(alexaDraft({ latest: "9pm", hours_before: ["x"], services: ["alexa"] }), { services: [], hours_before: [8, 5, 2, 1, 0], earliest_weekday: "07:30", earliest_weekend: "09:00", latest: "21:00", intro: "Daddybot here." });
+  assert.deepEqual(out.alexa, { services: ["notify.alexa_media_kitchen", "notify.alexa_media_daddy_dot"], hours_before: [1, 0], earliest_weekday: "07:45", earliest_weekend: "09:00", latest: "20:30", intro: "Daddybot here.", finish: true });
+  assert.deepEqual(alexaDraft({ latest: "9pm", hours_before: ["x"], services: ["alexa"] }), { services: [], hours_before: [8, 5, 2, 1, 0], earliest_weekday: "07:30", earliest_weekend: "09:00", latest: "21:00", intro: "Daddybot here.", finish: true });
   assert.deepEqual(alexaDraft({ intro: "  Hello  " }).intro, "Hello");
   assert.deepEqual(alexaDraft({ intro: "" }).intro, "");
   assert.deepEqual(parseHoursBefore("2, 8 5,1 0"), [8, 5, 2, 1, 0]);
@@ -996,4 +996,11 @@ test("the heating set-back is a grid-event feature, off by default, with its swi
   assert.ok(axle.roles.includes("heating_setback") && axle.settings.includes("heating_pump_overrun_min"));
   assert.equal(h.FEATURE_DEFAULTS.axle_heating_setback, false);
   assert.ok(h.FEATURES.some((f) => f[0] === "axle_heating_setback"));
+});
+
+test("the grid event summary switch is carried and defaults on", () => {
+  const { alexaDraft } = require("../ha-powerengine-card.js");
+  assert.equal(alexaDraft({}).finish, true);
+  assert.equal(alexaDraft({ finish: false }).finish, false);
+  assert.equal(alexaDraft({ finish: "no" }).finish, true);
 });

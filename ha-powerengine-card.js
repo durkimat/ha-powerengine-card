@@ -7,11 +7,11 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.179";
+const CARD_VERSION = "0.9.182";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
-const MIN_APP_VERSION = "0.9.179";   // 0.9.179: heating set-back (axle_heating_setback); 0.9.175: pe_alexa_test; 0.9.174: notifications.alexa
+const MIN_APP_VERSION = "0.9.182";   // 0.9.182: notifications.alexa.finish (the grid event summary); 0.9.179: heating set-back (axle_heating_setback); 0.9.175: pe_alexa_test; 0.9.174: notifications.alexa
 
 /** "0.9.70" -> [0, 9, 70]; null when it isn't a plain dotted number ("?", "unavailable", "0.9.70-beta"). */
 function parseVersion(v) {
@@ -115,7 +115,7 @@ const NOTIFY_EVENTS = [
   ["simulator", "Tariff opportunities", "When the overnight Simulator finds a tariff that would have cost noticeably less (at least £5 and 5% a month), or new tariffs appear.", true],
 ];
 // Alexa announcements (the app's ALEXA_DEFAULT): speakers, hours before the event (0 = as it starts) and the allowed times
-const ALEXA_DEFAULT = { services: ["notify.alexa_media_everywhere"], hours_before: [8, 5, 2, 1, 0], earliest_weekday: "07:30", earliest_weekend: "09:00", latest: "21:00", intro: "Daddybot here." };
+const ALEXA_DEFAULT = { services: ["notify.alexa_media_everywhere"], hours_before: [8, 5, 2, 1, 0], earliest_weekday: "07:30", earliest_weekend: "09:00", latest: "21:00", intro: "Daddybot here.", finish: true };
 const TIME_OF_DAY = /^([01]?\d|2[0-3]):[0-5]\d$/;
 /** The Alexa settings as a draft holds them: defaults for anything missing, bad values dropped. */
 function alexaDraft(raw) {
@@ -125,7 +125,8 @@ function alexaDraft(raw) {
   return { services: (Array.isArray(a.services) ? a.services : []).filter((s) => /^notify\.[a-z0-9_]+$/.test(s)),
     hours_before: hours.length ? [...new Set(hours)].sort((x, y) => y - x) : ALEXA_DEFAULT.hours_before.slice(),
     earliest_weekday: time(a.earliest_weekday, ALEXA_DEFAULT.earliest_weekday), earliest_weekend: time(a.earliest_weekend, ALEXA_DEFAULT.earliest_weekend),
-    latest: time(a.latest, ALEXA_DEFAULT.latest), intro: typeof a.intro === "string" ? a.intro.trim().slice(0, 80) : ALEXA_DEFAULT.intro };
+    latest: time(a.latest, ALEXA_DEFAULT.latest), intro: typeof a.intro === "string" ? a.intro.trim().slice(0, 80) : ALEXA_DEFAULT.intro,
+    finish: typeof a.finish === "boolean" ? a.finish : ALEXA_DEFAULT.finish };
 }
 /** "8, 5, 2, 1, 0" -> [8, 5, 2, 1, 0]; null when it is not a list of hours between 0 and 48. */
 function parseHoursBefore(text) {
@@ -1289,6 +1290,11 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Hours before a grid event")),
       el("div", { class: "desc" }, "When each reminder is said, in hours before the event starts; 0 is as it starts. A reminder that falls outside the allowed hours is skipped."), el("div", { class: "ctl" }, hoursInput)),
       "setting", "alexa announcements hours before reminders times"));
+    const finishBox = el("input", { type: "checkbox", onchange: (ev) => { alexa.finish = ev.target.checked; this._refresh(); } });
+    finishBox.checked = alexa.finish;
+    ab.append(track(el("div", { class: "row" }, el("label", { class: "head" }, finishBox, el("span", { class: "label" }, "Announce a summary when a grid event ends")),
+      el("div", { class: "desc" }, "Says what the house used, what was exported, what the event should pay, and what was turned back (the heating set-back, the car charger) and to what. Only inside the allowed hours: after the latest time it is kept for the morning.")),
+      "setting", "alexa announcements summary finish end of grid event"));
     this._currentSection = null;
 
     // actions
