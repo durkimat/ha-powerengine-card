@@ -3,6 +3,16 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.179
+
+### Behaviour changes
+
+- **Heating set-back for grid events.** The Grid events section gains the "Turn the heating down before grid events" switch, the "Heating set-back switch" entity and the "Heating pump overrun" setting (15 minutes by default). Needs app 0.9.179.
+
+### Behind the scenes
+
+- `MIN_APP_VERSION` is 0.9.179; the frozen feature texts include the new feature.
+
 ## 0.9.176
 
 ### Behaviour changes
