@@ -979,3 +979,13 @@ test("the Alexa test announcement fires for the ticked speakers and the typed op
   assert.deepEqual(alexaTestPayload(draft), { services: ["notify.alexa_media_kitchen", "notify.alexa_media_everywhere"], intro: "Hello there." });
   assert.deepEqual(alexaTestPayload({}), { services: ["notify.alexa_media_everywhere"], intro: "Daddybot here." });   // the default
 });
+
+test("Alexa speaker list: groups (Amazon Speaker Group devices and Everywhere) are kept apart from single speakers", () => {
+  const { alexaSpeakerKinds } = require("../ha-powerengine-card.js");
+  const devices = { a: { name: "Kitchen", model: "Speaker Group", manufacturer: "Amazon" }, b: { name: "Daddy Dot", model: "Echo Dot (Gen4)", manufacturer: "Amazon" },
+    c: { name: "Juliette's Echo Dot", model: "Echo Dot", manufacturer: "Amazon" } };
+  const names = ["alexa_media_daddy_dot", "alexa_media_everywhere", "alexa_media_juliette_s_echo_dot", "alexa_media_kitchen"];
+  assert.deepEqual(alexaSpeakerKinds(names, devices), { speakers: ["alexa_media_daddy_dot", "alexa_media_juliette_s_echo_dot"], groups: ["alexa_media_everywhere", "alexa_media_kitchen"] });
+  // no device registry (older HA, or not an admin): only Everywhere is known to be a group
+  assert.deepEqual(alexaSpeakerKinds(names, undefined), { speakers: ["alexa_media_daddy_dot", "alexa_media_juliette_s_echo_dot", "alexa_media_kitchen"], groups: ["alexa_media_everywhere"] });
+});
