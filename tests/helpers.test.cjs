@@ -874,7 +874,7 @@ test("versionWarnings warns only when the other side is older than its minimum",
   assert.equal(old.length, 1);
   assert.match(old[0], /0\.9\.182 or newer.*0\.9\.181/);
   // a card older than the app's minimum
-  const oldCard = h.versionWarnings(st("0.9.180", { min_card_version: "99.0.0" }));
+  const oldCard = h.versionWarnings(st("0.9.190", { min_card_version: "99.0.0" }));
   assert.equal(oldCard.length, 1);
   assert.match(oldCard[0], /card 99\.0\.0 or newer/);
   // nothing to compare: no sensor, unavailable, no attribute (an older app)
