@@ -3,6 +3,16 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.182
+
+### Behaviour changes
+
+- **"Announce a summary when a grid event ends"** switch in the Announcements section (on by default). Needs app 0.9.182.
+
+### Behind the scenes
+
+- `alexaDraft` carries `finish`; `MIN_APP_VERSION` is 0.9.182.
+
 ## 0.9.179
 
 ### Behaviour changes
