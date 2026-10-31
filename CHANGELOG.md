@@ -3,6 +3,17 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.175
+
+### Behaviour changes
+
+- **Announcements section.** The Alexa settings move out of Notifications into their own "Announcements" heading and section, apart from the Engine v1 and Engine v2 settings. The switch, speakers, allowed hours, opening words and hours-before are all there, without the "Alexa:" prefix on each.
+- **"Play a test announcement" button** next to the speakers. It plays "Test message" (after your opening words) on the ticked speakers without saving first, and shows what happened or "No reply" after 20 seconds. Admin only.
+
+### Behind the scenes
+
+- `alexaTestPayload` (tested in `tests/helpers.test.cjs`); `MIN_APP_VERSION` is 0.9.175 (the app that answers `pe_alexa_test`).
+
 ## 0.9.174
 
 ### Behaviour changes
