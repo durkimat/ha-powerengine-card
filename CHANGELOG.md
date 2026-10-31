@@ -3,6 +3,16 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.176
+
+### Behaviour changes
+
+- **Speaker groups apart from single speakers.** The Announcements speaker list splits into "Single speakers" and "Speaker groups" (Amazon Speaker Group devices, plus Everywhere), with a note that ticking a group and one of its speakers makes that speaker say it twice. If Home Assistant does not give the page its device list, only Everywhere is treated as a group.
+
+### Behind the scenes
+
+- `alexaSpeakerKinds` (tested in `tests/helpers.test.cjs`).
+
 ## 0.9.175
 
 ### Behaviour changes
