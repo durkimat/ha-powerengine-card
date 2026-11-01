@@ -8391,6 +8391,17 @@ function approxNote(d) {
   if (d.note) parts.push(String(d.note));
   return parts.join("; ");
 }
+function whyView(w) {
+  // The opened day: why engine v2 fell short of the best possible (the app's `why`), or null for a day compared before
+  // breakdowns were kept.
+  if (!w || typeof w !== "object" || !Array.isArray(w.parts)) return null;
+  return {
+    lines: Array.isArray(w.lines) ? w.lines.map(String) : [],
+    parts: w.parts.map((p) => ({ label: String(p.label || p.key || ""), v2: gbp(p.v2), bound: gbp(p.bound), gap: gbp(p.gap, true), gapN: toNumber(p.gap) })),
+    end: toNumber(w.end) === null ? null : gbp(w.end, true),
+    gap: gbp(w.gap),
+  };
+}
 function compareBest(v1, v2) {
   const a = toNumber(v1), b = toNumber(v2);
   if (a === null || b === null) return null;
@@ -8421,6 +8432,7 @@ function engineCompareView(attrs, state) {
     return {
       date: d.date, label: compareDayLabel(d.date), ok, best,
       approx: ok ? approxNote(d) : "",
+      why: ok ? whyView(d.why) : null,
       reason: ok ? "" : (d.reason ? String(d.reason) : COMPARE_REASONS[d.status] || "not compared"),
       v1: gbp(d.v1), v2: gbp(d.v2), bound: gbp(d.bound), diff: diff === null ? "–" : gbp(diff, true), diffN: diff,
       control, controlText: control ? `${control === "mixed" ? "mixed" : `engine ${control}`}${control === "v2" && typeof d.profile === "string" && d.profile ? ` · ${d.profile}` : ""}${d.live === false ? " (passive)" : ""}` : "–",
@@ -8450,8 +8462,19 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
       return;
     }
     const cell = (txt, best) => `<td class="num${best ? " best" : ""}">${best ? '<span class="mark" aria-label="best">✓</span> ' : ""}${escHtml(txt)}</td>`;
+    const open = this._open || (this._open = new Set());
+    const detail = (r) => {
+      if (!open.has(r.date)) return "";
+      if (!r.why) return `<tr class="why"><td colspan="6" class="muted">No breakdown for this day: it was compared before breakdowns were kept.</td></tr>`;
+      const rows = r.why.parts.map((p) => `<tr><td>${escHtml(p.label)}</td><td class="num">${escHtml(p.v2)}</td><td class="num">${escHtml(p.bound)}</td><td class="num${p.gapN > 0.049 ? " worse" : ""}">${escHtml(p.gap)}</td></tr>`).join("");
+      const end = r.why.end === null ? "" : `<tr><td>Battery level left at the end</td><td class="num">–</td><td class="num">–</td><td class="num">${escHtml(r.why.end)}</td></tr>`;
+      return `<tr class="why"><td colspan="6">
+        ${r.why.lines.map((l) => `<p>${escHtml(l)}</p>`).join("")}
+        <table class="parts"><thead><tr><th>Where the cost fell</th><th>Engine v2</th><th>Best possible</th><th>v2 worse by</th></tr></thead><tbody>${rows}${end}</tbody></table>
+        <p class="muted small">Costs in £ for that part of the day (negative is money earned). The last column is v2's cost less the best possible's, so a positive figure is where v2 lost out.</p></td></tr>`;
+    };
     const body = v.rows.map((r) => r.ok
-      ? `<tr><th scope="row">${escHtml(r.label)}${r.approx ? ` <span class="approx" title="${escHtml(r.approx)}">≈</span>` : ""}</th>${cell(r.v1, r.best === "v1")}${cell(r.v2, r.best === "v2")}${cell(r.bound)}<td class="num">${escHtml(r.diff)}</td><td title="${escHtml(r.calib)}">${escHtml(r.controlText)}</td></tr>`
+      ? `<tr class="day${open.has(r.date) ? " open" : ""}" data-day="${escHtml(r.date)}" tabindex="0" title="Show why"><th scope="row">${escHtml(r.label)}${r.approx ? ` <span class="approx" title="${escHtml(r.approx)}">≈</span>` : ""}</th>${cell(r.v1, r.best === "v1")}${cell(r.v2, r.best === "v2")}${cell(r.bound)}<td class="num">${escHtml(r.diff)}</td><td title="${escHtml(r.calib)}">${escHtml(r.controlText)}</td></tr>${detail(r)}`
       : `<tr class="skip"><th scope="row">${escHtml(r.label)}</th><td colspan="5" class="muted">Not compared: ${escHtml(lowerFirst(r.reason))}</td></tr>`).join("");
     const foot = v.totals ? `<tfoot><tr><th scope="row">${v.totals.days} day${v.totals.days === 1 ? "" : "s"}</th>${cell(v.totals.v1, v.totals.best === "v1")}${cell(v.totals.v2, v.totals.best === "v2")}${cell(v.totals.bound)}<td class="num">${escHtml(v.totals.diff)}</td><td></td></tr></tfoot>` : "";
     this.shadowRoot.innerHTML = `<style>${V2_CSS}
@@ -8464,6 +8487,14 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
       td.best { font-weight: 700; color: var(--v2-good); }
       .mark { font-weight: 700; }
       .approx { color: var(--secondary-text-color); cursor: help; }
+      tr.day { cursor: pointer; }
+      tr.day th::before { content: "▸ "; color: var(--secondary-text-color); }
+      tr.day.open th::before { content: "▾ "; }
+      tr.why td { text-align: left; white-space: normal; background: var(--secondary-background-color, transparent); }
+      tr.why p { margin: 4px 0; }
+      table.parts { width: auto; max-width: 100%; margin: 6px 0; }
+      table.parts th, table.parts td { padding: 3px 10px 3px 0; border-bottom: 1px solid var(--divider-color); }
+      table.parts td.worse { color: var(--v2-warn); font-weight: 600; }
       tr.skip td { text-align: left; font-size: 13px; white-space: normal; }
       tfoot td, tfoot th { border-top: 2px solid var(--divider-color); border-bottom: 0; }
       @media (max-width: 520px) { table { font-size: 12.5px; } th, td { padding: 6px 5px; } thead th { font-size: 10.5px; } ha-card { padding: 12px; } }
@@ -8475,10 +8506,91 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
       <div class="wrap"><table>
         <thead><tr><th>Day</th><th>Engine v1</th><th>Engine v2</th><th>Best possible</th><th>v2 − v1</th><th>In control</th></tr></thead>
         <tbody>${body}</tbody>${foot}</table></div>
+      <p class="muted small">Select a compared day to see why engine v2 fell short of the best possible.</p>
       <p>${escHtml(v.calibration)}</p>
       ${v.note ? `<p class="muted small">${escHtml(v.note)}</p>` : ""}
       ${v.lastRun ? `<p class="muted small">${escHtml(v.lastRun)}</p>` : ""}
     </ha-card>`;
+    this.shadowRoot.querySelectorAll("tr.day").forEach((tr) => {
+      const toggle = () => {
+        if (open.has(tr.dataset.day)) open.delete(tr.dataset.day); else open.add(tr.dataset.day);
+        this._render(states);
+      };
+      tr.addEventListener("click", toggle);
+      tr.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); } });
+    });
+  }
+}
+
+// --- special events by month (sensor.pe_event_months) ---------------------------------------------------------
+const EVENT_MONTHS_SENSOR = "sensor.pe_event_months";
+function eventMonthLabel(key) {
+  if (typeof key !== "string" || !/^\d{4}-\d{2}$/.test(key)) return String(key || "");
+  return new Date(`${key}-01T12:00:00Z`).toLocaleDateString("en-GB", { month: "short", year: "numeric", timeZone: "UTC" });
+}
+/** The monthly table from the sensor's attributes, newest month first; each month with days carries them. Pure. */
+function eventsView(attrs) {
+  const a = attrs && typeof attrs === "object" ? attrs : {};
+  const name = (a.names && a.names.event) || "Event";
+  const num = (v) => toNumber(v) || 0;
+  const months = (Array.isArray(a.months) ? a.months : []).filter((m) => m && m.month).slice().reverse().map((m) => ({
+    key: m.month, label: eventMonthLabel(m.month), kwh: num(m.axle_kwh).toFixed(1), gross: gbp(m.axle_gross), energy: gbp(m.axle_energy),
+    net: gbp(m.axle_net), free: gbp(m.free_power_net), daily: gbp(num(m.actual) - num(m.standing)), standing: gbp(m.standing),
+    days: (Array.isArray(m.ev_days) ? m.ev_days : []).slice().reverse().map((d) => ({
+      date: d[0], label: compareDayLabel(d[0]), kwh: num(d[1]).toFixed(1), gross: gbp(d[2]), energy: gbp(d[3]), net: gbp(d[4]),
+      freeKwh: num(d[5]).toFixed(1), free: gbp(d[6]) })),
+  }));
+  return { name, months, hasDays: months.some((m) => m.days.length) };
+}
+
+class PowerEngineEventsCard extends PowerEngineV2Card {
+  setConfig(config) { super.setConfig(Object.assign({ entity: EVENT_MONTHS_SENSOR }, config || {})); }
+  getCardSize() { return 6; }
+  _ids() { return [(this._config && this._config.entity) || EVENT_MONTHS_SENSOR, "switch.pe_ui_right_align"]; }
+  _render(states) {
+    const s = (states || {})[(this._config && this._config.entity) || EVENT_MONTHS_SENSOR];
+    const v = eventsView(s && s.attributes);
+    const left = (states["switch.pe_ui_right_align"] || {}).state === "off";
+    const open = this._open || (this._open = new Set());
+    if (!v.months.length) {
+      this.shadowRoot.innerHTML = `<style>${V2_CSS}</style><ha-card><p class="muted">No ${escHtml(v.name)} or free-power events recorded yet.</p></ha-card>`;
+      return;
+    }
+    const body = v.months.map((m) => {
+      const can = m.days.length > 0;
+      const detail = can && open.has(m.key) ? `<tr class="why"><td colspan="8"><table class="parts"><thead><tr><th>Day</th><th>${escHtml(v.name)} kWh</th><th>Paid you</th><th>Energy it used</th><th>Net</th><th>Free power kWh</th><th>Free power</th></tr></thead><tbody>${
+        m.days.map((d) => `<tr><td>${escHtml(d.label)}</td><td class="num">${d.kwh}</td><td class="num">${escHtml(d.gross)}</td><td class="num">${escHtml(d.energy)}</td><td class="num"><b>${escHtml(d.net)}</b></td><td class="num">${d.freeKwh}</td><td class="num">${escHtml(d.free)}</td></tr>`).join("")}</tbody></table></td></tr>` : "";
+      return `<tr class="${can ? "day" : ""}${can && open.has(m.key) ? " open" : ""}" ${can ? `data-month="${escHtml(m.key)}" tabindex="0" title="Show the days"` : ""}><th scope="row">${escHtml(m.label)}</th><td class="num">${m.kwh}</td><td class="num">${escHtml(m.gross)}</td><td class="num">${escHtml(m.energy)}</td><td class="num"><b>${escHtml(m.net)}</b></td><td class="num">${escHtml(m.free)}</td><td class="num">${escHtml(m.daily)}</td><td class="num">${escHtml(m.standing)}</td></tr>${detail}`;
+    }).join("");
+    this.shadowRoot.innerHTML = `<style>${V2_CSS}
+      .wrap { overflow-x: auto; }
+      table { border-collapse: collapse; width: 100%; font-size: 14px; }
+      th, td { padding: 6px 10px; text-align: ${left ? "left" : "right"}; white-space: nowrap; border-bottom: 1px solid var(--divider-color); }
+      thead th { font-size: 12px; font-weight: 500; color: var(--secondary-text-color); text-transform: uppercase; letter-spacing: .04em; vertical-align: bottom; white-space: normal; }
+      th:first-child, td:first-child { text-align: left; }
+      tbody th { font-weight: 500; }
+      tr.day { cursor: pointer; }
+      tr.day th::before { content: "▸ "; color: var(--secondary-text-color); }
+      tr.day.open th::before { content: "▾ "; }
+      tr.why td { white-space: normal; text-align: left; background: var(--secondary-background-color, transparent); }
+      table.parts { width: auto; max-width: 100%; margin: 4px 0; }
+      table.parts th, table.parts td { padding: 3px 10px 3px 0; }
+      @media (max-width: 520px) { table { font-size: 12.5px; } th, td { padding: 6px 5px; } thead th { font-size: 10.5px; } ha-card { padding: 12px; } }
+    </style>
+    <ha-card>
+      <div class="wrap"><table>
+        <thead><tr><th>Month</th><th>${escHtml(v.name)} kWh</th><th>${escHtml(v.name)} paid you</th><th>Energy it used</th><th>${escHtml(v.name)} net</th><th>Free power</th><th>Day-to-day energy (metered)</th><th>Standing charge</th></tr></thead>
+        <tbody>${body}</tbody></table></div>
+      ${v.hasDays ? '<p class="muted small">Select a month to see its days with events (the last three months).</p>' : ""}
+    </ha-card>`;
+    this.shadowRoot.querySelectorAll("tr.day").forEach((tr) => {
+      const toggle = () => {
+        if (open.has(tr.dataset.month)) open.delete(tr.dataset.month); else open.add(tr.dataset.month);
+        this._render(states);
+      };
+      tr.addEventListener("click", toggle);
+      tr.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); } });
+    });
   }
 }
 
@@ -8487,6 +8599,7 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
   ["powerengine-v2-health-card", PowerEngineV2HealthCard, "PowerEngine engine v2 health", "Engine v2's recalculations, flip-flops, everyday range and learned weights."],
   ["powerengine-engine-badge-card", PowerEngineEngineBadgeCard, "PowerEngine engine badge", "Active, Paused or Passive for one engine, with what that means (engine: v1 or v2)."],
   ["powerengine-v2-history-card", PowerEngineV2HistoryCard, "PowerEngine engine v2 history", "A day of engine v2: level as it ran against the expected level, the modes, prices and value, with a day picker."],
+  ["powerengine-events-card", PowerEngineEventsCard, "PowerEngine events by month", "Grid-event and free-power totals by month; select a month for its days."],
   ["powerengine-engine-compare-card", PowerEngineEngineCompareCard, "PowerEngine engines compared", "What engine v1, engine v2 and the best possible would have saved on each of the last days."],
 ].forEach(([tag, cls, name, description]) => {
   if (typeof customElements !== "undefined" && !customElements.get(tag)) {
@@ -8504,6 +8617,6 @@ if (typeof module !== "undefined") {
   v2WithProfiles, V2_PROFILES, uiEngine, profileDraft, profileList, profileBase, profileChanges, profileLoadFields, profileSaveFields, profileDeleteFields,
   ENGINE_SENSOR, V2_NOT_RUNNING, V2_NO_DATA, V2_MODES, v2Engine, v2Supported, v2Gate, valueBarGeometry, modeSubtitle, exitRows, engineCardView, timelineLayout, recentRows, scrollIntent, HISTORY_HOURS, V2_RECENT, sunLayout, levelAtHour, bandLabel, timelineHover,
   heatColour, valueMapGrid, mapCellAt, interpValue, offScaleReason, chartKeyHtml, chartHidden, CHART_KEYS, pathValueSeries, timelineValue, timelineLines, pathLines, mapReadoutText, planCardView, causeBars, causeLabel, comfortSummary, healthCardView,
-  ENGINE_ICONS, engineIcon, refreshEngineIcons, engineBadge, BADGE_LINES, V2_HISTORY_DAY_EVENT, v2HistoryDayPayload, v2HistoryView, engineCompareView, approxNote, calibrationLine, gbp, COMPARE_WAITING,
+  ENGINE_ICONS, engineIcon, refreshEngineIcons, engineBadge, BADGE_LINES, V2_HISTORY_DAY_EVENT, v2HistoryDayPayload, v2HistoryView, engineCompareView, approxNote, whyView, eventsView, calibrationLine, gbp, COMPARE_WAITING,
   V1_SECTIONS, v2Same, engineGrouping, engineInUse, engineConfirm, cleanV2Block, engineFields, v2Problem, v2Contradictions, v2Values, comfortReadout, weightsReadout, floorsReadout };
 }

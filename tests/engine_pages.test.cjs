@@ -237,3 +237,30 @@ test("engineCompareView: a day that was scaled or folded is marked approximate",
   const v = card.engineCompareView({ days: [day("2026-10-31", { scaled: 2 }), day("2026-10-30", { note: "25-hour day: the repeated hour was left out" }), day("2026-10-29", {})] }, "ok");
   assert.deepStrictEqual(v.rows.map((r) => r.approx), ["2 part-measured half-hours scaled up", "25-hour day: the repeated hour was left out", ""]);
 });
+
+test("engineCompareView: an opened day carries the app's why, or null for an older result", () => {
+  const why = { gap: 2.2, end: -0.1, lines: ["Engine v2 saved £2.20 less than the best possible."],
+    parts: [{ key: "event", label: "Grid event", v2: -1, bound: -3, gap: 2 }, { key: "night", label: "Overnight (00:00 to 07:00)", v2: 0, bound: 0, gap: 0 }] };
+  const v = card.engineCompareView({ days: [{ date: "2026-10-29", status: "ok", v1: 1, v2: 1.5, bound: 2, why }, { date: "2026-10-28", status: "ok", v1: 1, v2: 1.5, bound: 2 }] }, "ok");
+  assert.strictEqual(v.rows[1].why, null);
+  assert.deepStrictEqual(v.rows[0].why.parts[0], { label: "Grid event", v2: "−£1.00", bound: "−£3.00", gap: "+£2.00", gapN: 2 });
+  assert.strictEqual(v.rows[0].why.end, "−£0.10");
+  assert.strictEqual(v.rows[0].why.lines.length, 1);
+  assert.strictEqual(card.whyView(null), null);
+});
+
+test("eventsView: months newest first, with the days that had events, formatted", () => {
+  const v = card.eventsView({ names: { event: "Axle" }, months: [
+    { month: "2026-09", axle_kwh: 10, axle_gross: 20, axle_energy: 5, axle_net: 15, free_power_net: 0, actual: 40, standing: 17 },
+    { month: "2026-10", axle_kwh: 3.456, axle_gross: 6.9, axle_energy: 2.1, axle_net: 4.8, free_power_net: 0.2, actual: 30, standing: 17.7,
+      ev_days: [["2026-10-28", 1, 2, 1, 1, 0, 0], ["2026-10-29", 3.46, 6.9, 2.1, 4.8, 1, 0.2]] }] });
+  assert.strictEqual(v.name, "Axle");
+  assert.deepStrictEqual(v.months.map((m) => m.key), ["2026-10", "2026-09"]);
+  assert.strictEqual(v.months[0].kwh, "3.5");
+  assert.strictEqual(v.months[0].daily, "£12.30");
+  assert.deepStrictEqual(v.months[0].days.map((d) => d.date), ["2026-10-29", "2026-10-28"]);   // newest day first
+  assert.strictEqual(v.months[0].days[0].net, "£4.80");
+  assert.strictEqual(v.months[1].days.length, 0);
+  assert.strictEqual(v.hasDays, true);
+  assert.deepStrictEqual(card.eventsView(null).months, []);
+});
