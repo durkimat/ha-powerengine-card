@@ -3,6 +3,17 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.186
+
+### Behaviour changes
+
+- **Engines compared:** select a compared day for the breakdown of why engine v2 fell short of the best possible. Needs app 0.9.186.
+- **New events card** (`custom:powerengine-events-card`): the monthly grid-event table, where a month opens to its days. Needs app 0.9.186.
+
+### Behind the scenes
+
+- `whyView`, `eventsView`.
+
 ## 0.9.185
 
 ### Behaviour changes
