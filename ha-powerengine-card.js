@@ -1886,6 +1886,8 @@ class PowerEngineToggleCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
                  color: var(--secondary-text-color); font-size: .9em; cursor: pointer; user-select: none; }
           .ctl:hover { background: var(--secondary-background-color); }
           ha-icon { --mdc-icon-size: 18px; }
+          .tools { display: inline-flex; gap: 14px; font-size: .85em; margin-right: auto; }
+          .tools button { font: inherit; background: none; border: 0; padding: 0; cursor: pointer; color: var(--primary-color); }
           .sw { position: relative; width: 30px; height: 16px; border-radius: 8px; background: var(--disabled-color, #bdbdbd);
                 transition: background .15s; flex: none; }
           .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%;
@@ -1893,9 +1895,11 @@ class PowerEngineToggleCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
           .sw.on { background: var(--primary-color); }
           .sw.on::after { left: 16px; }
         </style>
-        <div class="bar"><span class="title"></span>
+        <div class="bar"><span class="title"></span>${c.tools ? '<span class="tools"><button data-open="1">Expand all</button><button data-open="0">Collapse all</button></span>' : ""}
           <span class="ctl" role="switch" tabindex="0"><ha-icon></ha-icon><span class="name"></span><span class="sw"></span></span>
         </div>`;
+      this.shadowRoot.querySelectorAll(".tools button").forEach((b) => b.addEventListener("click", () =>
+        window.dispatchEvent(new CustomEvent(SECTIONS_EVENT, { detail: { open: b.dataset.open === "1" } }))));
       const ctl = this.shadowRoot.querySelector(".ctl");
       const toggle = () => {
         if (!this._hass) return;
@@ -4301,8 +4305,8 @@ class PowerEngineCostsPeriodCard extends (typeof HTMLElement !== "undefined" ? H
     this.shadowRoot.innerHTML = `
       <style>
         :host { display: block; }
-        .top { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
-        button { font: inherit; font-size: 0.9em; padding: 4px 12px; border-radius: 6px; cursor: pointer;
+        .top { display: grid; grid-template-columns: repeat(auto-fit, minmax(5.5em, 1fr)); gap: 6px; margin-bottom: 8px; }
+        button { font: inherit; font-size: 0.9em; padding: 4px 6px; white-space: nowrap; border-radius: 6px; cursor: pointer;
                  border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color); }
         button.on { background: var(--primary-color); color: var(--text-primary-color, #fff); }
         .range { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; font-size: 0.9em; }
