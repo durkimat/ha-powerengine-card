@@ -11,7 +11,7 @@ const CARD_VERSION = "0.9.187";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
-const MIN_APP_VERSION = "0.9.187";   // 0.9.187: the Costs page period picker (daily rows with self_use_adj, bin, bout); 0.9.182: notifications.alexa.finish (the grid event summary); 0.9.179: heating set-back (axle_heating_setback); 0.9.175: pe_alexa_test; 0.9.174: notifications.alexa
+const MIN_APP_VERSION = "0.9.188";   // 0.9.188: pe_compare_recheck (Compare this day again); 0.9.187: the Costs page period picker (daily rows with self_use_adj, bin, bout); 0.9.182: notifications.alexa.finish (the grid event summary); 0.9.179: heating set-back (axle_heating_setback); 0.9.175: pe_alexa_test; 0.9.174: notifications.alexa
 
 /** "0.9.70" -> [0, 9, 70]; null when it isn't a plain dotted number ("?", "unavailable", "0.9.70-beta"). */
 function parseVersion(v) {
