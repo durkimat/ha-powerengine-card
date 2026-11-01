@@ -231,3 +231,9 @@ test("engine icon digits are traced opposite to the outline, so they cut out und
     parts.slice(1).forEach((p) => assert.ok(Math.sign(area(p)) === -Math.sign(outline), p));
   }
 });
+
+test("engineCompareView: a day that was scaled or folded is marked approximate", () => {
+  const day = (date, extra) => Object.assign({ date, status: "ok", v1: 1, v2: 1.5, bound: 2, in_control: "v2" }, extra);
+  const v = card.engineCompareView({ days: [day("2026-10-31", { scaled: 2 }), day("2026-10-30", { note: "25-hour day: the repeated hour was left out" }), day("2026-10-29", {})] }, "ok");
+  assert.deepStrictEqual(v.rows.map((r) => r.approx), ["2 part-measured half-hours scaled up", "25-hour day: the repeated hour was left out", ""]);
+});

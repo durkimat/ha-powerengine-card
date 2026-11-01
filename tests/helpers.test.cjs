@@ -1026,3 +1026,10 @@ test("waterfall custom range totals the app's per-day rows into the same steps t
   assert.deepEqual([one.from, one.to], ["2026-09-23", "2026-09-23"]);
   assert.equal(h.waterfallCustom(daily, "2027-01-01", "2027-01-02", names).days, 0);
 });
+
+test("a period you were paid for shows the amount without a minus", () => {
+  assert.equal(h.shownValue({ kind: "total", label: "You were paid (after Axle payments)", value: -2.1 }), 2.1);
+  assert.equal(h.shownValue({ kind: "total", label: "You paid", value: 3.5 }), 3.5);
+  assert.equal(h.shownValue({ kind: "step", label: "Solar", value: -3 }), -3);
+  assert.equal(h.waterfallShortLabel("You were paid (after Axle payments)"), "You were paid");
+});
