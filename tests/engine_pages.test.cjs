@@ -293,3 +293,9 @@ test("eventsInRange: the events inside a period, or partial when the period star
   assert.equal(card.eventsInRange(attrs, { from: "2026-08-02", to: "2026-08-30" }).partial, true);  // before the listed months
   assert.equal(card.eventsInRange(attrs, { from: null, to: null }), null);
 });
+
+test("engineCompareView: rows carry their status so a day that has no forecast record offers no retry", () => {
+  const v = card.engineCompareView({ days: [{ date: "2026-10-31", status: "incomplete", reason: "x" }, { date: "2026-10-30", status: "no_snapshot", reason: "y" },
+    { date: "2026-10-29", status: "ok", v1: 1, v2: 2, bound: 3 }] }, "ok");
+  assert.deepStrictEqual(v.rows.map((r) => r.status), ["incomplete", "no_snapshot", "ok"]);
+});
