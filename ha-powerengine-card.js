@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.189";
+const CARD_VERSION = "0.9.190";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -42,7 +42,27 @@ function versionWarnings(states) {
 }
 const MODE_SENSOR = "sensor.pe_state_operation_mode";
 const CATALOGUE_SENSOR = "sensor.pe_map_catalogue";
+const SETTINGS_SENSOR = "sensor.pe_map_settings";
 const MAPPING_SENSOR = "sensor.pe_map_config";
+
+/**
+ * A catalogue sensor's attributes. The app puts a catalogue too big for one sensor on numbered ones (sensor.pe_map_catalogue,
+ * _2, _3, ...; `parts` says how many) and this joins their lists back together. Null while a part is missing, so nothing
+ * is built from half a catalogue.
+ */
+function catalogueAttrs(states, id) {
+  const first = states[id];
+  if (!first) return null;
+  const out = Object.assign({}, first.attributes || {});
+  const n = Number(out.parts) || 1;
+  delete out.parts;
+  for (let i = 2; i <= n; i++) {
+    const more = states[`${id}_${i}`];
+    if (!more || more.state === "unavailable") return null;
+    for (const [k, v] of Object.entries(more.attributes || {})) if (Array.isArray(v)) out[k] = (out[k] || []).concat(v);
+  }
+  return out;
+}
 const SAVE_EVENT = "pe_config_save";
 const NOT_SET_UP = "Not set up yet";      // what the app's Mode and Health say before there is a config
 const RESULT_EVENT = "pe_config_result";
@@ -824,21 +844,20 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     if (this._building) return;
     const s = this._hass.states;
     const ver = s[VERSION_SENSOR];
-    const cat = s[CATALOGUE_SENSOR];
-    if (!ver || ver.state === "unavailable" || !cat || !(cat.attributes || {}).roles) {
+    const cat = catalogueAttrs(s, CATALOGUE_SENSOR);
+    if (!ver || ver.state === "unavailable" || !cat || !cat.roles) {
       this._renderMessage("PowerEngine app not detected. Check it is installed and AppDaemon's MQTT plugin is set up (install guide, Step 3).");
       return;
     }
     this._building = true;
     this._usePicker = await ensureEntityPicker();
     // roles leave out "required" when it is "yes" (keeps the published catalogue under HA's 16 KB limit)
-    this._catalogue = Object.assign({}, cat.attributes,
-      { roles: (cat.attributes.roles || []).map((r) => Object.assign({ required: "yes" }, r)) });
+    this._catalogue = Object.assign({}, cat,
+      { roles: (cat.roles || []).map((r) => Object.assign({ required: "yes" }, r)) });
     const mapping = s[MAPPING_SENSOR];
     this._saved = ((mapping && mapping.attributes) || {}).config || {};
     // settings moved to their own sensor in app 0.5.3 (older apps sent them inside the catalogue)
-    const settingsSensor = s["sensor.pe_map_settings"];
-    this._settings = this._catalogue.settings || (settingsSensor && settingsSensor.attributes) || {};
+    this._settings = this._catalogue.settings || catalogueAttrs(s, SETTINGS_SENSOR) || {};
     this._readOnly = !(this._hass.user && this._hass.user.is_admin);
     const { draft, fresh } = initialDraft(this._saved, this._catalogue.roles, Object.keys(s).sort(), this._settings);
     this._site = siteInfo(ver.attributes);
@@ -5667,14 +5686,13 @@ class PowerEngineSystemCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
   /** Read what the app publishes. False when it doesn't (an app too old for this card, or not running). */
   _read() {
     const s = this._hass.states;
-    const ver = s[VERSION_SENSOR], cat = s[CATALOGUE_SENSOR], map = s[MAPPING_SENSOR];
+    const ver = s[VERSION_SENSOR], cat = catalogueAttrs(s, CATALOGUE_SENSOR), map = s[MAPPING_SENSOR];
     const info = ver && ver.state !== "unavailable" ? wizardInfo(ver.attributes) : null;
-    if (!info || !cat || !(cat.attributes || {}).roles) return false;
+    if (!info || !cat || !cat.roles) return false;
     this._verObj = ver; this._mapObj = map;
     this._info = info;
-    this._roles = (cat.attributes.roles || []).map((r) => Object.assign({ required: "yes" }, r));
-    const settingsSensor = s["sensor.pe_map_settings"];
-    this._settings = cat.attributes.settings || (settingsSensor && settingsSensor.attributes) || {};
+    this._roles = (cat.roles || []).map((r) => Object.assign({ required: "yes" }, r));
+    this._settings = cat.settings || catalogueAttrs(s, SETTINGS_SENSOR) || {};
     this._saved = (((map || {}).attributes) || {}).config || {};
     this._retest = (ver.attributes || {}).retest_required === true;
     this._devicesOn = devicesSupported(ver.state);
@@ -9105,7 +9123,7 @@ class PowerEngineEventsCard extends PowerEngineV2Card {
 });
 
 if (typeof module !== "undefined") {
-  module.exports = { alexaSpeakerKinds, alexaTestPayload, ALEXA_TEST_EVENT, alexaDraft, parseHoursBefore, alexaSpeakerName, ALEXA_DEFAULT, v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallCustom, waterfallSteps, costsRange, costsSummary, costsTodayInfo, costsBars, peParts, costsDayLabel, shownValue, sectionOpen, sectionsLoad, SECTIONS_KEY, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
+  module.exports = { catalogueAttrs, alexaSpeakerKinds, alexaTestPayload, ALEXA_TEST_EVENT, alexaDraft, parseHoursBefore, alexaSpeakerName, ALEXA_DEFAULT, v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallCustom, waterfallSteps, costsRange, costsSummary, costsTodayInfo, costsBars, peParts, costsDayLabel, shownValue, sectionOpen, sectionsLoad, SECTIONS_KEY, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,

@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.190
+
+### Behaviour changes
+
+- **Config page:** reads the input and settings catalogues from however many sensors the app split them across (`catalogueAttrs`), and waits rather than showing half a list. Needs app 0.9.190 only when a catalogue is split; works with older apps.
+
 ## 0.9.189
 
 ### Behaviour changes

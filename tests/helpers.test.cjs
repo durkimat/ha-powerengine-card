@@ -1087,3 +1087,15 @@ test("costsBars and peParts: the day's five figures and the split of the PowerEn
   assert.ok(Math.abs(p.plain - 1.4) < 1e-9 && Math.abs(p.timing - 0.6) < 1e-9);
   assert.ok(Math.abs(p.total - 1.5) < 1e-9);                                                // the three add up to tariff less the PowerEngine cost
 });
+
+test("catalogueAttrs joins a catalogue split across numbered sensors, and waits for a missing part", () => {
+  const st = (attrs, state = "1") => ({ state, attributes: attrs });
+  const one = { "sensor.pe_map_catalogue": st({ roles: [{ key: "a" }] }) };
+  assert.deepStrictEqual(h.catalogueAttrs(one, "sensor.pe_map_catalogue"), { roles: [{ key: "a" }] });
+  const two = { "sensor.pe_map_settings": st({ parts: 2, safety: [1], system: [], note: "n" }),
+    "sensor.pe_map_settings_2": st({ safety: [2], system: [3] }) };
+  assert.deepStrictEqual(h.catalogueAttrs(two, "sensor.pe_map_settings"), { safety: [1, 2], system: [3], note: "n" });
+  delete two["sensor.pe_map_settings_2"];
+  assert.strictEqual(h.catalogueAttrs(two, "sensor.pe_map_settings"), null);
+  assert.strictEqual(h.catalogueAttrs({}, "sensor.pe_map_settings"), null);
+});
