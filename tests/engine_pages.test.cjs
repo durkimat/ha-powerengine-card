@@ -264,3 +264,32 @@ test("eventsView: months newest first, with the days that had events, formatted"
   assert.strictEqual(v.hasDays, true);
   assert.deepStrictEqual(card.eventsView(null).months, []);
 });
+
+test("compareScoped: only the days in the period, totals again from them, and a note when the period is longer", () => {
+  const day = (date, v1, v2) => ({ date, status: "ok", v1, v2, bound: v2 + 1, in_control: "v2" });
+  const v = card.engineCompareView({ days: [day("2026-10-30", 1, 2), day("2026-10-29", 2, 3), day("2026-10-28", 3, 5)] }, "ok");
+  const range = { key: "custom", label: "Mon 26 Oct to Thu 29 Oct", rows: [1, 2, 3, 4], from: "2026-10-26", to: "2026-10-29" };
+  const s = card.compareScoped(v, range);
+  assert.deepEqual(s.view.rows.map((r) => r.date), ["2026-10-29", "2026-10-28"]);
+  assert.equal(s.view.totals.days, 2);
+  assert.equal(s.view.totals.v2, "£8.00");
+  assert.equal(s.view.totals.diff, "+£3.00");
+  assert.match(s.note, /last 7 days/);
+  const none = card.compareScoped(v, { key: "custom", label: "x", rows: [1], from: "2026-09-01", to: "2026-09-02" });
+  assert.equal(none.view.totals, null);
+  assert.match(none.note, /none of them are in this period/);
+});
+
+test("eventsInRange: the events inside a period, or partial when the period starts before the listed months", () => {
+  const attrs = { months: [{ month: "2026-08", axle_kwh: 1 },
+    { month: "2026-09", ev_days: [] },
+    { month: "2026-10", ev_days: [["2026-10-28", 1, 2, 1, 1, 0, 0], ["2026-10-29", 3.46, 6.9, 2.1, 4.8, 1, 0.2]] }] };
+  const t = card.eventsInRange(attrs, { from: "2026-10-29", to: "2026-10-30" });
+  assert.equal(t.days, 1);
+  assert.equal(t.kwh, 3.46);
+  assert.equal(t.net, 4.8);
+  assert.equal(card.eventsInRange(attrs, { from: "2026-10-01", to: "2026-10-30" }).days, 2);
+  assert.equal(card.eventsInRange(attrs, { from: "2026-09-02", to: "2026-09-30" }).days, 0);       // listed, nothing happened
+  assert.equal(card.eventsInRange(attrs, { from: "2026-08-02", to: "2026-08-30" }).partial, true);  // before the listed months
+  assert.equal(card.eventsInRange(attrs, { from: null, to: null }), null);
+});

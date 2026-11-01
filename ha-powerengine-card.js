@@ -11,7 +11,7 @@ const CARD_VERSION = "0.9.186";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
-const MIN_APP_VERSION = "0.9.182";   // 0.9.182: notifications.alexa.finish (the grid event summary); 0.9.179: heating set-back (axle_heating_setback); 0.9.175: pe_alexa_test; 0.9.174: notifications.alexa
+const MIN_APP_VERSION = "0.9.187";   // 0.9.187: the Costs page period picker (daily rows with self_use_adj, bin, bout); 0.9.182: notifications.alexa.finish (the grid event summary); 0.9.179: heating set-back (axle_heating_setback); 0.9.175: pe_alexa_test; 0.9.174: notifications.alexa
 
 /** "0.9.70" -> [0, 9, 70]; null when it isn't a plain dotted number ("?", "unavailable", "0.9.70-beta"). */
 function parseVersion(v) {
@@ -3778,9 +3778,13 @@ const WATERFALL_PERIODS = [
 const WATERFALL_FIELDS = ["none", "solar", "tariff", "actual_adj", "carry", "events_metered", "axle_income"];
 
 function waterfallCustom(daily, from, to, names) {
-  // The steps for the days from..to (YYYY-MM-DD, inclusive) out of the app's per-day rows. Mirrors
-  // pe_core.costs._steps_for: each running total is rounded once, so steps and totals chain to the penny.
-  const chosen = (daily || []).filter((d) => d.date >= from && d.date <= to);
+  // The steps for the days from..to (YYYY-MM-DD, inclusive) out of the app's per-day rows.
+  return waterfallSteps((daily || []).filter((d) => d.date >= from && d.date <= to), names);
+}
+
+function waterfallSteps(chosen, names) {
+  // The steps for some days' rows. Mirrors pe_core.costs._steps_for: each running total is rounded once, so steps
+  // and totals chain to the penny.
   const sums = {};
   for (const k of WATERFALL_FIELDS) sums[k] = chosen.reduce((a, d) => a + (d[k] || 0), 0);
   const r2 = (x) => Math.round(x * 100) / 100 + 0;
@@ -3803,6 +3807,155 @@ function waterfallCustom(daily, from, to, names) {
   steps.push({ label: r2(sums.axle_income) > 0 ? `${verb} (after ${nm.event} payments)` : verb, kind: "total", value: r6 });
   return { days: chosen.length, from: chosen.length ? chosen[0].date : null,
            to: chosen.length ? chosen[chosen.length - 1].date : null, steps };
+}
+
+
+/* ------------------------------------------------------------ the Costs page's shared period
+ * One choice of period (Today, Yesterday, 7 days, This month, 30 days, or two dates) for every card on the Costs page
+ * that shows a period: the picker card sets it, the others follow. Kept in this browser (localStorage, tried and
+ * caught) and announced on `window` so cards on the page redraw together. All of it is worked out from the per-day rows
+ * the app publishes (sensor.pe_cost_waterfall `daily`).
+ */
+const COSTS_PERIOD_KEY = "powerengine-costs-period";
+const COSTS_PERIOD_EVENT = "powerengine-costs-period";
+const COSTS_PERIOD_LABELS = { today: "Today so far", yesterday: "Yesterday", week: "Last 7 days", month: "This month so far", days30: "Last 30 days" };
+
+function costsPeriodLoad() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COSTS_PERIOD_KEY) || "null");
+    if (raw && WATERFALL_PERIODS.some((p) => p.key === raw.key)) return raw;
+  } catch (e) { /* no storage */ }
+  return { key: "week" };
+}
+function costsPeriodSet(sel) {
+  try { localStorage.setItem(COSTS_PERIOD_KEY, JSON.stringify(sel)); } catch (e) { /* private mode: it still works for now */ }
+  window.dispatchEvent(new CustomEvent(COSTS_PERIOD_EVENT, { detail: sel }));
+}
+
+function costsDayLabel(date) {
+  const d = new Date(`${date}T12:00:00Z`);
+  return Number.isNaN(d.getTime()) ? String(date) : d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
+}
+
+function costsRange(sel, daily) {
+  // The days a period covers: {key, label, rows, from, to}. As the app's own periods: Yesterday, 7 days, 30 days and
+  // This month count complete days only; Today is the unfinished day; two dates take every day between them.
+  const all = Array.isArray(daily) ? daily : [];
+  const done = all.filter((d) => d.done);
+  const key = (sel && sel.key) || "week";
+  let rows;
+  if (key === "today") rows = all.slice(-1).filter((d) => !d.done);
+  else if (key === "yesterday") rows = done.slice(-1);
+  else if (key === "days30") rows = done.slice(-30);
+  else if (key === "month") {
+    const month = all.length ? all[all.length - 1].date.slice(0, 7) : "";
+    rows = done.filter((d) => d.date.startsWith(month));
+  } else if (key === "custom") {
+    const from = (sel && sel.from) || (all.length ? all[Math.max(0, all.length - 7)].date : "");
+    const to = (sel && sel.to) || (all.length ? all[all.length - 1].date : "");
+    rows = all.filter((d) => d.date >= from && d.date <= to);
+  } else rows = done.slice(-7);
+  const from = rows.length ? rows[0].date : null;
+  const to = rows.length ? rows[rows.length - 1].date : null;
+  let label = COSTS_PERIOD_LABELS[key];
+  if (key === "custom") label = from ? (from === to ? costsDayLabel(from) : `${costsDayLabel(from)} to ${costsDayLabel(to)}`) : "Those dates";
+  return { key: key === "custom" || COSTS_PERIOD_LABELS[key] ? key : "week", label: label || COSTS_PERIOD_LABELS.week, rows, from, to };
+}
+
+function costsSteps(range, names) {
+  return waterfallSteps(range.rows, names);
+}
+
+function stepValue(steps, label) {
+  const s = steps.find((x) => x.label === label);
+  return s ? s.value : 0;
+}
+
+/** The sentences under the picker for the chosen period. `today` is {halfHours, axle:{kwh,gross,net}, free:{kwh,net},
+ *  lastEvent:{time,end}} from the day-so-far sensors, used when the period includes today. Pure. */
+function costsSummary(range, names, today) {
+  const nm = Object.assign({ tariff: "tariff", event: "Event" }, names);
+  if (!range.rows.length) {
+    return [range.key === "today" ? "Nothing recorded yet today." : "No complete days yet. The savings appear after the first full day."];
+  }
+  const steps = costsSteps(range, nm).steps;
+  const paid = steps[steps.length - 1].value;
+  const hasEvent = /payments\)$/.test(steps[steps.length - 1].label);
+  const none = stepValue(steps, "No solar or battery");
+  const withSolarTariff = none + stepValue(steps, "Solar") + stepValue(steps, nm.tariff);
+  const pe = stepValue(steps, "PowerEngine");
+  const money = (v) => gbp(Math.abs(v));
+  const lead = paid < -0.005 ? `${range.label}: you were paid ${money(paid)}` : `${range.label}: you paid ${money(paid)}`;
+  const out = [`**${lead}**${hasEvent ? ` after ${nm.event}'s payments` : ""}. With no solar or battery it would have been ${gbp(none)}, with solar and your ${nm.tariff} alone ${gbp(withSolarTariff)}. **The battery and PowerEngine saved ${gbp(-pe)}** on top of that.`];
+  const hasToday = range.rows.some((d) => !d.done);
+  if (hasToday && today) {
+    if (today.halfHours) out.push(`Today covers ${today.halfHours} of the day's 48 half-hours, with the standing charge for the whole day.`);
+    if (today.axle) {
+      out.push(`${nm.event} exported ${today.axle.kwh} kWh today and paid you ${gbp(today.axle.gross)} (${gbp(today.axle.net)} net of the battery energy it used).${today.lastEvent ? ` The last event ran from ${today.lastEvent.time} to ${today.lastEvent.end}.` : ""}`);
+    }
+    if (today.free) out.push(`Free power today: ${today.free.kwh} kWh, a net ${gbp(today.free.net)}.`);
+  }
+  return out;
+}
+
+/** What the day-so-far sensors say, for costsSummary. */
+function costsTodayInfo(states) {
+  const t = states && states["sensor.pe_cost_today"];
+  const a = (t && t.attributes) || {};
+  const ev = a.events || {};
+  const e = states && states["sensor.pe_event_last"];
+  const ea = (e && e.attributes) || {};
+  const todayIso = new Date().toLocaleDateString("en-CA");
+  let last = null;
+  if (ea.type === "axle" && ea.date === todayIso && ea.time && ea.end) {
+    const end = new Date(ea.end);
+    last = { time: ea.time, end: Number.isNaN(end.getTime()) ? "" : end.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) };
+    if (!last.end) last = null;
+  }
+  return { halfHours: toNumber(a.half_hours), axle: ev.axle || null, free: ev.free_power || null, lastEvent: last };
+}
+
+/** Per day, how the PowerEngine step splits (the app's cost book): energy carried in, the battery itself, timing. */
+function peParts(row) {
+  const num = (v) => toNumber(v) || 0;
+  const carried = -num(row.carry);
+  const plain = num(row.tariff) - num(row.self_use_adj);
+  const timing = num(row.self_use_adj) - num(row.actual_adj);
+  return { carried, plain, timing, total: carried + plain + timing };
+}
+
+/** The chart's five bars for a day: what it would have cost with no solar or battery, with solar, with the tariff, as
+ *  PowerEngine ran it, and the net cost after events. Pure. */
+function costsBars(row) {
+  const num = (v) => toNumber(v) || 0;
+  const pe = num(row.actual_adj) + num(row.carry);
+  return [
+    { key: "none", label: "No solar or battery", value: num(row.none) },
+    { key: "solar", label: "Solar", value: num(row.solar) },
+    { key: "tariff", label: "Tariff", value: num(row.tariff) },
+    { key: "pe", label: "PowerEngine", value: pe },
+    { key: "net", label: "Net cost", value: pe + num(row.events_metered) - num(row.axle_income) },
+  ];
+}
+
+function inRange(date, range) {
+  return !!range.from && date >= range.from && date <= range.to;
+}
+
+/** A card that redraws when the shared period changes. */
+function followPeriod(proto) {
+  const connected = proto.connectedCallback;
+  const disconnected = proto.disconnectedCallback;
+  proto.connectedCallback = function () {
+    if (connected) connected.call(this);
+    if (!this._config || !this._config.shared) return;
+    this._onPeriod = () => { this._sel = null; this._sig = null; if (this._hass) this._render(); };
+    window.addEventListener(COSTS_PERIOD_EVENT, this._onPeriod);
+  };
+  proto.disconnectedCallback = function () {
+    if (disconnected) disconnected.call(this);
+    if (this._onPeriod) window.removeEventListener(COSTS_PERIOD_EVENT, this._onPeriod);
+  };
 }
 
 function pct(v, scale) {
@@ -3849,6 +4002,7 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
     this._config = config;
     this._period = config.period || "week";
     this._range = null;           // {from, to} for the custom period; filled in from the sensor's days
+    if (config.shared) this._period = costsPeriodLoad().key;
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
   }
 
@@ -3906,6 +4060,7 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
     const st = this._hass.states[this._config.entity];
     const periods = (st && st.attributes && st.attributes.periods) || {};
     const daily = (st && st.attributes && st.attributes.daily) || [];
+    if (this._config.shared) return this._renderShared(st, daily);
     const custom = this._period === "custom";
     if (custom && !this._range) this._range = this._defaultRange();
     const p = custom
@@ -3966,6 +4121,41 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
         </div>
         <div class="labels" style="grid-template-columns: repeat(${n}, 1fr)">${labels}</div>
         <p class="caption">${escHtml(p.from === p.to ? p.from : `${p.from}–${p.to}`)}, ${p.days} day${p.days === 1 ? "" : "s"}${this._period === "today" || (custom && p.to === daily[daily.length - 1].date && !daily[daily.length - 1].done) ? " (today so far, with the whole day's standing charge)" : ""}. Green steps saved money; orange ones cost money.</p>
+      </ha-card>`;
+    this._wire();
+  }
+
+  _renderShared(st, daily) {
+    // The Costs page: the period is the page's (see costsRange), so there are no buttons here.
+    const range = costsRange(costsPeriodLoad(), daily);
+    if (!st || !range.rows.length) {
+      this.shadowRoot.innerHTML = `<style>${this._css()}</style><ha-card class="wf"><p class="none">${escHtml(range.key === "today" ? "Nothing recorded yet today." : "No days to show for this period yet.")}</p></ha-card>`;
+      return;
+    }
+    const p = costsSteps(range, st.attributes.names);
+    const rows = waterfallRows(p.steps);
+    const scale = waterfallScale(rows);
+    const zeroPct = pct(0, scale);
+    const cols = rows.map((r, i) => {
+      let cls = "neutral";
+      if (r.kind === "step") cls = r.value <= 0 ? "good" : "bad";
+      if (r.kind === "total" && i === rows.length - 1) cls = "final";
+      const lo = pct(Math.min(r.from, r.to), scale);
+      const hi = pct(Math.max(r.from, r.to), scale);
+      const conn = i > 0 ? `<div class="conn" style="bottom:${pct(rows[i - 1].to, scale)}%"></div>` : "";
+      const shown = shownValue(r);
+      return `<div class="col${this._sel === i ? " sel" : ""}" data-i="${i}" title="${escHtml(r.label)}: ${this._gbp(shown)}">${conn}<div class="bar ${cls}" style="bottom:${lo}%; height:${Math.max(0.8, hi - lo)}%"></div><div class="v" style="bottom:${hi}%"><span class="full">${this._gbp(shown)}</span><span class="short">${compactGbp(shown)}</span></div></div>`;
+    }).join("");
+    const labels = rows.map((r, i) => `<div class="lbl" data-i="${i}"><span class="full">${escHtml(r.label)}</span><span class="short">${escHtml(waterfallShortLabel(r.label))}</span></div>`).join("");
+    const n = rows.length;
+    const today = range.rows.some((d) => !d.done) ? " (today so far, with the whole day's standing charge)" : "";
+    this.shadowRoot.innerHTML = `
+      <style>${this._css()}</style>
+      <ha-card class="wf">
+        <div class="selinfo">${this._sel != null && rows[this._sel] ? `<b>${escHtml(rows[this._sel].label)}:</b> ${this._gbp(shownValue(rows[this._sel]))}` : "Tap a column for its name and exact value."}</div>
+        <div class="plot" style="grid-template-columns: repeat(${n}, 1fr)"><div class="zero" style="bottom:${zeroPct}%"></div>${cols}</div>
+        <div class="labels" style="grid-template-columns: repeat(${n}, 1fr)">${labels}</div>
+        <p class="caption">${escHtml(range.from === range.to ? range.from : `${range.from}–${range.to}`)}, ${range.rows.length} day${range.rows.length === 1 ? "" : "s"}${today}. Green steps saved money; orange ones cost money.</p>
       </ha-card>`;
     this._wire();
   }
@@ -4032,10 +4222,222 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
   }
 }
 
+followPeriod(PowerEngineWaterfallCard.prototype);
+
 if (typeof customElements !== "undefined" && !customElements.get("powerengine-waterfall-card")) {
   customElements.define("powerengine-waterfall-card", PowerEngineWaterfallCard);
   window.customCards = window.customCards || [];
   window.customCards.push({ type: "powerengine-waterfall-card", name: "PowerEngine savings waterfall", description: "Where the Costs page's savings came from, period by period." });
+}
+
+
+/* ------------------------------------------------------------ the Costs page's period picker and day-by-day card
+ *   type: custom:powerengine-costs-period-card      (entity: sensor.pe_cost_waterfall)
+ *   type: custom:powerengine-costs-days-card        (entity: sensor.pe_cost_waterfall)
+ * The picker sets the page's period and says in words what it came to; the days card follows it.
+ */
+class PowerEngineCostsPeriodCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
+  setConfig(config) {
+    this._config = Object.assign({ entity: "sensor.pe_cost_waterfall" }, config || {});
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const ids = [this._config.entity, "sensor.pe_cost_today", "sensor.pe_event_last"];
+    const sig = ids.map((id) => (hass.states[id] ? hass.states[id].last_updated : "")).join("|");
+    if (sig !== this._sig) { this._sig = sig; this._render(); }
+  }
+
+  getCardSize() { return 3; }
+
+  getGridOptions() { return { columns: "full", rows: "auto" }; }
+
+  connectedCallback() {
+    this._onPeriod = () => { this._sig = null; if (this._hass) this._render(); };
+    window.addEventListener(COSTS_PERIOD_EVENT, this._onPeriod);
+  }
+
+  disconnectedCallback() { window.removeEventListener(COSTS_PERIOD_EVENT, this._onPeriod); }
+
+  _pick(key) {
+    const sel = { key };
+    if (key === "custom") {
+      const prev = costsPeriodLoad();
+      const r = costsRange({ key: "week" }, this._daily());
+      Object.assign(sel, { from: prev.from || r.from, to: prev.to || r.to });
+    }
+    costsPeriodSet(sel);
+  }
+
+  _daily() {
+    const st = this._hass && this._hass.states[this._config.entity];
+    return (st && st.attributes && st.attributes.daily) || [];
+  }
+
+  _setDate(which, value) {
+    if (!value) return;
+    const sel = Object.assign({}, costsPeriodLoad(), { key: "custom" });
+    if (!sel.from || !sel.to) Object.assign(sel, costsRange({ key: "week" }, this._daily()));
+    sel[which] = value;
+    if (sel.from > sel.to) { if (which === "from") sel.to = value; else sel.from = value; }
+    costsPeriodSet({ key: "custom", from: sel.from, to: sel.to });
+  }
+
+  _render() {
+    if (!this.shadowRoot || !this._hass) return;
+    const st = this._hass.states[this._config.entity];
+    const daily = this._daily();
+    const sel = costsPeriodLoad();
+    const range = costsRange(sel, daily);
+    const names = st && st.attributes && st.attributes.names;
+    const lines = costsSummary(range, names, costsTodayInfo(this._hass.states));
+    const buttons = WATERFALL_PERIODS.map((w) => `<button data-period="${w.key}" class="${w.key === range.key ? "on" : ""}">${escHtml(w.label)}</button>`).join("");
+    const picker = range.key === "custom" && daily.length
+      ? `<div class="range"><label>From <input type="date" data-range="from" value="${escHtml(range.from || sel.from || "")}" min="${escHtml(daily[0].date)}" max="${escHtml(daily[daily.length - 1].date)}"></label>
+           <label>To <input type="date" data-range="to" value="${escHtml(range.to || sel.to || "")}" min="${escHtml(daily[0].date)}" max="${escHtml(daily[daily.length - 1].date)}"></label></div>`
+      : "";
+    const md = (s) => escHtml(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: block; }
+        .top { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+        button { font: inherit; font-size: 0.9em; padding: 4px 12px; border-radius: 6px; cursor: pointer;
+                 border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color); }
+        button.on { background: var(--primary-color); color: var(--text-primary-color, #fff); }
+        .range { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; font-size: 0.9em; }
+        .range input { font: inherit; color: var(--primary-text-color); background: none; border: 1px solid var(--divider-color); border-radius: 6px; padding: 2px 6px; }
+        p { margin: 6px 0; line-height: 1.4; }
+        .hint { color: var(--secondary-text-color); font-size: 0.8em; }
+      </style>
+      <div class="top">${buttons}</div>${picker}
+      ${lines.map((l) => `<p>${md(l)}</p>`).join("")}
+      ${daily.length ? "" : '<p class="hint">Choosing a period needs the app to have published its daily figures (0.9.183 or later).</p>'}`;
+    this.shadowRoot.querySelectorAll("button[data-period]").forEach((b) => b.addEventListener("click", () => this._pick(b.dataset.period)));
+    this.shadowRoot.querySelectorAll("input[data-range]").forEach((i) => i.addEventListener("change", () => this._setDate(i.dataset.range, i.value)));
+  }
+}
+
+const COSTS_BAR_COLOURS = { none: "#8d6e63", solar: "#fdd835", tariff: "#26a69a", pe: "#424242", net: "#7e57c2" };
+
+class PowerEngineCostsDaysCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
+  setConfig(config) {
+    this._config = Object.assign({ entity: "sensor.pe_cost_waterfall", shared: true }, config || {});
+    this._split = false;
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const st = hass.states[this._config.entity];
+    const sig = st ? st.last_updated : "";
+    if (sig !== this._sig) { this._sig = sig; this._render(); }
+  }
+
+  getCardSize() { return 8; }
+
+  getGridOptions() { return { columns: "full", rows: "auto" }; }
+
+  _render() {
+    if (!this.shadowRoot || !this._hass) return;
+    const st = this._hass.states[this._config.entity];
+    const daily = (st && st.attributes && st.attributes.daily) || [];
+    const names = Object.assign({ tariff: "tariff", event: "Event" }, st && st.attributes && st.attributes.names);
+    const range = costsRange(costsPeriodLoad(), daily);
+    if (!range.rows.length) {
+      this.shadowRoot.innerHTML = `<style>:host{display:block}.none{color:var(--secondary-text-color)}</style><p class="none">${escHtml(range.key === "today" ? "Nothing recorded yet today." : "No days to show for this period yet.")}</p>`;
+      return;
+    }
+    const sel = this._selDay;
+    const bars = range.rows.map((r) => costsBars(r));
+    const vals = bars.flat().map((b) => b.value);
+    const scale = waterfallScale([{ from: Math.min(0, ...vals), to: Math.max(0, ...vals) }]);
+    const zero = pct(0, scale);
+    const n = range.rows.length;
+    const group = (r, i) => {
+      const date = costsDayLabel(r.date);
+      const inner = bars[i].map((b, k) => {
+        const lo = pct(Math.min(0, b.value), scale);
+        const hi = pct(Math.max(0, b.value), scale);
+        return `<div class="b" style="left:${k * 20}%; bottom:${lo}%; height:${Math.max(0.6, hi - lo)}%; background:${COSTS_BAR_COLOURS[b.key]}" title="${escHtml(date)}, ${escHtml(b.label)}: ${gbp(b.value)}"></div>`;
+      }).join("");
+      return `<div class="g${sel === r.date ? " sel" : ""}" data-day="${r.date}">${inner}</div>`;
+    };
+    const dayLabel = (r) => new Date(`${r.date}T12:00:00Z`).toLocaleDateString("en-GB", n > 10 ? { day: "numeric", timeZone: "UTC" } : { weekday: "short", day: "numeric", timeZone: "UTC" });
+    const info = sel && range.rows.find((r) => r.date === sel)
+      ? `<b>${escHtml(costsDayLabel(sel))}:</b> ` + costsBars(range.rows.find((r) => r.date === sel)).map((b) => `${escHtml(b.label)} ${gbp(b.value)}`).join(" · ")
+      : "Tap a day to see its five figures.";
+    const legend = ["none", "solar", "tariff", "pe", "net"].map((k) => {
+      const label = { none: "No solar or battery", solar: "Solar", tariff: `+ ${names.tariff}`, pe: "PowerEngine", net: "Net cost (below 0 = paid to you)" }[k];
+      return `<span><i style="background:${COSTS_BAR_COLOURS[k]}"></i>${escHtml(label)}</span>`;
+    }).join("");
+    const cell = (v) => `<td class="num">${gbp(v)}</td>`;
+    const paidCell = (v) => `<td class="num"><b>${v < -0.005 ? `paid you ${gbp(-v)}` : gbp(v)}</b></td>`;
+    const stepsOf = (rows) => waterfallSteps(rows, names).steps;
+    const rowCells = (steps) => {
+      const ev = steps.length === 6 ? steps[4].value : 0;
+      const parts = [steps[0].value, steps[1].value, steps[2].value, steps[3].value, ev];
+      return parts.map(cell).join("") + paidCell(steps[steps.length - 1].value);
+    };
+    const split = this._split;
+    const splitCells = (rows) => {
+      const sum = rows.reduce((a, r) => { const p = peParts(r); return { carried: a.carried + p.carried, plain: a.plain + p.plain, timing: a.timing + p.timing, bin: a.bin + (r.bin || 0), bout: a.bout + (r.bout || 0) }; }, { carried: 0, plain: 0, timing: 0, bin: 0, bout: 0 });
+      return `${cell(sum.carried)}${cell(sum.plain)}${cell(sum.timing)}<td class="num">${sum.bin.toFixed(1)} / ${sum.bout.toFixed(1)}</td>`;
+    };
+    const body = range.rows.slice().reverse().map((r) => `<tr><th scope="row">${escHtml(costsDayLabel(r.date))}${r.done ? "" : " (so far)"}</th>${rowCells(stepsOf([r]))}${split ? splitCells([r]) : ""}</tr>`).join("");
+    const total = `<tr class="tot"><th scope="row">${n} day${n === 1 ? "" : "s"}</th>${rowCells(stepsOf(range.rows))}${split ? splitCells(range.rows) : ""}</tr>`;
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: block; }
+        .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 0.8em; color: var(--secondary-text-color); margin-bottom: 6px; }
+        .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; }
+        .info { min-height: 1.3em; font-size: 0.85em; margin: 2px 0 6px; }
+        .scroll { overflow-x: auto; }
+        .plot { position: relative; height: 200px; display: flex; gap: ${n > 14 ? 3 : 8}px; min-width: ${Math.max(0, n * (n > 14 ? 26 : 44))}px; margin-top: 8px; }
+        .g { position: relative; flex: 1; cursor: pointer; }
+        .g.sel { outline: 2px solid var(--primary-color); outline-offset: 1px; }
+        .b { position: absolute; width: 18%; border-radius: 2px 2px 0 0; }
+        .zero { position: absolute; left: 0; right: 0; height: 0; border-top: 1px solid var(--divider-color); bottom: ${zero}%; }
+        .days { display: flex; gap: ${n > 14 ? 3 : 8}px; min-width: ${Math.max(0, n * (n > 14 ? 26 : 44))}px; font-size: 0.7em; color: var(--secondary-text-color); margin-top: 4px; }
+        .days span { flex: 1; text-align: center; overflow: hidden; }
+        label.split { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85em; margin: 10px 0 4px; cursor: pointer; }
+        table { border-collapse: collapse; width: 100%; font-size: 0.85em; }
+        th, td { padding: 5px 8px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--divider-color); }
+        th:first-child { text-align: left; font-weight: 500; }
+        thead th { font-size: 0.8em; font-weight: 500; color: var(--secondary-text-color); white-space: normal; vertical-align: bottom; }
+        tr.tot th, tr.tot td { border-top: 2px solid var(--divider-color); font-weight: 600; }
+        .small { color: var(--secondary-text-color); font-size: 0.8em; margin: 6px 0; }
+        @media (max-width: 520px) { th, td { padding: 5px 4px; } table { font-size: 0.78em; } }
+      </style>
+      <div class="legend">${legend}</div>
+      <div class="info">${info}</div>
+      <div class="scroll"><div class="plot"><div class="zero"></div>${range.rows.map(group).join("")}</div><div class="days">${range.rows.map((r) => `<span>${escHtml(dayLabel(r))}</span>`).join("")}</div></div>
+      <label class="split"><input type="checkbox" ${split ? "checked" : ""}> Show how the PowerEngine step splits</label>
+      <div class="scroll"><table>
+        <thead><tr><th>Day</th><th>No solar or battery</th><th>Solar</th><th>${escHtml(names.tariff)}</th><th>PowerEngine</th><th>${escHtml(names.event)} &amp; free power</th><th>You paid (or were paid)</th>${split ? "<th>Energy carried in</th><th>The battery itself</th><th>PowerEngine's timing</th><th>Battery in / out (kWh)</th>" : ""}</tr></thead>
+        <tbody>${body}${total}</tbody></table></div>
+      <p class="small">The same steps as the waterfall, one row per day (a negative step saved money). Each part is rounded, so a row can differ from its total by a penny.${split ? " The split: carried in is battery energy bought on an earlier day and used in this one; the battery itself is what a plain self-use battery would have saved; PowerEngine's timing is what its choices added on top (negative means it did worse than plain self-use that day)." : ""}</p>`;
+    this.shadowRoot.querySelector("label.split input").addEventListener("change", (ev) => { this._split = ev.target.checked; this._render(); });
+    this.shadowRoot.querySelectorAll(".g").forEach((g) => g.addEventListener("click", () => {
+      this._selDay = this._selDay === g.dataset.day ? null : g.dataset.day;
+      this._render();
+    }));
+  }
+
+  connectedCallback() {
+    this._onPeriod = () => { this._selDay = null; this._sig = null; if (this._hass) this._render(); };
+    window.addEventListener(COSTS_PERIOD_EVENT, this._onPeriod);
+  }
+
+  disconnectedCallback() { window.removeEventListener(COSTS_PERIOD_EVENT, this._onPeriod); }
+}
+
+if (typeof customElements !== "undefined") {
+  if (!customElements.get("powerengine-costs-period-card")) customElements.define("powerengine-costs-period-card", PowerEngineCostsPeriodCard);
+  if (!customElements.get("powerengine-costs-days-card")) customElements.define("powerengine-costs-days-card", PowerEngineCostsDaysCard);
+  window.customCards = window.customCards || [];
+  window.customCards.push({ type: "powerengine-costs-period-card", name: "PowerEngine costs period", description: "The Costs page's period picker and a summary of the chosen period." });
+  window.customCards.push({ type: "powerengine-costs-days-card", name: "PowerEngine costs by day", description: "The chosen period day by day: a chart and a table." });
 }
 
 // --- Collapsible sections -------------------------------------------------------------------------------------
@@ -8402,6 +8804,19 @@ function whyView(w) {
     gap: gbp(w.gap),
   };
 }
+/** The compare view cut to the page's period: only the days in it, totals worked out again from them. The
+ *  comparison covers the last 7 days only, so a longer period says so. Pure. */
+function compareScoped(view, range) {
+  const rows = view.rows.filter((r) => inRange(r.date, range));
+  const ok = rows.filter((r) => r.ok && r.n && r.n.v1 !== null && r.n.v2 !== null);
+  const sum = (k) => ok.reduce((a, r) => a + (r.n[k] || 0), 0);
+  const totals = ok.length ? { days: ok.length, v1: gbp(sum("v1")), v2: gbp(sum("v2")), bound: gbp(sum("bound")), diff: gbp(sum("v2") - sum("v1"), true), best: compareBest(sum("v1"), sum("v2")) } : null;
+  let note = "";
+  if (!range.rows.length) note = "No days in this period yet.";
+  else if (!rows.length) note = "The comparison covers the last 7 days, and none of them are in this period.";
+  else if (view.rows.some((r) => !inRange(r.date, range)) || range.rows.length > view.rows.length) note = `Showing the compared days in this period (the comparison covers the last 7 days).`;
+  return { view: Object.assign({}, view, { rows, totals }), note };
+}
 function compareBest(v1, v2) {
   const a = toNumber(v1), b = toNumber(v2);
   if (a === null || b === null) return null;
@@ -8434,6 +8849,7 @@ function engineCompareView(attrs, state) {
       approx: ok ? approxNote(d) : "",
       why: ok ? whyView(d.why) : null,
       reason: ok ? "" : (d.reason ? String(d.reason) : COMPARE_REASONS[d.status] || "not compared"),
+      n: ok ? { v1: toNumber(d.v1), v2: toNumber(d.v2), bound: toNumber(d.bound) } : null,
       v1: gbp(d.v1), v2: gbp(d.v2), bound: gbp(d.bound), diff: diff === null ? "–" : gbp(diff, true), diffN: diff,
       control, controlText: control ? `${control === "mixed" ? "mixed" : `engine ${control}`}${control === "v2" && typeof d.profile === "string" && d.profile ? ` · ${d.profile}` : ""}${d.live === false ? " (passive)" : ""}` : "–",
       calib: c && toNumber(c.diff) !== null ? `Engine ${c.engine}'s replay against the metered cost: ${gbp(c.diff, true)}${toNumber(c.diff_pct) === null ? "" : ` (${Math.round(toNumber(c.diff_pct) * 10) / 10}%)`}` : "",
@@ -8452,10 +8868,25 @@ function engineCompareView(attrs, state) {
 class PowerEngineEngineCompareCard extends PowerEngineV2Card {
   setConfig(config) { super.setConfig(Object.assign({ entity: ENGINE_COMPARE_SENSOR }, config || {})); }
   getCardSize() { return 8; }
-  _ids() { return [(this._config && this._config.entity) || ENGINE_COMPARE_SENSOR]; }
+  _ids() { return [(this._config && this._config.entity) || ENGINE_COMPARE_SENSOR, "sensor.pe_cost_waterfall"]; }
+  connectedCallback() {
+    if (!this._config || !this._config.shared) return;
+    this._onPeriod = () => { if (this._lastStates) this._render(this._lastStates); };
+    window.addEventListener(COSTS_PERIOD_EVENT, this._onPeriod);
+  }
+  disconnectedCallback() { if (this._onPeriod) window.removeEventListener(COSTS_PERIOD_EVENT, this._onPeriod); }
   _render(states) {
+    this._lastStates = states;
     const s = (states || {})[(this._config && this._config.entity) || ENGINE_COMPARE_SENSOR];
-    const v = engineCompareView(s && s.attributes, s && s.state !== "unavailable" && s.state !== "unknown" ? s.state : undefined);
+    let v = engineCompareView(s && s.attributes, s && s.state !== "unavailable" && s.state !== "unknown" ? s.state : undefined);
+    let scopeNote = "";
+    if (this._config && this._config.shared && v.kind === "ok") {
+      const wf = (states || {})["sensor.pe_cost_waterfall"];
+      const range = costsRange(costsPeriodLoad(), (wf && wf.attributes && wf.attributes.daily) || []);
+      const scoped = compareScoped(v, range);
+      v = scoped.view;
+      scopeNote = scoped.note;
+    }
     if (v.kind === "none" || v.kind === "off" || v.kind === "error" || v.kind === "waiting") {
       this.shadowRoot.innerHTML = `<style>${V2_CSS}</style><ha-card><div class="head"><span class="title">Engines compared, same day</span>${v.running ? '<span class="chip muted">Running now</span>' : ""}</div>
         <p class="${v.kind === "error" ? "" : "muted"}">${escHtml(v.text)}</p>${v.note && v.kind === "waiting" ? `<p class="muted small">${escHtml(v.note)}</p>` : ""}</ha-card>`;
@@ -8500,8 +8931,9 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
       @media (max-width: 520px) { table { font-size: 12.5px; } th, td { padding: 6px 5px; } thead th { font-size: 10.5px; } ha-card { padding: 12px; } }
     </style>
     <ha-card>
-      <div class="head"><span class="title">Engines compared, same day</span>${v.running ? '<span class="chip muted">Running now</span>' : ""}</div>
+      ${this._config && this._config.shared ? (v.running ? '<div class="head"><span class="chip muted">Running now</span></div>' : "") : `<div class="head"><span class="title">Engines compared, same day</span>${v.running ? '<span class="chip muted">Running now</span>' : ""}</div>`}
       ${v.problem ? `<p class="muted small">${escHtml(v.problem)}</p>` : ""}
+      ${scopeNote ? `<p class="muted small">${escHtml(scopeNote)}</p>` : ""}
       <p class="muted small">What each engine saved against plain self-use, per day (£). ✓ marks the better engine; best possible is perfect hindsight.${v.rows.some((r) => r.approx) ? " ≈ marks a day that is only approximate (hover or tap it to see why)." : ""}</p>
       <div class="wrap"><table>
         <thead><tr><th>Day</th><th>Engine v1</th><th>Engine v2</th><th>Best possible</th><th>v2 − v1</th><th>In control</th></tr></thead>
@@ -8543,11 +8975,38 @@ function eventsView(attrs) {
   return { name, months, hasDays: months.some((m) => m.days.length) };
 }
 
+/** What events brought in over the page's period, from the listed days with events (the last three months). Pure. */
+function eventsInRange(attrs, range) {
+  const months = (attrs && Array.isArray(attrs.months) ? attrs.months : []).filter((m) => Array.isArray(m.ev_days));
+  const listed = months.length ? months[0].month : null;                  // the oldest month that lists its days
+  if (!range.from || !listed || range.from.slice(0, 7) < listed) return range.from && listed ? { partial: true } : null;
+  const days = months.flatMap((m) => m.ev_days).filter((d) => inRange(d[0], range));
+  const sum = (i) => days.reduce((a, d) => a + (toNumber(d[i]) || 0), 0);
+  return { days: days.length, kwh: sum(1), gross: sum(2), energy: sum(3), net: sum(4), freeKwh: sum(5), free: sum(6) };
+}
+
 class PowerEngineEventsCard extends PowerEngineV2Card {
   setConfig(config) { super.setConfig(Object.assign({ entity: EVENT_MONTHS_SENSOR }, config || {})); }
   getCardSize() { return 6; }
-  _ids() { return [(this._config && this._config.entity) || EVENT_MONTHS_SENSOR, "switch.pe_ui_right_align"]; }
+  _ids() { return [(this._config && this._config.entity) || EVENT_MONTHS_SENSOR, "switch.pe_ui_right_align", "sensor.pe_cost_waterfall"]; }
+  connectedCallback() {
+    if (!this._config || !this._config.shared) return;
+    this._onPeriod = () => { if (this._lastStates) this._render(this._lastStates); };
+    window.addEventListener(COSTS_PERIOD_EVENT, this._onPeriod);
+  }
+  disconnectedCallback() { if (this._onPeriod) window.removeEventListener(COSTS_PERIOD_EVENT, this._onPeriod); }
+  _periodLine(states, attrs, name) {
+    if (!this._config || !this._config.shared) return "";
+    const wf = (states || {})["sensor.pe_cost_waterfall"];
+    const range = costsRange(costsPeriodLoad(), (wf && wf.attributes && wf.attributes.daily) || []);
+    const t = eventsInRange(attrs, range);
+    if (!t) return "";
+    if (t.partial) return `<p class="muted small">Days with events are listed for the last three months only, so ${escHtml(range.label.toLowerCase())} is shown in the monthly table below.</p>`;
+    if (!t.days) return `<p>No ${escHtml(name)} or free-power events in ${escHtml(range.label.toLowerCase())}.</p>`;
+    return `<p><b>${escHtml(range.label)}:</b> ${t.days} day${t.days === 1 ? "" : "s"} with events. ${escHtml(name)} exported ${t.kwh.toFixed(1)} kWh and paid you ${gbp(t.gross)}, ${gbp(t.net)} net of the ${gbp(t.energy)} of energy it used.${t.free ? ` Free power: ${t.freeKwh.toFixed(1)} kWh, a net ${gbp(t.free)}.` : ""}</p>`;
+  }
   _render(states) {
+    this._lastStates = states;
     const s = (states || {})[(this._config && this._config.entity) || EVENT_MONTHS_SENSOR];
     const v = eventsView(s && s.attributes);
     const left = (states["switch.pe_ui_right_align"] || {}).state === "off";
@@ -8578,6 +9037,7 @@ class PowerEngineEventsCard extends PowerEngineV2Card {
       @media (max-width: 520px) { table { font-size: 12.5px; } th, td { padding: 6px 5px; } thead th { font-size: 10.5px; } ha-card { padding: 12px; } }
     </style>
     <ha-card>
+      ${this._periodLine(states, s && s.attributes, v.name)}
       <div class="wrap"><table>
         <thead><tr><th>Month</th><th>${escHtml(v.name)} kWh</th><th>${escHtml(v.name)} paid you</th><th>Energy it used</th><th>${escHtml(v.name)} net</th><th>Free power</th><th>Day-to-day energy (metered)</th><th>Standing charge</th></tr></thead>
         <tbody>${body}</tbody></table></div>
@@ -8610,13 +9070,13 @@ class PowerEngineEventsCard extends PowerEngineV2Card {
 });
 
 if (typeof module !== "undefined") {
-  module.exports = { alexaSpeakerKinds, alexaTestPayload, ALEXA_TEST_EVENT, alexaDraft, parseHoursBefore, alexaSpeakerName, ALEXA_DEFAULT, v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallCustom, shownValue, sectionOpen, sectionsLoad, SECTIONS_KEY, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
+  module.exports = { alexaSpeakerKinds, alexaTestPayload, ALEXA_TEST_EVENT, alexaDraft, parseHoursBefore, alexaSpeakerName, ALEXA_DEFAULT, v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallCustom, waterfallSteps, costsRange, costsSummary, costsTodayInfo, costsBars, peParts, costsDayLabel, shownValue, sectionOpen, sectionsLoad, SECTIONS_KEY, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
   v2WithProfiles, V2_PROFILES, uiEngine, profileDraft, profileList, profileBase, profileChanges, profileLoadFields, profileSaveFields, profileDeleteFields,
   ENGINE_SENSOR, V2_NOT_RUNNING, V2_NO_DATA, V2_MODES, v2Engine, v2Supported, v2Gate, valueBarGeometry, modeSubtitle, exitRows, engineCardView, timelineLayout, recentRows, scrollIntent, HISTORY_HOURS, V2_RECENT, sunLayout, levelAtHour, bandLabel, timelineHover,
   heatColour, valueMapGrid, mapCellAt, interpValue, offScaleReason, chartKeyHtml, chartHidden, CHART_KEYS, pathValueSeries, timelineValue, timelineLines, pathLines, mapReadoutText, planCardView, causeBars, causeLabel, comfortSummary, healthCardView,
-  ENGINE_ICONS, engineIcon, refreshEngineIcons, engineBadge, BADGE_LINES, V2_HISTORY_DAY_EVENT, v2HistoryDayPayload, v2HistoryView, engineCompareView, approxNote, whyView, eventsView, calibrationLine, gbp, COMPARE_WAITING,
+  ENGINE_ICONS, engineIcon, refreshEngineIcons, engineBadge, BADGE_LINES, V2_HISTORY_DAY_EVENT, v2HistoryDayPayload, v2HistoryView, engineCompareView, approxNote, whyView, eventsView, eventsInRange, compareScoped, calibrationLine, gbp, COMPARE_WAITING,
   V1_SECTIONS, v2Same, engineGrouping, engineInUse, engineConfirm, cleanV2Block, engineFields, v2Problem, v2Contradictions, v2Values, comfortReadout, weightsReadout, floorsReadout };
 }
