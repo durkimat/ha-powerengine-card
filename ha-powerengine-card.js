@@ -4038,6 +4038,145 @@ if (typeof customElements !== "undefined" && !customElements.get("powerengine-wa
   window.customCards.push({ type: "powerengine-waterfall-card", name: "PowerEngine savings waterfall", description: "Where the Costs page's savings came from, period by period." });
 }
 
+// --- Collapsible sections -------------------------------------------------------------------------------------
+// A titled, foldable group of other cards, so a long page can be shortened. Open or closed is remembered per browser
+// (localStorage, tried and caught) and the cards inside are only built when the section is first opened (a chart in a
+// hidden section would draw at zero width).
+//   type: custom:powerengine-section-card
+//   title: Reference
+//   key: costs-reference      (optional, defaults to the title; names the section in the remembered state)
+//   open: false               (open or closed until the person chooses, default closed)
+//   cards: [ ...any cards... ]
+// custom:powerengine-section-tools is a pair of "Expand all" / "Collapse all" links for every section on the page.
+const SECTIONS_KEY = "powerengine-sections-open";
+const SECTIONS_EVENT = "powerengine-sections";
+
+function sectionsLoad() {
+  try {
+    const raw = typeof localStorage !== "undefined" ? JSON.parse(localStorage.getItem(SECTIONS_KEY) || "{}") : {};
+    return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  } catch (e) { return {}; }
+}
+function sectionsSave(state) {
+  try { localStorage.setItem(SECTIONS_KEY, JSON.stringify(state)); } catch (e) { /* private mode: it still works for now */ }
+}
+/** Open or closed: what the person chose if they did, else the card's own default. Pure. */
+function sectionOpen(state, key, dflt) {
+  const v = state && state[key];
+  return typeof v === "boolean" ? v : !!dflt;
+}
+
+class PowerEngineSectionCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
+  setConfig(config) {
+    if (!config || !Array.isArray(config.cards) || !config.cards.length) throw new Error("cards is required");
+    if (!config.title) throw new Error("title is required");
+    this._config = config;
+    this._key = String(config.key || config.title);
+    this._built = false;
+    this._build();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (this._inner) this._inner.hass = hass;
+  }
+
+  getCardSize() {
+    const inner = this._inner && this._inner.getCardSize ? this._inner.getCardSize() : 4;
+    return 1 + (this._details && this._details.open ? (typeof inner === "number" ? inner : 4) : 0);
+  }
+
+  getGridOptions() { return { columns: "full", rows: "auto" }; }
+
+  connectedCallback() {
+    this._listen = (ev) => this._set(!!(ev.detail && ev.detail.open));
+    window.addEventListener(SECTIONS_EVENT, this._listen);
+  }
+
+  disconnectedCallback() {
+    if (this._listen) window.removeEventListener(SECTIONS_EVENT, this._listen);
+  }
+
+  _build() {
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: block; }
+        .sec { border-bottom: 1px solid var(--divider-color); }
+        summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; padding: 10px 4px;
+                  font-size: 1.15em; font-weight: 500; color: var(--primary-text-color); }
+        summary::-webkit-details-marker { display: none; }
+        summary::before { content: "▸"; display: inline-block; width: 1em; color: var(--secondary-text-color);
+                          transition: transform .15s; }
+        details[open] > summary::before { transform: rotate(90deg); }
+        .hint { margin-left: auto; font-size: 0.75em; font-weight: 400; color: var(--secondary-text-color); }
+        .body { padding: 4px 0 12px; }
+      </style>
+      <div class="sec"><details><summary><span class="t"></span><span class="hint"></span></summary><div class="body"></div></details></div>`;
+    this._details = this.shadowRoot.querySelector("details");
+    this._body = this.shadowRoot.querySelector(".body");
+    this.shadowRoot.querySelector(".t").textContent = this._config.title;
+    this.shadowRoot.querySelector(".hint").textContent = this._config.hint || "";
+    this._details.open = sectionOpen(sectionsLoad(), this._key, this._config.open);
+    this._details.addEventListener("toggle", () => {
+      this._remember(this._details.open);
+      if (this._details.open) this._fill();
+    });
+    if (this._details.open) this._fill();
+  }
+
+  _remember(open) {
+    const state = sectionsLoad();
+    state[this._key] = open;
+    sectionsSave(state);
+  }
+
+  _set(open) {
+    if (this._details && this._details.open !== open) this._details.open = open;     // the toggle event remembers and fills
+  }
+
+  async _fill() {
+    if (this._built || !this._config) return;
+    this._built = true;
+    try {
+      const helpers = await window.loadCardHelpers();
+      const inner = helpers.createCardElement({ type: "vertical-stack", cards: this._config.cards });
+      if (this._hass) inner.hass = this._hass;
+      this._inner = inner;
+      this._body.replaceChildren(inner);
+    } catch (e) {
+      this._built = false;
+      this._body.textContent = "This section could not be drawn.";
+    }
+  }
+}
+
+class PowerEngineSectionTools extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
+  setConfig() {
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: block; }
+        .tools { display: flex; gap: 14px; justify-content: flex-end; font-size: 0.85em; }
+        button { font: inherit; background: none; border: 0; padding: 0; cursor: pointer; color: var(--primary-color); }
+      </style>
+      <div class="tools"><button data-open="1">Expand all</button><button data-open="0">Collapse all</button></div>`;
+    this.shadowRoot.querySelectorAll("button").forEach((b) => b.addEventListener("click", () =>
+      window.dispatchEvent(new CustomEvent(SECTIONS_EVENT, { detail: { open: b.dataset.open === "1" } }))));
+  }
+
+  getCardSize() { return 1; }
+
+  getGridOptions() { return { columns: "full", rows: 1 }; }
+}
+
+if (typeof customElements !== "undefined") {
+  if (!customElements.get("powerengine-section-card")) customElements.define("powerengine-section-card", PowerEngineSectionCard);
+  if (!customElements.get("powerengine-section-tools")) customElements.define("powerengine-section-tools", PowerEngineSectionTools);
+  window.customCards = window.customCards || [];
+  window.customCards.push({ type: "powerengine-section-card", name: "PowerEngine section", description: "A titled group of cards that folds away; open or closed is remembered per browser." });
+}
+
 // --- Diagnostics export (Health tab) --------------------------------------------------------------------------
 // Admin only (HA only lets admins fire and subscribe to events). Asks the app for its file-backed parts (config,
 // write journal, plan, recent log), adds live entity states and 24 h of history, and saves one JSON file in the
@@ -8358,7 +8497,7 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
 });
 
 if (typeof module !== "undefined") {
-  module.exports = { alexaSpeakerKinds, alexaTestPayload, ALEXA_TEST_EVENT, alexaDraft, parseHoursBefore, alexaSpeakerName, ALEXA_DEFAULT, v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallCustom, shownValue, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
+  module.exports = { alexaSpeakerKinds, alexaTestPayload, ALEXA_TEST_EVENT, alexaDraft, parseHoursBefore, alexaSpeakerName, ALEXA_DEFAULT, v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallCustom, shownValue, sectionOpen, sectionsLoad, SECTIONS_KEY, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,

@@ -1033,3 +1033,13 @@ test("a period you were paid for shows the amount without a minus", () => {
   assert.equal(h.shownValue({ kind: "step", label: "Solar", value: -3 }), -3);
   assert.equal(h.waterfallShortLabel("You were paid (after Axle payments)"), "You were paid");
 });
+
+test("section open state: the person's choice wins, else the card's default, else closed", () => {
+  assert.equal(h.sectionOpen({}, "a", true), true);
+  assert.equal(h.sectionOpen({}, "a"), false);
+  assert.equal(h.sectionOpen({ a: false }, "a", true), false);
+  assert.equal(h.sectionOpen({ a: true }, "a", false), true);
+  assert.equal(h.sectionOpen({ a: "yes" }, "a", false), false);       // not a boolean: ignored
+  assert.equal(h.sectionOpen(null, "a", true), true);
+  assert.deepEqual(h.sectionsLoad(), {});                              // no storage here: empty, no throw
+});
