@@ -3,6 +3,16 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.185
+
+### Behaviour changes
+
+- **New foldable section card** (`custom:powerengine-section-card`) and an Expand all / Collapse all card (`custom:powerengine-section-tools`). Open or closed is remembered per browser, and the cards inside are built the first time a section opens. Used by the Costs page; needs app 0.9.185 for the new page.
+
+### Behind the scenes
+
+- `sectionOpen`, `sectionsLoad`.
+
 ## 0.9.184
 
 ### Behaviour changes
