@@ -1004,3 +1004,25 @@ test("the grid event summary switch is carried and defaults on", () => {
   assert.equal(alexaDraft({ finish: false }).finish, false);
   assert.equal(alexaDraft({ finish: "no" }).finish, true);
 });
+
+test("waterfall custom range totals the app's per-day rows into the same steps the app builds", () => {
+  // the expected values come from pe_core.costs.waterfall() on the same three days
+  const day = (date, done, o) => Object.assign({ date, done, none: 0, solar: 0, tariff: 0, actual_adj: 0, carry: 0,
+                                                 events_metered: 0, axle_income: 0 }, o);
+  const daily = [
+    day("2026-09-21", true, { none: 10.111, solar: 7.222, tariff: 6.333, actual_adj: 3.111, carry: 0.501 }),
+    day("2026-09-22", true, { none: 12.126, solar: 8.111, tariff: 7.001, actual_adj: 4.201, carry: -0.201, events_metered: 1, axle_income: 0.4 }),
+    day("2026-09-23", false, { none: 2, solar: 1, tariff: 0.5, actual_adj: 0.3 }),
+  ];
+  const names = { tariff: "EDF tariff", event: "Axle" };
+  const two = h.waterfallCustom(daily, "2026-09-21", "2026-09-22", names);
+  assert.equal(two.days, 2);
+  assert.deepEqual(two.steps.map((s) => [s.label, s.value]), [
+    ["No solar or battery", 22.24], ["Solar", -6.91], ["EDF tariff", -2], ["PowerEngine", -5.72],
+    ["Axle & free power", 0.6], ["You paid (after Axle payments)", 8.21]]);
+  const one = h.waterfallCustom(daily, "2026-09-23", "2026-09-23", names);       // today so far
+  assert.deepEqual(one.steps.map((s) => [s.label, s.value]), [
+    ["No solar or battery", 2], ["Solar", -1], ["EDF tariff", -0.5], ["PowerEngine", -0.2], ["You paid", 0.3]]);
+  assert.deepEqual([one.from, one.to], ["2026-09-23", "2026-09-23"]);
+  assert.equal(h.waterfallCustom(daily, "2027-01-01", "2027-01-02", names).days, 0);
+});

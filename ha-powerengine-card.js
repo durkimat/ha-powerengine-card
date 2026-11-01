@@ -3731,7 +3731,10 @@ if (typeof customElements !== "undefined") {
  * `periods` attribute, built by pe_core.costs.waterfall).
  *   type: custom:powerengine-waterfall-card
  *   entity: sensor.pe_cost_waterfall
- *   period: week            (yesterday | week | month | days30; a button row also switches it)
+ *   period: week            (today | yesterday | week | month | days30 | custom; a button row also switches it)
+ *
+ * "Custom" totals any range of dates inside the last 31 days from the sensor's `daily` rows, with the same
+ * steps the app builds for the fixed periods (pe_core.costs._steps_for).
  */
 
 function waterfallRows(steps) {
@@ -3764,11 +3767,43 @@ function waterfallScale(rows) {
 }
 
 const WATERFALL_PERIODS = [
+  { key: "today", label: "Today" },
   { key: "yesterday", label: "Yesterday" },
   { key: "week", label: "7 days" },
   { key: "month", label: "This month" },
   { key: "days30", label: "30 days" },
+  { key: "custom", label: "Custom" },
 ];
+
+const WATERFALL_FIELDS = ["none", "solar", "tariff", "actual_adj", "carry", "events_metered", "axle_income"];
+
+function waterfallCustom(daily, from, to, names) {
+  // The steps for the days from..to (YYYY-MM-DD, inclusive) out of the app's per-day rows. Mirrors
+  // pe_core.costs._steps_for: each running total is rounded once, so steps and totals chain to the penny.
+  const chosen = (daily || []).filter((d) => d.date >= from && d.date <= to);
+  const sums = {};
+  for (const k of WATERFALL_FIELDS) sums[k] = chosen.reduce((a, d) => a + (d[k] || 0), 0);
+  const r2 = (x) => Math.round(x * 100) / 100 + 0;
+  const nm = Object.assign({ tariff: "tariff", event: "Event" }, names);
+  const r0 = r2(sums.none);
+  const r1 = r2(sums.solar);
+  const rTariff = r2(sums.tariff);
+  const r5 = r2(sums.actual_adj + sums.carry);
+  const r6 = r2(sums.actual_adj + sums.carry + sums.events_metered - sums.axle_income);
+  const steps = [
+    { label: "No solar or battery", kind: "total", value: r0 },
+    { label: "Solar", kind: "step", value: r2(r1 - r0) },
+    { label: nm.tariff, kind: "step", value: r2(rTariff - r1) },
+    { label: "PowerEngine", kind: "step", value: r2(r5 - rTariff) },
+  ];
+  if (r2(sums.events_metered - sums.axle_income) !== 0) {
+    steps.push({ label: `${nm.event} & free power`, kind: "step", value: r2(r6 - r5) });
+  }
+  const verb = r6 < -0.005 ? "You were paid" : "You paid";
+  steps.push({ label: r2(sums.axle_income) > 0 ? `${verb} (after ${nm.event} payments)` : verb, kind: "total", value: r6 });
+  return { days: chosen.length, from: chosen.length ? chosen[0].date : null,
+           to: chosen.length ? chosen[chosen.length - 1].date : null, steps };
+}
 
 function pct(v, scale) {
   // Maps a value to a 0-100 position given a {min, max} scale (from waterfallScale). Pure; used to place bars,
@@ -3807,6 +3842,7 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
     if (!config || !config.entity) throw new Error("entity is required");
     this._config = config;
     this._period = config.period || "week";
+    this._range = null;           // {from, to} for the custom period; filled in from the sensor's days
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
   }
 
@@ -3827,8 +3863,30 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
   _setPeriod(key) {
     this._period = key;
     this._sel = null;
+    if (key === "custom") this._range = this._range || this._defaultRange();
     const st = this._hass && this._hass.states[this._config.entity];
     this._sig = (st ? st.last_updated : "") + "|" + key;
+    this._render();
+  }
+
+  _daily() {
+    const st = this._hass && this._hass.states[this._config.entity];
+    return (st && st.attributes && st.attributes.daily) || [];
+  }
+
+  _defaultRange() {
+    // the last 7 days the app has figures for
+    const d = this._daily();
+    return d.length ? { from: d[Math.max(0, d.length - 7)].date, to: d[d.length - 1].date } : null;
+  }
+
+  _setRange(which, value) {
+    if (!value) return;
+    const r = Object.assign({}, this._range || this._defaultRange());
+    r[which] = value;
+    if (r.from > r.to) { if (which === "from") r.to = value; else r.from = value; }     // keep from <= to
+    this._range = r;
+    this._sel = null;
     this._render();
   }
 
@@ -3841,14 +3899,23 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
     if (!this.shadowRoot || !this._hass || !this._config) return;
     const st = this._hass.states[this._config.entity];
     const periods = (st && st.attributes && st.attributes.periods) || {};
-    const p = periods[this._period];
+    const daily = (st && st.attributes && st.attributes.daily) || [];
+    const custom = this._period === "custom";
+    if (custom && !this._range) this._range = this._defaultRange();
+    const p = custom
+      ? (this._range && daily.length ? waterfallCustom(daily, this._range.from, this._range.to, st.attributes.names) : null)
+      : periods[this._period];
+    const picker = custom && daily.length
+      ? `<div class="range"><label>From <input type="date" data-range="from" value="${escHtml(this._range.from)}" min="${escHtml(daily[0].date)}" max="${escHtml(daily[daily.length - 1].date)}"></label>
+           <label>To <input type="date" data-range="to" value="${escHtml(this._range.to)}" min="${escHtml(daily[0].date)}" max="${escHtml(daily[daily.length - 1].date)}"></label></div>`
+      : "";
     const buttons = WATERFALL_PERIODS.map((w) =>
       `<button data-period="${w.key}" class="${w.key === this._period ? "on" : ""}">${escHtml(w.label)}</button>`).join("");
 
     if (!st || !p || !p.days) {
       this.shadowRoot.innerHTML = `
         <style>${this._css()}</style>
-        <ha-card class="wf"><div class="top">${buttons}</div><p class="none">Costs appear after the first full day.</p></ha-card>`;
+        <ha-card class="wf"><div class="top">${buttons}</div>${picker}<p class="none">${this._noneText(custom, daily)}</p></ha-card>`;
       this._wire();
       return;
     }
@@ -3882,6 +3949,7 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
       <style>${this._css()}</style>
       <ha-card class="wf">
         <div class="top">${buttons}</div>
+        ${picker}
         <div class="selinfo">${this._sel != null && rows[this._sel]
           ? `<b>${escHtml(rows[this._sel].label)}:</b> ${this._gbp(rows[this._sel].value)}`
           : "Tap a column for its name and exact value."}</div>
@@ -3890,12 +3958,21 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
           ${cols}
         </div>
         <div class="labels" style="grid-template-columns: repeat(${n}, 1fr)">${labels}</div>
-        <p class="caption">${escHtml(p.from)}–${escHtml(p.to)}, ${p.days} day${p.days === 1 ? "" : "s"}. Green steps saved money; orange ones cost money.</p>
+        <p class="caption">${escHtml(p.from === p.to ? p.from : `${p.from}–${p.to}`)}, ${p.days} day${p.days === 1 ? "" : "s"}${this._period === "today" || (custom && p.to === daily[daily.length - 1].date && !daily[daily.length - 1].done) ? " (today so far, with the whole day's standing charge)" : ""}. Green steps saved money; orange ones cost money.</p>
       </ha-card>`;
     this._wire();
   }
 
+  _noneText(custom, daily) {
+    if (this._period === "today") return "Nothing recorded yet today.";
+    if (custom && !daily.length) return "Choosing dates needs the newer PowerEngine app (0.9.183 or later).";
+    if (custom) return "No days with costs in that range.";
+    return "Costs appear after the first full day.";
+  }
+
   _wire() {
+    this.shadowRoot.querySelectorAll("input[data-range]").forEach((i) =>
+      i.addEventListener("change", () => this._setRange(i.dataset.range, i.value)));
     this.shadowRoot.querySelectorAll("button[data-period]").forEach((b) =>
       b.addEventListener("click", () => this._setPeriod(b.dataset.period)));
     this.shadowRoot.querySelectorAll("[data-i]").forEach((el) =>
@@ -3913,6 +3990,9 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
       button { font: inherit; font-size: 0.85em; padding: 3px 10px; border-radius: 6px; cursor: pointer;
                border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color); }
       button.on { background: var(--primary-color); color: var(--text-primary-color, #fff); }
+      .range { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; font-size: 0.85em; }
+      .range input { font: inherit; color: var(--primary-text-color); background: none;
+                     border: 1px solid var(--divider-color); border-radius: 6px; padding: 2px 6px; }
       .plot { position: relative; display: grid; column-gap: 6px; height: 220px; margin-top: 18px; }
       .col { position: relative; height: 100%; cursor: pointer; }
       .col.sel .bar { outline: 2px solid var(--primary-color); outline-offset: 1px; }
@@ -8262,7 +8342,7 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
 });
 
 if (typeof module !== "undefined") {
-  module.exports = { alexaSpeakerKinds, alexaTestPayload, ALEXA_TEST_EVENT, alexaDraft, parseHoursBefore, alexaSpeakerName, ALEXA_DEFAULT, v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
+  module.exports = { alexaSpeakerKinds, alexaTestPayload, ALEXA_TEST_EVENT, alexaDraft, parseHoursBefore, alexaSpeakerName, ALEXA_DEFAULT, v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallCustom, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
