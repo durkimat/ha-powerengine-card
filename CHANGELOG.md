@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.189
+
+### Behaviour changes
+
+- **Costs page on a phone:** the Alignment card can show "Expand all / Collapse all" on the same row (`tools: true`), and the Costs period buttons are an even grid instead of ragged wrapping.
+
 ## 0.9.188
 
 ### Behaviour changes
