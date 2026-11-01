@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.188
+
+### Behaviour changes
+
+- **Engines compared:** administrators get "Compare this day again" (in an opened day) and "Try again" (on a skipped day), with the app's answer shown above the table. Needs app 0.9.188.
+
 ## 0.9.187
 
 ### Behaviour changes
