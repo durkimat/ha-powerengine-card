@@ -7,11 +7,11 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.187";
+const CARD_VERSION = "0.9.188";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
-const MIN_APP_VERSION = "0.9.187";   // 0.9.187: the Costs page period picker (daily rows with self_use_adj, bin, bout); 0.9.182: notifications.alexa.finish (the grid event summary); 0.9.179: heating set-back (axle_heating_setback); 0.9.175: pe_alexa_test; 0.9.174: notifications.alexa
+const MIN_APP_VERSION = "0.9.188";   // 0.9.188: pe_compare_recheck (Compare this day again); 0.9.187: the Costs page period picker (daily rows with self_use_adj, bin, bout); 0.9.182: notifications.alexa.finish (the grid event summary); 0.9.179: heating set-back (axle_heating_setback); 0.9.175: pe_alexa_test; 0.9.174: notifications.alexa
 
 /** "0.9.70" -> [0, 9, 70]; null when it isn't a plain dotted number ("?", "unavailable", "0.9.70-beta"). */
 function parseVersion(v) {
@@ -8771,6 +8771,7 @@ class PowerEngineV2HistoryCard extends PowerEngineV2Card {
 
 // ---- engines compared, same day (sensor.pe_cost_engines) ----
 const ENGINE_COMPARE_SENSOR = "sensor.pe_cost_engines";
+const COMPARE_RECHECK_EVENT = "pe_compare_recheck", COMPARE_RECHECK_RESULT = "pe_compare_recheck_result";
 const COMPARE_WAITING = "Waiting for the first comparison. Each night PowerEngine replays yesterday with both engines, using the forecasts as they were. It needs one full day of forecast records first, so the first result comes the morning after the first full day of records.";
 const COMPARE_OFF = "The same-day comparison is switched off (the Engine comparison switch on the Configuration page).";
 const COMPARE_REASONS = { no_snapshot: "no forecast record yet", incomplete: "records incomplete", failed: "replay failed" };
@@ -8845,7 +8846,7 @@ function engineCompareView(attrs, state) {
     const control = d.in_control === "v1" || d.in_control === "v2" || d.in_control === "mixed" ? d.in_control : "";
     const c = d.calib && typeof d.calib === "object" ? d.calib : null;
     return {
-      date: d.date, label: compareDayLabel(d.date), ok, best,
+      date: d.date, label: compareDayLabel(d.date), ok, best, status: d.status || "",
       approx: ok ? approxNote(d) : "",
       why: ok ? whyView(d.why) : null,
       reason: ok ? "" : (d.reason ? String(d.reason) : COMPARE_REASONS[d.status] || "not compared"),
@@ -8866,6 +8867,26 @@ function engineCompareView(attrs, state) {
 }
 
 class PowerEngineEngineCompareCard extends PowerEngineV2Card {
+  /** "Compare this day again": ask the app (admins only: HA's fire_event needs admin); its answer comes back as an event. */
+  async _recheck(day, states) {
+    this._recheckMsg = "Asking…";
+    this._render(states);
+    try {
+      await this._hass.callWS({ type: "fire_event", event_type: COMPARE_RECHECK_EVENT, event_data: { day } });
+    } catch (err) {
+      this._recheckMsg = "Could not ask: only a Home Assistant administrator can.";
+      this._render(states);
+    }
+  }
+  _listenRecheck() {
+    const conn = this._hass && this._hass.connection;
+    if (this._unsubRe || this._subscribingRe || !conn || !conn.subscribeEvents) return;
+    this._subscribingRe = true;
+    conn.subscribeEvents((ev) => {
+      this._recheckMsg = (ev && ev.data && ev.data.message) || "";
+      if (this._lastStates) this._render(this._lastStates);
+    }, COMPARE_RECHECK_RESULT).then((unsub) => { this._unsubRe = unsub; }, () => { this._subscribingRe = false; });
+  }
   setConfig(config) { super.setConfig(Object.assign({ entity: ENGINE_COMPARE_SENSOR }, config || {})); }
   getCardSize() { return 8; }
   _ids() { return [(this._config && this._config.entity) || ENGINE_COMPARE_SENSOR, "sensor.pe_cost_waterfall"]; }
@@ -8894,19 +8915,22 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
     }
     const cell = (txt, best) => `<td class="num${best ? " best" : ""}">${best ? '<span class="mark" aria-label="best">✓</span> ' : ""}${escHtml(txt)}</td>`;
     const open = this._open || (this._open = new Set());
+    const canRe = !!(this._hass && this._hass.user && this._hass.user.is_admin);
+    this._listenRecheck();
     const detail = (r) => {
       if (!open.has(r.date)) return "";
-      if (!r.why) return `<tr class="why"><td colspan="6" class="muted">No breakdown for this day: it was compared before breakdowns were kept.</td></tr>`;
+      const again = canRe ? `<p><button data-recheck="${escHtml(r.date)}">Compare this day again</button></p>` : "";
+      if (!r.why) return `<tr class="why"><td colspan="6" class="muted">No breakdown for this day: it was compared before breakdowns were kept.${again}</td></tr>`;
       const rows = r.why.parts.map((p) => `<tr><td>${escHtml(p.label)}</td><td class="num">${escHtml(p.v2)}</td><td class="num">${escHtml(p.bound)}</td><td class="num${p.gapN > 0.049 ? " worse" : ""}">${escHtml(p.gap)}</td></tr>`).join("");
       const end = r.why.end === null ? "" : `<tr><td>Battery level left at the end</td><td class="num">–</td><td class="num">–</td><td class="num">${escHtml(r.why.end)}</td></tr>`;
       return `<tr class="why"><td colspan="6">
         ${r.why.lines.map((l) => `<p>${escHtml(l)}</p>`).join("")}
         <table class="parts"><thead><tr><th>Where the cost fell</th><th>Engine v2</th><th>Best possible</th><th>v2 worse by</th></tr></thead><tbody>${rows}${end}</tbody></table>
-        <p class="muted small">Costs in £ for that part of the day (negative is money earned). The last column is v2's cost less the best possible's, so a positive figure is where v2 lost out.</p></td></tr>`;
+        <p class="muted small">Costs in £ for that part of the day (negative is money earned). The last column is v2's cost less the best possible's, so a positive figure is where v2 lost out.</p>${again}</td></tr>`;
     };
     const body = v.rows.map((r) => r.ok
       ? `<tr class="day${open.has(r.date) ? " open" : ""}" data-day="${escHtml(r.date)}" tabindex="0" title="Show why"><th scope="row">${escHtml(r.label)}${r.approx ? ` <span class="approx" title="${escHtml(r.approx)}">≈</span>` : ""}</th>${cell(r.v1, r.best === "v1")}${cell(r.v2, r.best === "v2")}${cell(r.bound)}<td class="num">${escHtml(r.diff)}</td><td title="${escHtml(r.calib)}">${escHtml(r.controlText)}</td></tr>${detail(r)}`
-      : `<tr class="skip"><th scope="row">${escHtml(r.label)}</th><td colspan="5" class="muted">Not compared: ${escHtml(lowerFirst(r.reason))}</td></tr>`).join("");
+      : `<tr class="skip"><th scope="row">${escHtml(r.label)}</th><td colspan="5" class="muted">Not compared: ${escHtml(lowerFirst(r.reason))}${canRe && r.status !== "pending" && r.status !== "no_snapshot" ? ` <button data-recheck="${escHtml(r.date)}">Try again</button>` : ""}</td></tr>`).join("");
     const foot = v.totals ? `<tfoot><tr><th scope="row">${v.totals.days} day${v.totals.days === 1 ? "" : "s"}</th>${cell(v.totals.v1, v.totals.best === "v1")}${cell(v.totals.v2, v.totals.best === "v2")}${cell(v.totals.bound)}<td class="num">${escHtml(v.totals.diff)}</td><td></td></tr></tfoot>` : "";
     this.shadowRoot.innerHTML = `<style>${V2_CSS}
       .wrap { overflow-x: auto; }
@@ -8918,6 +8942,8 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
       td.best { font-weight: 700; color: var(--v2-good); }
       .mark { font-weight: 700; }
       .approx { color: var(--secondary-text-color); cursor: help; }
+      button { font: inherit; font-size: 12px; padding: 2px 10px; border-radius: 6px; cursor: pointer; margin-left: 6px;
+               border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color); }
       tr.day { cursor: pointer; }
       tr.day th::before { content: "▸ "; color: var(--secondary-text-color); }
       tr.day.open th::before { content: "▾ "; }
@@ -8934,6 +8960,7 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
       ${this._config && this._config.shared ? (v.running ? '<div class="head"><span class="chip muted">Running now</span></div>' : "") : `<div class="head"><span class="title">Engines compared, same day</span>${v.running ? '<span class="chip muted">Running now</span>' : ""}</div>`}
       ${v.problem ? `<p class="muted small">${escHtml(v.problem)}</p>` : ""}
       ${scopeNote ? `<p class="muted small">${escHtml(scopeNote)}</p>` : ""}
+      ${this._recheckMsg ? `<p class="small"><b>${escHtml(this._recheckMsg)}</b></p>` : ""}
       <p class="muted small">What each engine saved against plain self-use, per day (£). ✓ marks the better engine; best possible is perfect hindsight.${v.rows.some((r) => r.approx) ? " ≈ marks a day that is only approximate (hover or tap it to see why)." : ""}</p>
       <div class="wrap"><table>
         <thead><tr><th>Day</th><th>Engine v1</th><th>Engine v2</th><th>Best possible</th><th>v2 − v1</th><th>In control</th></tr></thead>
@@ -8943,6 +8970,10 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
       ${v.note ? `<p class="muted small">${escHtml(v.note)}</p>` : ""}
       ${v.lastRun ? `<p class="muted small">${escHtml(v.lastRun)}</p>` : ""}
     </ha-card>`;
+    this.shadowRoot.querySelectorAll("button[data-recheck]").forEach((b) => b.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      this._recheck(b.dataset.recheck, states);
+    }));
     this.shadowRoot.querySelectorAll("tr.day").forEach((tr) => {
       const toggle = () => {
         if (open.has(tr.dataset.day)) open.delete(tr.dataset.day); else open.add(tr.dataset.day);
