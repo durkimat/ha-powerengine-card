@@ -3820,11 +3820,17 @@ const WATERFALL_SHORT = {
   "Battery carry-over": "Carry-over",
 };
 
+function shownValue(row) {
+  // The number printed for a bar. A period you were paid for says "You were paid" and shows the amount without a minus.
+  return row.kind === "total" && /^You were paid/.test(row.label) ? -row.value : row.value;
+}
+
 function waterfallShortLabel(label) {
   // A label that fits a narrow column on a phone ("You paid (after <event> payments)" -> "You paid").
   const l = String(label || "");
   if (WATERFALL_SHORT[l]) return WATERFALL_SHORT[l];
   if (l.startsWith("You paid")) return "You paid";
+  if (l.startsWith("You were paid")) return "You were paid";
   if (/(^| )tariff$/.test(l)) return "Tariff";                       // "EDF tariff", "Octopus tariff", plain "tariff"
   if (l.endsWith(" & free power")) return l.slice(0, -" & free power".length);   // the event source: "Axle"
   return l;
@@ -3933,12 +3939,13 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
       const height = Math.max(0.8, hi - lo);
       // dashed line from the previous bar's end level across the gap to this bar
       const conn = i > 0 ? `<div class="conn" style="bottom:${pct(rows[i - 1].to, scale)}%"></div>` : "";
-      const full = this._gbp(r.value);
+      const shown = shownValue(r);
+      const full = this._gbp(shown);
       return `
         <div class="col${this._sel === i ? " sel" : ""}" data-i="${i}" title="${escHtml(r.label)}: ${full}">
           ${conn}
           <div class="bar ${cls}" style="bottom:${lo}%; height:${height}%"></div>
-          <div class="v" style="bottom:${hi}%"><span class="full">${full}</span><span class="short">${compactGbp(r.value)}</span></div>
+          <div class="v" style="bottom:${hi}%"><span class="full">${full}</span><span class="short">${compactGbp(shown)}</span></div>
         </div>`;
     }).join("");
     const labels = rows.map((r) =>
@@ -3951,7 +3958,7 @@ class PowerEngineWaterfallCard extends (typeof HTMLElement !== "undefined" ? HTM
         <div class="top">${buttons}</div>
         ${picker}
         <div class="selinfo">${this._sel != null && rows[this._sel]
-          ? `<b>${escHtml(rows[this._sel].label)}:</b> ${this._gbp(rows[this._sel].value)}`
+          ? `<b>${escHtml(rows[this._sel].label)}:</b> ${this._gbp(shownValue(rows[this._sel]))}`
           : "Tap a column for its name and exact value."}</div>
         <div class="plot" style="grid-template-columns: repeat(${n}, 1fr)">
           <div class="zero" style="bottom:${zeroPct}%"></div>
@@ -8238,6 +8245,13 @@ function compareDayLabel(date) {
   const d = new Date(`${date}T12:00:00Z`);
   return Number.isNaN(d.getTime()) ? date : d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
 }
+function approxNote(d) {
+  // Why a compared day is only approximate: part-measured half-hours scaled up, or the repeated hour of a 25-hour day.
+  const parts = [];
+  if (toNumber(d.scaled)) parts.push(`${toNumber(d.scaled)} part-measured half-hour${toNumber(d.scaled) === 1 ? "" : "s"} scaled up`);
+  if (d.note) parts.push(String(d.note));
+  return parts.join("; ");
+}
 function compareBest(v1, v2) {
   const a = toNumber(v1), b = toNumber(v2);
   if (a === null || b === null) return null;
@@ -8267,6 +8281,7 @@ function engineCompareView(attrs, state) {
     const c = d.calib && typeof d.calib === "object" ? d.calib : null;
     return {
       date: d.date, label: compareDayLabel(d.date), ok, best,
+      approx: ok ? approxNote(d) : "",
       reason: ok ? "" : (d.reason ? String(d.reason) : COMPARE_REASONS[d.status] || "not compared"),
       v1: gbp(d.v1), v2: gbp(d.v2), bound: gbp(d.bound), diff: diff === null ? "–" : gbp(diff, true), diffN: diff,
       control, controlText: control ? `${control === "mixed" ? "mixed" : `engine ${control}`}${control === "v2" && typeof d.profile === "string" && d.profile ? ` · ${d.profile}` : ""}${d.live === false ? " (passive)" : ""}` : "–",
@@ -8297,7 +8312,7 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
     }
     const cell = (txt, best) => `<td class="num${best ? " best" : ""}">${best ? '<span class="mark" aria-label="best">✓</span> ' : ""}${escHtml(txt)}</td>`;
     const body = v.rows.map((r) => r.ok
-      ? `<tr><th scope="row">${escHtml(r.label)}</th>${cell(r.v1, r.best === "v1")}${cell(r.v2, r.best === "v2")}${cell(r.bound)}<td class="num">${escHtml(r.diff)}</td><td title="${escHtml(r.calib)}">${escHtml(r.controlText)}</td></tr>`
+      ? `<tr><th scope="row">${escHtml(r.label)}${r.approx ? ` <span class="approx" title="${escHtml(r.approx)}">≈</span>` : ""}</th>${cell(r.v1, r.best === "v1")}${cell(r.v2, r.best === "v2")}${cell(r.bound)}<td class="num">${escHtml(r.diff)}</td><td title="${escHtml(r.calib)}">${escHtml(r.controlText)}</td></tr>`
       : `<tr class="skip"><th scope="row">${escHtml(r.label)}</th><td colspan="5" class="muted">Not compared: ${escHtml(lowerFirst(r.reason))}</td></tr>`).join("");
     const foot = v.totals ? `<tfoot><tr><th scope="row">${v.totals.days} day${v.totals.days === 1 ? "" : "s"}</th>${cell(v.totals.v1, v.totals.best === "v1")}${cell(v.totals.v2, v.totals.best === "v2")}${cell(v.totals.bound)}<td class="num">${escHtml(v.totals.diff)}</td><td></td></tr></tfoot>` : "";
     this.shadowRoot.innerHTML = `<style>${V2_CSS}
@@ -8309,6 +8324,7 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
       tbody th, tfoot th { font-weight: 500; }
       td.best { font-weight: 700; color: var(--v2-good); }
       .mark { font-weight: 700; }
+      .approx { color: var(--secondary-text-color); cursor: help; }
       tr.skip td { text-align: left; font-size: 13px; white-space: normal; }
       tfoot td, tfoot th { border-top: 2px solid var(--divider-color); border-bottom: 0; }
       @media (max-width: 520px) { table { font-size: 12.5px; } th, td { padding: 6px 5px; } thead th { font-size: 10.5px; } ha-card { padding: 12px; } }
@@ -8316,7 +8332,7 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
     <ha-card>
       <div class="head"><span class="title">Engines compared, same day</span>${v.running ? '<span class="chip muted">Running now</span>' : ""}</div>
       ${v.problem ? `<p class="muted small">${escHtml(v.problem)}</p>` : ""}
-      <p class="muted small">What each engine saved against plain self-use, per day (£). ✓ marks the better engine; best possible is perfect hindsight.</p>
+      <p class="muted small">What each engine saved against plain self-use, per day (£). ✓ marks the better engine; best possible is perfect hindsight.${v.rows.some((r) => r.approx) ? " ≈ marks a day that is only approximate (hover or tap it to see why)." : ""}</p>
       <div class="wrap"><table>
         <thead><tr><th>Day</th><th>Engine v1</th><th>Engine v2</th><th>Best possible</th><th>v2 − v1</th><th>In control</th></tr></thead>
         <tbody>${body}</tbody>${foot}</table></div>
@@ -8342,13 +8358,13 @@ class PowerEngineEngineCompareCard extends PowerEngineV2Card {
 });
 
 if (typeof module !== "undefined") {
-  module.exports = { alexaSpeakerKinds, alexaTestPayload, ALEXA_TEST_EVENT, alexaDraft, parseHoursBefore, alexaSpeakerName, ALEXA_DEFAULT, v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallCustom, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
+  module.exports = { alexaSpeakerKinds, alexaTestPayload, ALEXA_TEST_EVENT, alexaDraft, parseHoursBefore, alexaSpeakerName, ALEXA_DEFAULT, v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallCustom, shownValue, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
   v2WithProfiles, V2_PROFILES, uiEngine, profileDraft, profileList, profileBase, profileChanges, profileLoadFields, profileSaveFields, profileDeleteFields,
   ENGINE_SENSOR, V2_NOT_RUNNING, V2_NO_DATA, V2_MODES, v2Engine, v2Supported, v2Gate, valueBarGeometry, modeSubtitle, exitRows, engineCardView, timelineLayout, recentRows, scrollIntent, HISTORY_HOURS, V2_RECENT, sunLayout, levelAtHour, bandLabel, timelineHover,
   heatColour, valueMapGrid, mapCellAt, interpValue, offScaleReason, chartKeyHtml, chartHidden, CHART_KEYS, pathValueSeries, timelineValue, timelineLines, pathLines, mapReadoutText, planCardView, causeBars, causeLabel, comfortSummary, healthCardView,
-  ENGINE_ICONS, engineIcon, refreshEngineIcons, engineBadge, BADGE_LINES, V2_HISTORY_DAY_EVENT, v2HistoryDayPayload, v2HistoryView, engineCompareView, calibrationLine, gbp, COMPARE_WAITING,
+  ENGINE_ICONS, engineIcon, refreshEngineIcons, engineBadge, BADGE_LINES, V2_HISTORY_DAY_EVENT, v2HistoryDayPayload, v2HistoryView, engineCompareView, approxNote, calibrationLine, gbp, COMPARE_WAITING,
   V1_SECTIONS, v2Same, engineGrouping, engineInUse, engineConfirm, cleanV2Block, engineFields, v2Problem, v2Contradictions, v2Values, comfortReadout, weightsReadout, floorsReadout };
 }
