@@ -859,20 +859,20 @@ test("versionOlder compares numbers, not text, and says nothing when it can't re
 });
 
 test("MIN_APP_VERSION is a real version no newer than the card", () => {
-  assert.equal(h.MIN_APP_VERSION, "0.9.182");
-  assert.deepEqual(h.parseVersion(h.MIN_APP_VERSION), [0, 9, 182]);
+  assert.equal(h.MIN_APP_VERSION, "0.9.187");
+  assert.deepEqual(h.parseVersion(h.MIN_APP_VERSION), [0, 9, 187]);
   assert.equal(h.versionOlder(h.CARD_VERSION, h.MIN_APP_VERSION), false);
 });
 
 test("versionWarnings warns only when the other side is older than its minimum", () => {
   const st = (state, attrs) => ({ "sensor.pe_diag_version": { state, attributes: attrs || {} } });
   // a different but supported app: no warning, whichever way round
-  assert.deepEqual(h.versionWarnings(st("0.9.182", { min_card_version: "0.9.110" })), []);
+  assert.deepEqual(h.versionWarnings(st("0.9.187", { min_card_version: "0.9.110" })), []);
   assert.deepEqual(h.versionWarnings(st("0.9.190", { min_card_version: "0.9.70" })), []);
   // an app older than the card's minimum
-  const old = h.versionWarnings(st("0.9.181"));
+  const old = h.versionWarnings(st("0.9.186"));
   assert.equal(old.length, 1);
-  assert.match(old[0], /0\.9\.182 or newer.*0\.9\.181/);
+  assert.match(old[0], /0\.9\.187 or newer.*0\.9\.186/);
   // a card older than the app's minimum
   const oldCard = h.versionWarnings(st("0.9.190", { min_card_version: "99.0.0" }));
   assert.equal(oldCard.length, 1);
@@ -1042,4 +1042,48 @@ test("section open state: the person's choice wins, else the card's default, els
   assert.equal(h.sectionOpen({ a: "yes" }, "a", false), false);       // not a boolean: ignored
   assert.equal(h.sectionOpen(null, "a", true), true);
   assert.deepEqual(h.sectionsLoad(), {});                              // no storage here: empty, no throw
+});
+
+const dayRow = (date, done, o) => Object.assign({ date, done, none: 0, solar: 0, tariff: 0, actual_adj: 0, carry: 0, events_metered: 0,
+  axle_income: 0, self_use_adj: 0, bin: 0, bout: 0 }, o);
+const sharedDaily = () => [
+  dayRow("2026-09-29", true, { none: 5 }), dayRow("2026-09-30", true, { none: 6 }), dayRow("2026-10-01", true, { none: 7 }),
+  dayRow("2026-10-02", true, { none: 8 }), dayRow("2026-10-03", false, { none: 2, solar: 1, tariff: 0.5, actual_adj: 0.3 }),
+];
+
+test("costsRange: each period picks the same days the app's periods do", () => {
+  const d = sharedDaily();
+  const dates = (sel) => h.costsRange(sel, d).rows.map((r) => r.date);
+  assert.deepEqual(dates({ key: "today" }), ["2026-10-03"]);
+  assert.deepEqual(dates({ key: "yesterday" }), ["2026-10-02"]);
+  assert.deepEqual(dates({ key: "week" }), ["2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02"]);
+  assert.deepEqual(dates({ key: "month" }), ["2026-10-01", "2026-10-02"]);                 // this month's complete days
+  assert.deepEqual(dates({ key: "custom", from: "2026-09-30", to: "2026-10-03" }), ["2026-09-30", "2026-10-01", "2026-10-02", "2026-10-03"]);
+  assert.match(h.costsRange({ key: "custom", from: "2026-09-30", to: "2026-10-01" }, d).label, /^Wed 30 Sep\w* to Thu 1 Oct$/);
+  assert.equal(h.costsRange({ key: "nonsense" }, d).key, "week");
+  assert.deepEqual(h.costsRange({ key: "today" }, d.slice(0, 4)).rows, []);                // no unfinished day: nothing so far
+});
+
+test("costsSummary: the sentence for a period, paid or paid-to-you, and today's events", () => {
+  const d = sharedDaily();
+  d[3] = dayRow("2026-10-02", true, { none: 8, solar: 4, tariff: 3, actual_adj: 1, events_metered: 1, axle_income: 4 });
+  const names = { tariff: "EDF tariff", event: "Axle" };
+  const one = h.costsSummary(h.costsRange({ key: "yesterday" }, d), names, null);
+  assert.equal(one.length, 1);
+  assert.match(one[0], /Yesterday: you were paid £2\.00\*\* after Axle's payments/);
+  assert.match(one[0], /it would have been £8\.00, with solar and your EDF tariff alone £3\.00\. \*\*The battery and PowerEngine saved £2\.00\*\*/);
+  const today = h.costsSummary(h.costsRange({ key: "today" }, d), names, { halfHours: 20, axle: { kwh: 3.5, gross: 6.9, net: 4.8 }, free: null, lastEvent: { time: "20:00", end: "21:00" } });
+  assert.match(today[0], /^\*\*Today so far: you paid £0\.30\*\*/);
+  assert.match(today[1], /covers 20 of the day's 48 half-hours/);
+  assert.match(today[2], /Axle exported 3\.5 kWh today and paid you £6\.90 \(£4\.80 net.*ran from 20:00 to 21:00/);
+  assert.deepEqual(h.costsSummary(h.costsRange({ key: "today" }, d.slice(0, 4)), names, null), ["Nothing recorded yet today."]);
+});
+
+test("costsBars and peParts: the day's five figures and the split of the PowerEngine step", () => {
+  const r = dayRow("2026-10-02", true, { none: 8, solar: 4, tariff: 3, actual_adj: 1, carry: 0.5, events_metered: 1, axle_income: 4, self_use_adj: 1.6 });
+  assert.deepEqual(h.costsBars(r).map((b) => [b.key, b.value]), [["none", 8], ["solar", 4], ["tariff", 3], ["pe", 1.5], ["net", -1.5]]);
+  const p = h.peParts(r);
+  assert.equal(p.carried, -0.5);
+  assert.ok(Math.abs(p.plain - 1.4) < 1e-9 && Math.abs(p.timing - 0.6) < 1e-9);
+  assert.ok(Math.abs(p.total - 1.5) < 1e-9);                                                // the three add up to tariff less the PowerEngine cost
 });
