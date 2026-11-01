@@ -3,6 +3,17 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.184
+
+### Behaviour changes
+
+- **Engines compared:** days that are only approximate (part-measured half-hours scaled up, or a 25-hour day) show a **≈** with the reason on hover.
+- **Savings waterfall:** when a period paid you, the last bar reads "You were paid" with the amount shown without a minus.
+
+### Behind the scenes
+
+- `approxNote`, `shownValue`.
+
 ## 0.9.183
 
 ### Behaviour changes
