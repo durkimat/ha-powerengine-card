@@ -3,6 +3,16 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.187
+
+### Behaviour changes
+
+- **New Costs page cards:** `powerengine-costs-period-card` (the period picker and its summary) and `powerengine-costs-days-card` (the chart and table by day). The waterfall, engines compared and events cards take `shared: true` to follow the picker. Needs app 0.9.187.
+
+### Behind the scenes
+
+- `costsRange`, `costsSummary`, `costsBars`, `peParts`, `waterfallSteps`, `compareScoped`, `eventsInRange`; the period is kept in `localStorage` (`powerengine-costs-period`) and announced as a window event.
+
 ## 0.9.186
 
 ### Behaviour changes
