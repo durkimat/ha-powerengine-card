@@ -3,6 +3,16 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.183
+
+### Behaviour changes
+
+- **Savings waterfall card: Today and Custom buttons.** Custom shows two date pickers (From, To) over the last 31 days and totals them with the same steps as the app (`waterfallCustom`). An older app shows "needs the newer PowerEngine app" for Custom and nothing yet for Today. Needs app 0.9.183.
+
+### Behind the scenes
+
+- `waterfallCustom` is tested against the figures `pe_core.costs.waterfall` gives for the same days.
+
 ## 0.9.182
 
 ### Behaviour changes
