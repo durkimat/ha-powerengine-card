@@ -565,6 +565,7 @@ function buildConfig(draft) {
   }
   if (draft.site) out.site = draft.site;      // only set when the app publishes site_options
   if (Array.isArray(draft.devices)) out.devices = buildDevices(draft.devices);   // only set when the app supports devices
+  if (Array.isArray(draft.free_power_loads)) out.free_power_loads = buildFreeLoads(draft.free_power_loads);   // only set when the app supports them
   if (draft.engine_v2 && typeof draft.engine_v2 === "object") {      // only set when the app publishes the v2 settings
     const f = engineFields(true, (draft.system || {}).engine, draft.engine_v2);
     if (f.system) out.system = Object.assign({}, out.system, f.system);
@@ -643,6 +644,25 @@ function siteDetectedLine(detected, chosen) {
 
 /** Option label: name, plus the status when it is not verified. */
 function siteOptionLabel(row) { return row.status && row.status !== "verified" ? `${row.name} (${row.status})` : row.name; }
+
+/* ------------------------------------------------------------ Switches to run during free power
+ * `free_power_loads` in the app's config (app 0.9.191 and newer): each switch is turned on when a free-electricity session
+ * starts and off when it ends. Entries are {entity, name}; only switches and input booleans can be turned on and off. */
+const FREE_LOADS_APP_VERSION = "0.9.191";
+const FREE_LOAD_DOMAINS = ["switch", "input_boolean"];
+function freeLoadsSupported(appVersion) { return versionOlder(appVersion, FREE_LOADS_APP_VERSION) === false; }
+
+/** The saved list as an editable draft: every entry an {entity, name} (the config also allows a bare entity id). */
+function freeLoadDraft(saved) {
+  return (Array.isArray(saved) ? saved : []).map((x) => (typeof x === "string" ? { entity: x, name: "" } : { entity: (x && x.entity) || "", name: (x && x.name) || "" }));
+}
+
+/** The `free_power_loads` list to save: rows with an entity, each listed once. */
+function buildFreeLoads(list) {
+  const seen = new Set();
+  return (list || []).filter((x) => x && x.entity && !seen.has(x.entity) && seen.add(x.entity))
+    .map((x) => (x.name && x.name.trim() ? { entity: x.entity, name: x.name.trim() } : { entity: x.entity }));
+}
 
 /* ------------------------------------------------------------ Other devices (multiple-devices plan, M1)
  * Read-only devices beyond the main inverter: the app (0.9.93 and newer) reads their battery and solar, publishes one sensor per
@@ -865,6 +885,8 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     if (this._site) draft.site = Object.assign({}, this._siteSaved); else delete draft.site;
     this._devices = devicesSupported(ver.state);
     if (this._devices) draft.devices = deviceDraft(draft.devices); else delete draft.devices;
+    this._freeLoads = freeLoadsSupported(ver.state);
+    if (this._freeLoads) draft.free_power_loads = freeLoadDraft(draft.free_power_loads); else delete draft.free_power_loads;
     this._v2 = v2Supported(s) ? v2WithProfiles(s) : null;
     if (this._v2) {
       draft.engine_v2 = Object.assign({}, this._saved.engine_v2 || {}); draft.system.engine = uiEngine(this._v2, engineInUse(s, this._saved)); this._engine = draft.system.engine;
@@ -1036,6 +1058,28 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       .badge.status-verified { border: 1px solid var(--success-color, #43a047); color: var(--success-color, #43a047); background: none; }
       .badge.status-community, .badge.status-draft { background: rgba(255, 160, 0, .18); color: var(--warning-color, #b26a00); }
     `);
+  }
+
+  /** The switches PowerEngine turns on while free power is on offer: a row each (switch, optional name, remove) and an add button. */
+  _freeLoadsEditor() {
+    const box = el("div", { class: "row freeloads" });
+    const draw = () => {
+      box.innerHTML = "";
+      this._pickers = (this._pickers || []).filter((p) => p.isConnected !== false);
+      box.append(el("div", { class: "desc" }, "Each switch is turned on when a free-electricity session starts and off when it ends. A switch that is already on is left alone, and one you turn off yourself stays off for that session. Applies in Active mode only, and needs the free-session inputs above (it works even with the switch above off)."));
+      this._draft.free_power_loads.forEach((load, i) => {
+        const name = el("input", { type: "text", value: load.name || "", placeholder: "Name (optional)", disabled: this._readOnly,
+          onchange: (ev) => { load.name = ev.target.value; this._refresh(); } });
+        const pick = this._entityInput(load.entity, FREE_LOAD_DOMAINS, (v) => { load.entity = v; this._refresh(); }, "Switch");
+        if (pick.disabled !== undefined) pick.disabled = this._readOnly;
+        box.append(el("div", { class: "ctl" }, pick, name,
+          el("button", { disabled: this._readOnly, onclick: () => { this._draft.free_power_loads.splice(i, 1); draw(); this._refresh(); } }, "Remove")));
+      });
+      box.append(el("div", { class: "ctl" }, el("button", { disabled: this._readOnly,
+        onclick: () => { this._draft.free_power_loads.push({ entity: "", name: "" }); draw(); } }, "Add a switch")));
+    };
+    draw();
+    return box;
   }
 
   _entityInput(value, domains, onChange, label) {
@@ -1211,6 +1255,10 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       if (t.learning.length) {
         sub(body, "Learning");
         t.learning.forEach((k) => { const r = featureRow(k); if (r) body.append(r); });
+      }
+      if (t.key === "free" && this._freeLoads) {
+        sub(body, "Switches to run during free power");
+        body.append(this._freeLoadsEditor());
       }
     };
     if (!grouping.grouped) grouping.house.forEach(renderTopic);
@@ -1460,6 +1508,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const base = initialDraft(saved, [], [], this._settings).draft;
     if (this._siteSaved) base.site = this._siteSaved; else delete base.site;
     if (this._devices) base.devices = deviceDraft(base.devices); else delete base.devices;
+    if (this._freeLoads) base.free_power_loads = freeLoadDraft(base.free_power_loads); else delete base.free_power_loads;
     if (this._v2) { base.engine_v2 = Object.assign({}, saved.engine_v2 || {}); base.system.engine = uiEngine(this._v2, engineInUse(this._hass.states, saved)); Object.assign(base, profileDraft(this._v2, saved)); }
     else { delete base.engine_v2; delete base.v2_profile; delete base.v2_profiles; }
     return base;
@@ -9123,7 +9172,7 @@ class PowerEngineEventsCard extends PowerEngineV2Card {
 });
 
 if (typeof module !== "undefined") {
-  module.exports = { catalogueAttrs, alexaSpeakerKinds, alexaTestPayload, ALEXA_TEST_EVENT, alexaDraft, parseHoursBefore, alexaSpeakerName, ALEXA_DEFAULT, v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallCustom, waterfallSteps, costsRange, costsSummary, costsTodayInfo, costsBars, peParts, costsDayLabel, shownValue, sectionOpen, sectionsLoad, SECTIONS_KEY, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
+  module.exports = { catalogueAttrs, alexaSpeakerKinds, alexaTestPayload, ALEXA_TEST_EVENT, alexaDraft, parseHoursBefore, alexaSpeakerName, ALEXA_DEFAULT, v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallCustom, waterfallSteps, costsRange, costsSummary, costsTodayInfo, costsBars, peParts, costsDayLabel, shownValue, sectionOpen, sectionsLoad, SECTIONS_KEY, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, FREE_LOADS_APP_VERSION, freeLoadsSupported, freeLoadDraft, buildFreeLoads, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
