@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.192
+
+### Behaviour changes
+
+- **Config page: switches to run during free power.** Under Free-power sessions, a new "Switches to run during free power" list: pick a switch or input boolean, optionally name it, add or remove rows, then Save. Needs app 0.9.191 or newer (the list is hidden on older apps).
+
 ## 0.9.190
 
 ### Behaviour changes
