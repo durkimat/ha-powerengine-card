@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.193
+
+### Behaviour changes
+
+- **Config page: announcements to WhatsApp.** Under Alexa announcements, "Also send them to WhatsApp" with the group id(s) or number(s) to send to (separate several with commas). The test announcement button sends to WhatsApp as well. Needs app 0.9.193 or newer (hidden on older apps).
+
 ## 0.9.192
 
 ### Behaviour changes

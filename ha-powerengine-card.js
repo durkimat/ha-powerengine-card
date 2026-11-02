@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.192";
+const CARD_VERSION = "0.9.193";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -146,7 +146,29 @@ function alexaDraft(raw) {
     hours_before: hours.length ? [...new Set(hours)].sort((x, y) => y - x) : ALEXA_DEFAULT.hours_before.slice(),
     earliest_weekday: time(a.earliest_weekday, ALEXA_DEFAULT.earliest_weekday), earliest_weekend: time(a.earliest_weekend, ALEXA_DEFAULT.earliest_weekend),
     latest: time(a.latest, ALEXA_DEFAULT.latest), intro: typeof a.intro === "string" ? a.intro.trim().slice(0, 80) : ALEXA_DEFAULT.intro,
-    finish: typeof a.finish === "boolean" ? a.finish : ALEXA_DEFAULT.finish };
+    finish: typeof a.finish === "boolean" ? a.finish : ALEXA_DEFAULT.finish,
+    // the WhatsApp copy (app 0.9.193 and newer) is kept only when the saved settings or the page carry it
+    ...(a.whatsapp === undefined && a.whatsapp_targets === undefined ? {} : { whatsapp: a.whatsapp === true, whatsapp_targets: whatsappTargets(a.whatsapp_targets) }) };
+}
+const WHATSAPP_APP_VERSION = "0.9.193";
+const WHATSAPP_TARGET = /^(\d+(-\d+)?@g\.us|\d{6,15})$/;
+function whatsappSupported(appVersion) { return versionOlder(appVersion, WHATSAPP_APP_VERSION) === false; }
+/** The WhatsApp chats as a clean list: group ids (120363012345678901@g.us) and phone numbers with the country code, each once. */
+function whatsappTargets(list) {
+  return [...new Set((Array.isArray(list) ? list : []).map((x) => String(x).trim()).filter((x) => WHATSAPP_TARGET.test(x)))];
+}
+/** "id1, id2" typed in the page -> a list; null when any entry is not a group id or a phone number. */
+function parseWhatsappTargets(text) {
+  const parts = String(text).split(/[,\s]+/).filter(Boolean);
+  return parts.every((x) => WHATSAPP_TARGET.test(x)) ? [...new Set(parts)] : null;
+}
+/** The draft with the WhatsApp settings present (off, no chats) when the app supports them, and absent when it doesn't. */
+function withWhatsapp(draft, supported) {
+  const n = draft && draft.notifications;
+  if (!n || !n.alexa) return draft;
+  if (supported) n.alexa = { ...n.alexa, whatsapp: n.alexa.whatsapp === true, whatsapp_targets: whatsappTargets(n.alexa.whatsapp_targets) };
+  else { delete n.alexa.whatsapp; delete n.alexa.whatsapp_targets; }
+  return draft;
 }
 /** "8, 5, 2, 1, 0" -> [8, 5, 2, 1, 0]; null when it is not a list of hours between 0 and 48. */
 function parseHoursBefore(text) {
@@ -157,7 +179,9 @@ function parseHoursBefore(text) {
 /** What the test button fires: the speakers ticked now (saved or not) and the opening words as typed. */
 function alexaTestPayload(draft) {
   const a = alexaDraft(((draft || {}).notifications || {}).alexa);
-  return { services: a.services.filter((x) => /^notify\.alexa_media_[a-z0-9_]+$/.test(x) && x !== "notify.alexa_media_last_called"), intro: a.intro };
+  const out = { services: a.services.filter((x) => /^notify\.alexa_media_[a-z0-9_]+$/.test(x) && x !== "notify.alexa_media_last_called"), intro: a.intro };
+  if (a.whatsapp) out.whatsapp = a.whatsapp_targets;
+  return out;
 }
 function alexaSpeakerName(service) {
   const name = String(service).replace(/^notify\.(alexa_media_)?/, "").replace(/_s_/g, "'s ").replace(/_/g, " ").trim();
@@ -886,6 +910,8 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     this._devices = devicesSupported(ver.state);
     if (this._devices) draft.devices = deviceDraft(draft.devices); else delete draft.devices;
     this._freeLoads = freeLoadsSupported(ver.state);
+    this._whatsapp = whatsappSupported(ver.state);
+    withWhatsapp(draft, this._whatsapp);
     if (this._freeLoads) draft.free_power_loads = freeLoadDraft(draft.free_power_loads); else delete draft.free_power_loads;
     this._v2 = v2Supported(s) ? v2WithProfiles(s) : null;
     if (this._v2) {
@@ -935,7 +961,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
   /** Play "<opening words> Test message." on the ticked speakers now, whatever the allowed hours say. */
   async _alexaTest() {
     const payload = alexaTestPayload(this._draft);
-    if (!payload.services.length) { this._setTestStatus("error", "Tick at least one speaker first."); return; }
+    if (!payload.services.length && !(payload.whatsapp || []).length) { this._setTestStatus("error", "Tick at least one speaker, or switch on WhatsApp with a chat, first."); return; }
     this._setTestStatus("ok", "Sending…");
     clearTimeout(this._testTimer);
     this._testTimer = setTimeout(() => this._setTestStatus("error",
@@ -1333,9 +1359,22 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Speakers")),
       el("div", { class: "desc" }, "Announcements play on every speaker ticked. Don't tick a group as well as a speaker that is in it, or that speaker says it twice. \"Everywhere\" is all of them. A speaker added to Alexa Media Player later appears here after the page is reloaded."), picks),
       "setting", "alexa announcements speakers groups devices echo"));
+    if (this._whatsapp) {
+      const waBox = el("input", { type: "checkbox", onchange: (ev) => { alexa.whatsapp = ev.target.checked; this._refresh(); } });
+      waBox.checked = alexa.whatsapp === true;
+      const waInput = el("input", { type: "text", size: 34, placeholder: "120363012345678901@g.us", onchange: (ev) => {
+        const list = parseWhatsappTargets(ev.target.value);
+        if (list) { alexa.whatsapp_targets = list; ev.target.classList.remove("bad"); } else ev.target.classList.add("bad");
+        this._refresh(); } });
+      waInput.value = (alexa.whatsapp_targets || []).join(", ");
+      ab.append(track(el("div", { class: "row" }, el("label", { class: "head" }, waBox, el("span", { class: "label" }, "Also send them to WhatsApp")),
+        el("div", { class: "desc" }, "Sends the same words to WhatsApp at the same times, inside the same allowed hours. Needs the WhatsApp integration in Home Assistant. Give a group id (find it with the whatsapp.search_groups action) or a phone number with its country code; separate several with commas. Leave the speakers all unticked to use WhatsApp alone."),
+        el("div", { class: "ctl" }, waInput)),
+        "setting", "alexa announcements whatsapp group chat message send"));
+    }
     this._testStatus = el("span", { class: "muted" });
     ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Test announcement")),
-      el("div", { class: "desc" }, "Plays the opening words and \"Test message\" on the speakers ticked above, now, without saving first. It ignores the allowed hours."),
+      el("div", { class: "desc" }, "Plays the opening words and \"Test message\" on the speakers ticked above, and sends it to WhatsApp if that is switched on, now, without saving first. It ignores the allowed hours."),
       el("div", { class: "ctl" }, el("button", { onclick: () => this._alexaTest() }, "Play a test announcement"), " ", this._testStatus)),
       "setting", "alexa announcements test announcement play button"));
     const timeRow = (label, desc, key) => {
@@ -1509,6 +1548,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     if (this._siteSaved) base.site = this._siteSaved; else delete base.site;
     if (this._devices) base.devices = deviceDraft(base.devices); else delete base.devices;
     if (this._freeLoads) base.free_power_loads = freeLoadDraft(base.free_power_loads); else delete base.free_power_loads;
+    withWhatsapp(base, this._whatsapp);
     if (this._v2) { base.engine_v2 = Object.assign({}, saved.engine_v2 || {}); base.system.engine = uiEngine(this._v2, engineInUse(this._hass.states, saved)); Object.assign(base, profileDraft(this._v2, saved)); }
     else { delete base.engine_v2; delete base.v2_profile; delete base.v2_profiles; }
     return base;
@@ -9172,7 +9212,7 @@ class PowerEngineEventsCard extends PowerEngineV2Card {
 });
 
 if (typeof module !== "undefined") {
-  module.exports = { catalogueAttrs, alexaSpeakerKinds, alexaTestPayload, ALEXA_TEST_EVENT, alexaDraft, parseHoursBefore, alexaSpeakerName, ALEXA_DEFAULT, v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallCustom, waterfallSteps, costsRange, costsSummary, costsTodayInfo, costsBars, peParts, costsDayLabel, shownValue, sectionOpen, sectionsLoad, SECTIONS_KEY, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, FREE_LOADS_APP_VERSION, freeLoadsSupported, freeLoadDraft, buildFreeLoads, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
+  module.exports = { whatsappSupported, whatsappTargets, parseWhatsappTargets, withWhatsapp, catalogueAttrs, alexaSpeakerKinds, alexaTestPayload, ALEXA_TEST_EVENT, alexaDraft, parseHoursBefore, alexaSpeakerName, ALEXA_DEFAULT, v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallCustom, waterfallSteps, costsRange, costsSummary, costsTodayInfo, costsBars, peParts, costsDayLabel, shownValue, sectionOpen, sectionsLoad, SECTIONS_KEY, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, FREE_LOADS_APP_VERSION, freeLoadsSupported, freeLoadDraft, buildFreeLoads, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
