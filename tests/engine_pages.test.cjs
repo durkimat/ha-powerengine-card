@@ -299,3 +299,16 @@ test("engineCompareView: rows carry their status so a day that has no forecast r
     { date: "2026-10-29", status: "ok", v1: 1, v2: 2, bound: 3 }] }, "ok");
   assert.deepStrictEqual(v.rows.map((r) => r.status), ["incomplete", "no_snapshot", "ok"]);
 });
+
+test("eventsView and eventsInRange split the event's pay from the export rate on top, when the app sends it", () => {
+  const old = card.eventsView({ months: [{ month: "2026-10", axle_kwh: 3, axle_gross: 3.45, ev_days: [["2026-10-29", 3, 3.45, 2, 1.4, 0, 0]] }] });
+  assert.strictEqual(old.hasPay, false);
+  const now = card.eventsView({ months: [{ month: "2026-10", axle_kwh: 3, axle_pay: 3, axle_gross: 3.45, ev_days: [["2026-10-29", 3, 3.45, 2, 1.4, 0, 0, 3]] }] });
+  assert.strictEqual(now.hasPay, true);
+  assert.strictEqual(now.months[0].pay, "£3.00");
+  assert.strictEqual(now.months[0].onTop, "£0.45");
+  assert.strictEqual(now.months[0].days[0].onTop, "£0.45");
+  const attrs = { months: [{ month: "2026-10", ev_days: [["2026-10-29", 3, 3.45, 2, 1.4, 0, 0, 3]] }] };
+  assert.strictEqual(card.eventsInRange(attrs, { from: "2026-10-29", to: "2026-10-29" }).pay, 3);
+  assert.strictEqual(card.eventsInRange({ months: [{ month: "2026-10", ev_days: [["2026-10-29", 3, 3.45, 2, 1.4, 0, 0]] }] }, { from: "2026-10-29", to: "2026-10-29" }).pay, null);
+});

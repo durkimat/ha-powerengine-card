@@ -4367,7 +4367,10 @@ function costsSummary(range, names, today) {
   if (hasToday && today) {
     if (today.halfHours) out.push(`Today covers ${today.halfHours} of the day's 48 half-hours, with the standing charge for the whole day.`);
     if (today.axle) {
-      out.push(`${nm.event} exported ${today.axle.kwh} kWh today and paid you ${gbp(today.axle.gross)} (${gbp(today.axle.net)} net of the battery energy it used).${today.lastEvent ? ` The last event ran from ${today.lastEvent.time} to ${today.lastEvent.end}.` : ""}`);
+      const pays = toNumber(today.axle.pay) === null
+        ? `paid you ${gbp(today.axle.gross)}`                                            // an app from before the two were kept apart
+        : `paid ${gbp(today.axle.pay)}, and the export rate adds ${gbp(toNumber(today.axle.gross) - toNumber(today.axle.pay))}`;
+      out.push(`${nm.event} exported ${today.axle.kwh} kWh today and ${pays} (${gbp(today.axle.net)} net of the battery energy it used).${today.lastEvent ? ` The last event ran from ${today.lastEvent.time} to ${today.lastEvent.end}.` : ""}`);
     }
     if (today.free) out.push(`Free power today: ${today.free.kwh} kWh, a net ${gbp(today.free.net)}.`);
   }
@@ -9474,12 +9477,14 @@ function eventsView(attrs) {
   const num = (v) => toNumber(v) || 0;
   const months = (Array.isArray(a.months) ? a.months : []).filter((m) => m && m.month).slice().reverse().map((m) => ({
     key: m.month, label: eventMonthLabel(m.month), kwh: num(m.axle_kwh).toFixed(1), gross: gbp(m.axle_gross), energy: gbp(m.axle_energy),
+    pay: toNumber(m.axle_pay) === null ? null : gbp(m.axle_pay), onTop: gbp(num(m.axle_gross) - num(m.axle_pay)),
     net: gbp(m.axle_net), free: gbp(m.free_power_net), daily: gbp(num(m.actual) - num(m.standing)), standing: gbp(m.standing),
     days: (Array.isArray(m.ev_days) ? m.ev_days : []).slice().reverse().map((d) => ({
       date: d[0], label: compareDayLabel(d[0]), kwh: num(d[1]).toFixed(1), gross: gbp(d[2]), energy: gbp(d[3]), net: gbp(d[4]),
-      freeKwh: num(d[5]).toFixed(1), free: gbp(d[6]) })),
+      freeKwh: num(d[5]).toFixed(1), free: gbp(d[6]), pay: toNumber(d[7]) === null ? null : gbp(d[7]), onTop: gbp(num(d[2]) - num(d[7])) })),
   }));
-  return { name, months, hasDays: months.some((m) => m.days.length) };
+  // an app from before the event's own pay was kept apart from the export rate has no `axle_pay`: one column, as before
+  return { name, months, hasDays: months.some((m) => m.days.length), hasPay: months.some((m) => m.pay !== null) };
 }
 
 /** What events brought in over the page's period, from the listed days with events (the last three months). Pure. */
@@ -9489,7 +9494,8 @@ function eventsInRange(attrs, range) {
   if (!range.from || !listed || range.from.slice(0, 7) < listed) return range.from && listed ? { partial: true } : null;
   const days = months.flatMap((m) => m.ev_days).filter((d) => inRange(d[0], range));
   const sum = (i) => days.reduce((a, d) => a + (toNumber(d[i]) || 0), 0);
-  return { days: days.length, kwh: sum(1), gross: sum(2), energy: sum(3), net: sum(4), freeKwh: sum(5), free: sum(6) };
+  return { days: days.length, kwh: sum(1), gross: sum(2), energy: sum(3), net: sum(4), freeKwh: sum(5), free: sum(6),
+    pay: days.some((d) => d.length > 7) ? sum(7) : null };
 }
 
 class PowerEngineEventsCard extends PowerEngineV2Card {
@@ -9510,7 +9516,7 @@ class PowerEngineEventsCard extends PowerEngineV2Card {
     if (!t) return "";
     if (t.partial) return `<p class="muted small">Days with events are listed for the last three months only, so ${escHtml(range.label.toLowerCase())} is shown in the monthly table below.</p>`;
     if (!t.days) return `<p>No ${escHtml(name)} or free-power events in ${escHtml(range.label.toLowerCase())}.</p>`;
-    return `<p><b>${escHtml(range.label)}:</b> ${t.days} day${t.days === 1 ? "" : "s"} with events. ${escHtml(name)} exported ${t.kwh.toFixed(1)} kWh and paid you ${gbp(t.gross)}, ${gbp(t.net)} net of the ${gbp(t.energy)} of energy it used.${t.free ? ` Free power: ${t.freeKwh.toFixed(1)} kWh, a net ${gbp(t.free)}.` : ""}</p>`;
+    return `<p><b>${escHtml(range.label)}:</b> ${t.days} day${t.days === 1 ? "" : "s"} with events. ${escHtml(name)} exported ${t.kwh.toFixed(1)} kWh and ${t.pay === null ? `paid you ${gbp(t.gross)}` : `paid ${gbp(t.pay)}, with the export rate adding ${gbp(t.gross - t.pay)}`}, ${gbp(t.net)} net of the ${gbp(t.energy)} of energy it used.${t.free ? ` Free power: ${t.freeKwh.toFixed(1)} kWh, a net ${gbp(t.free)}.` : ""}</p>`;
   }
   _render(states) {
     this._lastStates = states;
@@ -9522,11 +9528,14 @@ class PowerEngineEventsCard extends PowerEngineV2Card {
       this.shadowRoot.innerHTML = `<style>${V2_CSS}</style><ha-card><p class="muted">No ${escHtml(v.name)} or free-power events recorded yet.</p></ha-card>`;
       return;
     }
+    // the event's own pay and the export rate on top in two columns (one, as before, from an older app)
+    const money = (x) => (v.hasPay ? `<td class="num">${escHtml(x.pay === null ? x.gross : x.pay)}</td><td class="num">${escHtml(x.pay === null ? "–" : x.onTop)}</td>`
+      : `<td class="num">${escHtml(x.gross)}</td>`);
     const body = v.months.map((m) => {
       const can = m.days.length > 0;
-      const detail = can && open.has(m.key) ? `<tr class="why"><td colspan="8"><table class="parts"><thead><tr><th>Day</th><th>${escHtml(v.name)} kWh</th><th>Paid you</th><th>Energy it used</th><th>Net</th><th>Free power kWh</th><th>Free power</th></tr></thead><tbody>${
-        m.days.map((d) => `<tr><td>${escHtml(d.label)}</td><td class="num">${d.kwh}</td><td class="num">${escHtml(d.gross)}</td><td class="num">${escHtml(d.energy)}</td><td class="num"><b>${escHtml(d.net)}</b></td><td class="num">${d.freeKwh}</td><td class="num">${escHtml(d.free)}</td></tr>`).join("")}</tbody></table></td></tr>` : "";
-      return `<tr class="${can ? "day" : ""}${can && open.has(m.key) ? " open" : ""}" ${can ? `data-month="${escHtml(m.key)}" tabindex="0" title="Show the days"` : ""}><th scope="row">${escHtml(m.label)}</th><td class="num">${m.kwh}</td><td class="num">${escHtml(m.gross)}</td><td class="num">${escHtml(m.energy)}</td><td class="num"><b>${escHtml(m.net)}</b></td><td class="num">${escHtml(m.free)}</td><td class="num">${escHtml(m.daily)}</td><td class="num">${escHtml(m.standing)}</td></tr>${detail}`;
+      const detail = can && open.has(m.key) ? `<tr class="why"><td colspan="9"><table class="parts"><thead><tr><th>Day</th><th>${escHtml(v.name)} kWh</th>${v.hasPay ? `<th>${escHtml(v.name)} pays</th><th>Export rate on top</th>` : "<th>Paid you</th>"}<th>Energy it used</th><th>Net</th><th>Free power kWh</th><th>Free power</th></tr></thead><tbody>${
+        m.days.map((d) => `<tr><td>${escHtml(d.label)}</td><td class="num">${d.kwh}</td>${money(d)}<td class="num">${escHtml(d.energy)}</td><td class="num"><b>${escHtml(d.net)}</b></td><td class="num">${d.freeKwh}</td><td class="num">${escHtml(d.free)}</td></tr>`).join("")}</tbody></table></td></tr>` : "";
+      return `<tr class="${can ? "day" : ""}${can && open.has(m.key) ? " open" : ""}" ${can ? `data-month="${escHtml(m.key)}" tabindex="0" title="Show the days"` : ""}><th scope="row">${escHtml(m.label)}</th><td class="num">${m.kwh}</td>${money(m)}<td class="num">${escHtml(m.energy)}</td><td class="num"><b>${escHtml(m.net)}</b></td><td class="num">${escHtml(m.free)}</td><td class="num">${escHtml(m.daily)}</td><td class="num">${escHtml(m.standing)}</td></tr>${detail}`;
     }).join("");
     this.shadowRoot.innerHTML = `<style>${V2_CSS}
       .wrap { overflow-x: auto; }
@@ -9546,7 +9555,7 @@ class PowerEngineEventsCard extends PowerEngineV2Card {
     <ha-card>
       ${this._periodLine(states, s && s.attributes, v.name)}
       <div class="wrap"><table>
-        <thead><tr><th>Month</th><th>${escHtml(v.name)} kWh</th><th>${escHtml(v.name)} paid you</th><th>Energy it used</th><th>${escHtml(v.name)} net</th><th>Free power</th><th>Day-to-day energy (metered)</th><th>Standing charge</th></tr></thead>
+        <thead><tr><th>Month</th><th>${escHtml(v.name)} kWh</th>${v.hasPay ? `<th>${escHtml(v.name)} pays</th><th>Export rate on top</th>` : `<th>${escHtml(v.name)} paid you</th>`}<th>Energy it used</th><th>${escHtml(v.name)} net</th><th>Free power</th><th>Day-to-day energy (metered)</th><th>Standing charge</th></tr></thead>
         <tbody>${body}</tbody></table></div>
       ${v.hasDays ? '<p class="muted small">Select a month to see its days with events (the last three months).</p>' : ""}
     </ha-card>`;
