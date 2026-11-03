@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.193";
+const CARD_VERSION = "0.9.194";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -4430,7 +4430,7 @@ class PowerEngineCostsPeriodCard extends (typeof HTMLElement !== "undefined" ? H
   }
 }
 
-const COSTS_BAR_COLOURS = { none: "#8d6e63", solar: "#fdd835", tariff: "#26a69a", pe: "#424242", net: "#7e57c2" };
+const COSTS_BAR_COLOURS = { none: "#8d6e63", solar: "#fdd835", tariff: "#26a69a", pe: "#ec407a", net: "#7e57c2" };
 
 class PowerEngineCostsDaysCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
   setConfig(config) {
