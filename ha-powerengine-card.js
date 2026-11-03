@@ -7800,10 +7800,11 @@ function healthCardView(states) {
 
 // ---- config: engine choice and groups ---------------------------------------------------------------------------
 // The planning topics only engine v1 uses, as sections of their own under "Engine v1 settings". Everything else in the
-// existing topics stays under "Your house" (both engines use it). Only the sections' keys that the app lists are shown.
+// existing topics stays in the groups both engines use. The cheap threshold (and its automatic switch) and the grid-charge
+// target stay there too: the car's smart-charge requests read them whichever engine runs. Only the sections' keys that the app lists are shown.
 const V1_SECTIONS = [
-  { key: "v1_planning", title: "Planning and cheap rate", features: ["optimised_plan", "auto_cheap_threshold", "fill_when_cheap"],
-    settings: ["cheap_threshold_p", "window_switch_cost_p", "overnight_switch_cost_p", "ram_switch_cost_p", "grid_charge_target_soc", "charge_hysteresis_soc"] },
+  { key: "v1_planning", title: "Planning", features: ["optimised_plan", "fill_when_cheap"],
+    settings: ["window_switch_cost_p", "overnight_switch_cost_p", "ram_switch_cost_p", "charge_hysteresis_soc"] },
   { key: "v1_selling", title: "Selling (arbitrage band)", features: ["arbitrage", "deep_overnight"],
     settings: ["battery_wear_p", "arbitrage_min_margin_p", "arbitrage_min_soc", "arbitrage_max_soc", "arbitrage_band_penalty_p"] },
   { key: "v1_events", title: "Grid events and reserve", features: [], settings: ["min_reserve_soc", "pre_axle_lookahead_h", "axle_margin_soc"] },
