@@ -3,6 +3,14 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.196
+
+### Behaviour changes
+
+- **Config page: "Your house", "Engine v1 settings" and "Engine v2 settings" now fold away.** Click a heading to open or close it; the page remembers which you closed. Searching, or a section with a problem, opens the group it is in.
+- **Notifications and announcements now sit inside "Your house"** (when the engine groups are shown).
+- **The battery's BMS charge limit and BMS discharge limit moved from "Other" into Battery**, under Optional inputs.
+
 ## 0.9.195
 
 ### Behaviour changes

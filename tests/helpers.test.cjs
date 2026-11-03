@@ -1099,3 +1099,9 @@ test("catalogueAttrs joins a catalogue split across numbered sensors, and waits 
   assert.strictEqual(h.catalogueAttrs(two, "sensor.pe_map_settings"), null);
   assert.strictEqual(h.catalogueAttrs({}, "sensor.pe_map_settings"), null);
 });
+
+test("the BMS charge and discharge limits are with the battery, not Other", () => {
+  const plan = h.topicPlan(["battery_bms_charge_limit", "battery_bms_discharge_limit"], [], [], []);
+  assert.deepEqual(plan.find((t) => t.key === "battery").roles, ["battery_bms_charge_limit", "battery_bms_discharge_limit"]);
+  assert.equal(plan.find((t) => t.key === "other"), undefined);
+});
