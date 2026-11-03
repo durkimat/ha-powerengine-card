@@ -1387,7 +1387,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       .profilebox { margin-top: 12px; border-top: 1px solid var(--divider-color); padding-top: 8px; }
       .profilebox .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
       .groups { display: flex; flex-direction: column; }
-      details.group[hidden] { display: none; }
+      .group.dim { opacity: .6; }
       .groupchip:empty { display: none; }
       .grouphead { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin: 14px 0 2px; }
       details.group > summary.grouphead { cursor: pointer; list-style: none; justify-content: flex-start; }
@@ -1973,7 +1973,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       const any = [...g.body.querySelectorAll("details.section")].some((d) => d.style.display !== "none");
       g.wrap.style.display = !active || any ? "" : "none";
       if (active) g.wrap.open = any;
-      else g.wrap.open = !this._openSections().has(`closed:${key}`) || Object.values(this._sections).some((x) => x.problems && g.body.contains(x.details));
+      else g.wrap.open = (!g.wrap.classList.contains("dim") && !this._openSections().has(`closed:${key}`)) || Object.values(this._sections).some((x) => x.problems && g.body.contains(x.details));
     });
     this._filtering = false;
     if (this._noMatch) this._noMatch.style.display = active && !Object.keys(shown).length ? "" : "none";
@@ -2246,13 +2246,17 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       if (eng !== this._engine) { this._engine = eng; this._draft.system.engine = eng; }
       const g = this._groups || {};
       if (g.v1 && g.v2) {
-        // only the engine in use shows its settings; the other stays hidden unless one of its settings has a problem
+        // the engine in use shows its settings as normal; the other is greyed out and folded away, still there to
+        // change (v1's planning settings still shape its comparison plan and the simulators)
         ["v1", "v2"].forEach((k) => {
           const on = this._engine === k;
-          const bad = Object.values(secs).some((x) => x.problems && g[k].body.contains(x.details));
-          g[k].wrap.hidden = !on && !bad;
-          g[k].chip.textContent = on ? "in use" : "not in use";
+          g[k].wrap.classList.toggle("dim", !on);
+          g[k].chip.textContent = on ? "in use" : "not in use: can be set now";
           g[k].chip.className = `groupchip${on ? " on" : ""}`;
+          if (g[k].was !== on) {                           // the engine changed (or the page was just built)
+            g[k].was = on;
+            g[k].wrap.open = on && !this._openSections().has(`closed:${k}`);
+          }
         });
       }
       const sig = [this._engine, this._enginePending, this._saving, this._readOnly, this._profileSig()].join("|");
