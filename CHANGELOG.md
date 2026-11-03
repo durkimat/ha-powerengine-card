@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.200
+
+### Behaviour changes
+
+- **Events: the event's own pay and the export rate on top are two figures.** The Costs page sentence for today says "Axle exported 3.3 kWh today and paid £3.26, and the export rate adds £0.49". The events table has "Axle pays" and "Export rate on top" columns, and the period line says the same. An older app that doesn't send the split keeps the single "paid you" figure. Needs app 0.9.200.
+
 ## 0.9.199
 
 ### Behaviour changes
