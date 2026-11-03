@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.194
+
+### Behaviour changes
+
+- **Costs page, day by day chart: the PowerEngine bar is now bright pink.** It was dark grey and almost invisible against a dark background.
+
 ## 0.9.193
 
 ### Behaviour changes
