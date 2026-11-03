@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.199
+
+### Behaviour changes
+
+- **Config page: the engine not in use is greyed out and folded away, not hidden.** "Engine v1 settings" (or v2) is still there to open and change; the one in use is open as normal. Engine v1's planning settings still shape its comparison plan and the simulators while engine v2 runs.
+
 ## 0.9.198
 
 ### Behaviour changes
