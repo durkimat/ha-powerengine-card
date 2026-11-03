@@ -454,7 +454,7 @@ const TOPICS = [
   { key: "battery", title: "Battery",
     roles: ["battery_soc", "battery_power", "battery_charge_power", "battery_discharge_power", "battery_capacity",
       "battery_max_charge_power", "battery_max_discharge_power", "battery_charge_today", "battery_discharge_today",
-      "battery_round_trip", "battery_soh", "inverter_min_soc"],
+      "battery_round_trip", "battery_soh", "battery_bms_charge_limit", "battery_bms_discharge_limit", "inverter_min_soc"],
     settings: ["battery_floor_soc", "min_reserve_soc", "grid_charge_target_soc", "charge_hysteresis_soc"],
     learning: ["learn_taper", "learn_conversion", "learn_reserve"] },
   { key: "grid", title: "Grid and house",
@@ -1386,6 +1386,10 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       .groups { display: flex; flex-direction: column; }
       .group.dim { opacity: .6; }
       .grouphead { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin: 14px 0 2px; }
+      details.group > summary.grouphead { cursor: pointer; list-style: none; justify-content: flex-start; }
+      details.group > summary.grouphead::-webkit-details-marker { display: none; }
+      details.group > summary.grouphead::before { content: "▸"; color: var(--secondary-text-color); transition: transform .15s; display: inline-block; }
+      details.group[open] > summary.grouphead::before { transform: rotate(90deg); }
       .grouphead h3 { margin: 0; }
       .groupchip { font-size: .8em; padding: 1px 10px; border-radius: 999px; background: var(--secondary-background-color); color: var(--secondary-text-color); }
       .groupchip.on { background: rgba(3, 169, 244, .14); color: var(--primary-color); }
@@ -1596,21 +1600,128 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
         body.append(this._freeLoadsEditor());
       }
     };
-    if (!grouping.grouped) grouping.house.forEach(renderTopic);
+    // notifications: channels and rules (app 0.9.195+), or HA's notification area / a phone / off (older apps). They sit
+    // in "Your house" when the engine groups are shown, else after the topics.
+    const renderNotifications = () => {
+      if (this._draft.notifications.channels) {
+        const nb = section("notifications", "Notifications and announcements",
+          "Where messages go, and which ones go where. A channel is a place a message can be sent: Home Assistant's notification area, a phone, the Alexa speakers or WhatsApp.");
+        this._notifyRouterUi(nb, track);
+      } else {
+        const nb = section("notifications", "Notifications",
+          "Shown in Home Assistant's notification area (the bell) by default, or sent to your phone through the companion app.");
+        const services = Object.keys((this._hass.services || {}).notify || {}).sort();
+        const svcSel = el("select", { onchange: (ev) => { this._draft.notifications.service = ev.target.value; this._refresh(); } },
+          el("option", { value: "persistent_notification" }, "Home Assistant notification area"),
+          services.map((s) => el("option", { value: `notify.${s}` }, `Phone: notify.${s}`)),
+          el("option", { value: "off" }, "Off (no notifications)"));
+        const curSvc = this._draft.notifications.service || "off";
+        if (curSvc.startsWith("notify.") && !services.includes(curSvc.slice(7))) svcSel.append(el("option", { value: curSvc }, `${curSvc} (not found)`));
+        svcSel.value = curSvc;
+        nb.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Send to")),
+          el("div", { class: "desc" }, "Notification area: nothing to set up; each one clears itself when the problem is over. Phone: your notify service, usually notify.mobile_app_<phone name>."), el("div", { class: "ctl" }, svcSel)),
+          "setting", "notifications send to notify service phone notification area bell"));
+        NOTIFY_EVENTS.filter(([key]) => key !== "alexa").forEach(([key, rawLabel, rawDesc]) => {   // Alexa has its own section below
+          const [label, desc] = [T(rawLabel), T(rawDesc)];
+          const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.notifications.events[key] = ev.target.checked; this._refresh(); } });
+          cb.checked = !!this._draft.notifications.events[key];
+          nb.append(track(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc)),
+            "setting", `notification ${label} ${desc}`));
+        });
+        // Announcements: spoken reminders on Alexa speakers. Their own heading and section, apart from the engine settings
+        // above (they work with either engine) and from Home Assistant's notification area.
+        if (!grouping.grouped) {
+          host = content;
+          content.append(el("div", { class: "grouphead" }, el("h3", {}, "Announcements")));
+        }
+        const ab = section("announcements", "Alexa announcements",
+          "Spoken reminders on your Alexa speakers. They work with either engine, and are separate from the notifications above.");
+        const alexa = this._draft.notifications.alexa;
+        const [, alexaLabel, alexaDesc] = NOTIFY_EVENTS.find(([k]) => k === "alexa");
+        const onBox = el("input", { type: "checkbox", onchange: (ev) => { this._draft.notifications.events.alexa = ev.target.checked; this._refresh(); } });
+        onBox.checked = !!this._draft.notifications.events.alexa;
+        ab.append(track(el("div", { class: "row" }, el("label", { class: "head" }, onBox, el("span", { class: "label" }, T(alexaLabel))), el("div", { class: "desc" }, T(alexaDesc))),
+          "setting", `alexa announcements switch on off ${alexaLabel} ${alexaDesc}`));
+        const speakers = Object.keys((this._hass.services || {}).notify || {}).filter((s) => /^alexa_media_/.test(s) && s !== "alexa_media_last_called").sort();
+        alexa.services.forEach((s) => { if (!speakers.includes(s.slice(7))) speakers.push(s.slice(7)); });
+        const kinds = alexaSpeakerKinds(speakers, this._hass.devices);
+        const pick = (s) => {
+          const cb = el("input", { type: "checkbox", onchange: (ev) => {
+            const set = new Set(alexa.services); ev.target.checked ? set.add(`notify.${s}`) : set.delete(`notify.${s}`);
+            alexa.services = [...set]; this._refresh(); } });
+          cb.checked = alexa.services.includes(`notify.${s}`);
+          return el("label", { class: "head" }, cb, el("span", { class: "label" }, alexaSpeakerName(`notify.${s}`)));
+        };
+        const picks = el("div", { class: "ctl" });
+        if (!speakers.length) picks.append(el("span", { class: "muted" }, "No Alexa speakers found. Install Alexa Media Player in Home Assistant."));
+        if (kinds.speakers.length) picks.append(el("div", { class: "muted" }, "Single speakers"), ...kinds.speakers.map(pick));
+        if (kinds.groups.length) picks.append(el("div", { class: "muted" }, "Speaker groups (each plays on all of its speakers)"), ...kinds.groups.map(pick));
+        ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Speakers")),
+          el("div", { class: "desc" }, "Announcements play on every speaker ticked. Don't tick a group as well as a speaker that is in it, or that speaker says it twice. \"Everywhere\" is all of them. A speaker added to Alexa Media Player later appears here after the page is reloaded."), picks),
+          "setting", "alexa announcements speakers groups devices echo"));
+        if (this._whatsapp) {
+          const waBox = el("input", { type: "checkbox", onchange: (ev) => { alexa.whatsapp = ev.target.checked; this._refresh(); } });
+          waBox.checked = alexa.whatsapp === true;
+          const waInput = el("input", { type: "text", size: 34, placeholder: "120363012345678901@g.us", onchange: (ev) => {
+            const list = parseWhatsappTargets(ev.target.value);
+            if (list) { alexa.whatsapp_targets = list; ev.target.classList.remove("bad"); } else ev.target.classList.add("bad");
+            this._refresh(); } });
+          waInput.value = (alexa.whatsapp_targets || []).join(", ");
+          ab.append(track(el("div", { class: "row" }, el("label", { class: "head" }, waBox, el("span", { class: "label" }, "Also send them to WhatsApp")),
+            el("div", { class: "desc" }, "Sends the same words to WhatsApp at the same times, inside the same allowed hours. Needs the WhatsApp integration in Home Assistant. Give a group id (find it with the whatsapp.search_groups action) or a phone number with its country code; separate several with commas. Leave the speakers all unticked to use WhatsApp alone."),
+            el("div", { class: "ctl" }, waInput)),
+            "setting", "alexa announcements whatsapp group chat message send"));
+        }
+        this._testStatus = el("span", { class: "muted" });
+        ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Test announcement")),
+          el("div", { class: "desc" }, "Plays the opening words and \"Test message\" on the speakers ticked above, and sends it to WhatsApp if that is switched on, now, without saving first. It ignores the allowed hours."),
+          el("div", { class: "ctl" }, el("button", { onclick: () => this._alexaTest() }, "Play a test announcement"), " ", this._testStatus)),
+          "setting", "alexa announcements test announcement play button"));
+        const timeRow = (label, desc, key) => {
+          const input = el("input", { type: "time", onchange: (ev) => { if (TIME_OF_DAY.test(ev.target.value)) alexa[key] = ev.target.value; this._refresh(); } });
+          input.value = alexa[key];
+          return track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc), el("div", { class: "ctl" }, input)),
+            "setting", `alexa announcements quiet hours ${label} ${desc}`);
+        };
+        ab.append(timeRow("Earliest on a weekday", "Nothing is announced before this on Monday to Friday.", "earliest_weekday"),
+          timeRow("Earliest at the weekend", "Nothing is announced before this on Saturday or Sunday.", "earliest_weekend"),
+          timeRow("Latest", "Nothing is announced from this time until the earliest time next morning.", "latest"));
+        const introInput = el("input", { type: "text", size: 30, maxlength: 80, onchange: (ev) => { alexa.intro = ev.target.value.trim(); this._refresh(); } });
+        introInput.value = alexa.intro;
+        ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Opening words")),
+          el("div", { class: "desc" }, "Said at the start of every announcement, so the household knows who it is from. Leave empty for none."), el("div", { class: "ctl" }, introInput)),
+          "setting", "alexa announcements opening words intro name"));
+        const hoursInput = el("input", { type: "text", size: 14, onchange: (ev) => { const h = parseHoursBefore(ev.target.value); if (h) alexa.hours_before = h; this._refresh(); } });
+        hoursInput.value = alexa.hours_before.join(", ");
+        ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Hours before a grid event")),
+          el("div", { class: "desc" }, "When each reminder is said, in hours before the event starts; 0 is as it starts. A reminder that falls outside the allowed hours is skipped."), el("div", { class: "ctl" }, hoursInput)),
+          "setting", "alexa announcements hours before reminders times"));
+        const finishBox = el("input", { type: "checkbox", onchange: (ev) => { alexa.finish = ev.target.checked; this._refresh(); } });
+        finishBox.checked = alexa.finish;
+        ab.append(track(el("div", { class: "row" }, el("label", { class: "head" }, finishBox, el("span", { class: "label" }, "Announce a summary when a grid event ends")),
+          el("div", { class: "desc" }, "Says what the house used, what was exported, what the event should pay, and what was turned back (the heating set-back, the car charger) and to what. Only inside the allowed hours: after the latest time it is kept for the morning.")),
+          "setting", "alexa announcements summary finish end of grid event"));
+      }
+    };
+    if (!grouping.grouped) { grouping.house.forEach(renderTopic); renderNotifications(); }
     else {
       // Your house (both engines), Engine v1 settings, Engine v2 settings: the one not in use is dimmed but stays editable
       const groupsBox = el("div", { class: "groups" });
       content.append(groupsBox);
       const startGroup = (key, title) => {
-        const wrap = el("div", { class: "group" });
         const chip = el("span", { class: "groupchip" });
-        wrap.append(el("div", { class: "grouphead" }, el("h3", {}, title), chip));
+        const body = el("div", { class: "groupbody" });
+        const wrap = el("details", { class: "group" }, el("summary", { class: "grouphead" }, el("h3", {}, title), chip), body);
+        wrap.open = !this._openSections().has(`closed:${key}`);     // open unless closed before
+        // remembered on a click of the heading only, so a search or a problem opening a group doesn't change what is kept
+        wrap.firstChild.addEventListener("click", () => setTimeout(() => this._rememberOpen(`closed:${key}`, !wrap.open)));
         groupsBox.append(wrap);
-        host = wrap;
-        this._groups[key] = { wrap, chip };
+        host = body;
+        this._groups[key] = { wrap, chip, body };
       };
       startGroup("house", "Your house");
       grouping.house.forEach(renderTopic);
+      renderNotifications();
       startGroup("v1", "Engine v1 settings");
       grouping.v1.forEach((sec) => renderTopic(Object.assign({ roles: [], learning: [], system: [] }, sec)));
       startGroup("v2", "Engine v2 settings");
@@ -1618,104 +1729,6 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       host = content;
     }
 
-    // notifications: channels and rules (app 0.9.195+), or HA's notification area / a phone / off (older apps)
-    if (this._draft.notifications.channels) {
-      const nb = section("notifications", "Notifications and announcements",
-        "Where messages go, and which ones go where. A channel is a place a message can be sent: Home Assistant's notification area, a phone, the Alexa speakers or WhatsApp.");
-      this._notifyRouterUi(nb, track);
-    } else {
-      const nb = section("notifications", "Notifications",
-        "Shown in Home Assistant's notification area (the bell) by default, or sent to your phone through the companion app.");
-      const services = Object.keys((this._hass.services || {}).notify || {}).sort();
-      const svcSel = el("select", { onchange: (ev) => { this._draft.notifications.service = ev.target.value; this._refresh(); } },
-        el("option", { value: "persistent_notification" }, "Home Assistant notification area"),
-        services.map((s) => el("option", { value: `notify.${s}` }, `Phone: notify.${s}`)),
-        el("option", { value: "off" }, "Off (no notifications)"));
-      const curSvc = this._draft.notifications.service || "off";
-      if (curSvc.startsWith("notify.") && !services.includes(curSvc.slice(7))) svcSel.append(el("option", { value: curSvc }, `${curSvc} (not found)`));
-      svcSel.value = curSvc;
-      nb.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Send to")),
-        el("div", { class: "desc" }, "Notification area: nothing to set up; each one clears itself when the problem is over. Phone: your notify service, usually notify.mobile_app_<phone name>."), el("div", { class: "ctl" }, svcSel)),
-        "setting", "notifications send to notify service phone notification area bell"));
-      NOTIFY_EVENTS.filter(([key]) => key !== "alexa").forEach(([key, rawLabel, rawDesc]) => {   // Alexa has its own section below
-        const [label, desc] = [T(rawLabel), T(rawDesc)];
-        const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.notifications.events[key] = ev.target.checked; this._refresh(); } });
-        cb.checked = !!this._draft.notifications.events[key];
-        nb.append(track(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc)),
-          "setting", `notification ${label} ${desc}`));
-      });
-      // Announcements: spoken reminders on Alexa speakers. Their own heading and section, apart from the engine settings
-      // above (they work with either engine) and from Home Assistant's notification area.
-      host = content;
-      content.append(el("div", { class: "grouphead" }, el("h3", {}, "Announcements")));
-      const ab = section("announcements", "Alexa announcements",
-        "Spoken reminders on your Alexa speakers. They work with either engine, and are separate from the notifications above.");
-      const alexa = this._draft.notifications.alexa;
-      const [, alexaLabel, alexaDesc] = NOTIFY_EVENTS.find(([k]) => k === "alexa");
-      const onBox = el("input", { type: "checkbox", onchange: (ev) => { this._draft.notifications.events.alexa = ev.target.checked; this._refresh(); } });
-      onBox.checked = !!this._draft.notifications.events.alexa;
-      ab.append(track(el("div", { class: "row" }, el("label", { class: "head" }, onBox, el("span", { class: "label" }, T(alexaLabel))), el("div", { class: "desc" }, T(alexaDesc))),
-        "setting", `alexa announcements switch on off ${alexaLabel} ${alexaDesc}`));
-      const speakers = Object.keys((this._hass.services || {}).notify || {}).filter((s) => /^alexa_media_/.test(s) && s !== "alexa_media_last_called").sort();
-      alexa.services.forEach((s) => { if (!speakers.includes(s.slice(7))) speakers.push(s.slice(7)); });
-      const kinds = alexaSpeakerKinds(speakers, this._hass.devices);
-      const pick = (s) => {
-        const cb = el("input", { type: "checkbox", onchange: (ev) => {
-          const set = new Set(alexa.services); ev.target.checked ? set.add(`notify.${s}`) : set.delete(`notify.${s}`);
-          alexa.services = [...set]; this._refresh(); } });
-        cb.checked = alexa.services.includes(`notify.${s}`);
-        return el("label", { class: "head" }, cb, el("span", { class: "label" }, alexaSpeakerName(`notify.${s}`)));
-      };
-      const picks = el("div", { class: "ctl" });
-      if (!speakers.length) picks.append(el("span", { class: "muted" }, "No Alexa speakers found. Install Alexa Media Player in Home Assistant."));
-      if (kinds.speakers.length) picks.append(el("div", { class: "muted" }, "Single speakers"), ...kinds.speakers.map(pick));
-      if (kinds.groups.length) picks.append(el("div", { class: "muted" }, "Speaker groups (each plays on all of its speakers)"), ...kinds.groups.map(pick));
-      ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Speakers")),
-        el("div", { class: "desc" }, "Announcements play on every speaker ticked. Don't tick a group as well as a speaker that is in it, or that speaker says it twice. \"Everywhere\" is all of them. A speaker added to Alexa Media Player later appears here after the page is reloaded."), picks),
-        "setting", "alexa announcements speakers groups devices echo"));
-      if (this._whatsapp) {
-        const waBox = el("input", { type: "checkbox", onchange: (ev) => { alexa.whatsapp = ev.target.checked; this._refresh(); } });
-        waBox.checked = alexa.whatsapp === true;
-        const waInput = el("input", { type: "text", size: 34, placeholder: "120363012345678901@g.us", onchange: (ev) => {
-          const list = parseWhatsappTargets(ev.target.value);
-          if (list) { alexa.whatsapp_targets = list; ev.target.classList.remove("bad"); } else ev.target.classList.add("bad");
-          this._refresh(); } });
-        waInput.value = (alexa.whatsapp_targets || []).join(", ");
-        ab.append(track(el("div", { class: "row" }, el("label", { class: "head" }, waBox, el("span", { class: "label" }, "Also send them to WhatsApp")),
-          el("div", { class: "desc" }, "Sends the same words to WhatsApp at the same times, inside the same allowed hours. Needs the WhatsApp integration in Home Assistant. Give a group id (find it with the whatsapp.search_groups action) or a phone number with its country code; separate several with commas. Leave the speakers all unticked to use WhatsApp alone."),
-          el("div", { class: "ctl" }, waInput)),
-          "setting", "alexa announcements whatsapp group chat message send"));
-      }
-      this._testStatus = el("span", { class: "muted" });
-      ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Test announcement")),
-        el("div", { class: "desc" }, "Plays the opening words and \"Test message\" on the speakers ticked above, and sends it to WhatsApp if that is switched on, now, without saving first. It ignores the allowed hours."),
-        el("div", { class: "ctl" }, el("button", { onclick: () => this._alexaTest() }, "Play a test announcement"), " ", this._testStatus)),
-        "setting", "alexa announcements test announcement play button"));
-      const timeRow = (label, desc, key) => {
-        const input = el("input", { type: "time", onchange: (ev) => { if (TIME_OF_DAY.test(ev.target.value)) alexa[key] = ev.target.value; this._refresh(); } });
-        input.value = alexa[key];
-        return track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc), el("div", { class: "ctl" }, input)),
-          "setting", `alexa announcements quiet hours ${label} ${desc}`);
-      };
-      ab.append(timeRow("Earliest on a weekday", "Nothing is announced before this on Monday to Friday.", "earliest_weekday"),
-        timeRow("Earliest at the weekend", "Nothing is announced before this on Saturday or Sunday.", "earliest_weekend"),
-        timeRow("Latest", "Nothing is announced from this time until the earliest time next morning.", "latest"));
-      const introInput = el("input", { type: "text", size: 30, maxlength: 80, onchange: (ev) => { alexa.intro = ev.target.value.trim(); this._refresh(); } });
-      introInput.value = alexa.intro;
-      ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Opening words")),
-        el("div", { class: "desc" }, "Said at the start of every announcement, so the household knows who it is from. Leave empty for none."), el("div", { class: "ctl" }, introInput)),
-        "setting", "alexa announcements opening words intro name"));
-      const hoursInput = el("input", { type: "text", size: 14, onchange: (ev) => { const h = parseHoursBefore(ev.target.value); if (h) alexa.hours_before = h; this._refresh(); } });
-      hoursInput.value = alexa.hours_before.join(", ");
-      ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Hours before a grid event")),
-        el("div", { class: "desc" }, "When each reminder is said, in hours before the event starts; 0 is as it starts. A reminder that falls outside the allowed hours is skipped."), el("div", { class: "ctl" }, hoursInput)),
-        "setting", "alexa announcements hours before reminders times"));
-      const finishBox = el("input", { type: "checkbox", onchange: (ev) => { alexa.finish = ev.target.checked; this._refresh(); } });
-      finishBox.checked = alexa.finish;
-      ab.append(track(el("div", { class: "row" }, el("label", { class: "head" }, finishBox, el("span", { class: "label" }, "Announce a summary when a grid event ends")),
-        el("div", { class: "desc" }, "Says what the house used, what was exported, what the event should pay, and what was turned back (the heating set-back, the car charger) and to what. Only inside the allowed hours: after the latest time it is kept for the morning.")),
-        "setting", "alexa announcements summary finish end of grid event"));
-    }
     this._currentSection = null;
 
     // actions
@@ -1730,7 +1743,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     }
     this._refresh();
     // open any section that needs attention
-    Object.values(this._sections).forEach((s) => { if (s.problems) s.details.open = true; });
+    Object.values(this._sections).forEach((s) => { if (s.problems) this._openWithGroup(s.details); });
     this._applyFilter();
   }
 
@@ -1941,6 +1954,12 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       if (active) s.details.open = !!shown[key];
       else s.details.open = this._openSections().has(key) || !!s.problems;
     });
+    Object.entries(this._groups || {}).forEach(([key, g]) => {
+      const any = [...g.body.querySelectorAll("details.section")].some((d) => d.style.display !== "none");
+      g.wrap.style.display = !active || any ? "" : "none";
+      if (active) g.wrap.open = any;
+      else g.wrap.open = !this._openSections().has(`closed:${key}`) || Object.values(this._sections).some((x) => x.problems && g.body.contains(x.details));
+    });
     this._filtering = false;
     if (this._noMatch) this._noMatch.style.display = active && !Object.keys(shown).length ? "" : "none";
   }
@@ -1949,7 +1968,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     const first = (this._items || []).find((it) => it.node.classList.contains("req-bad"));
     if (!first) return;
     const s = this._sections[first.section];
-    if (s) s.details.open = true;
+    if (s) this._openWithGroup(s.details);
     first.node.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
@@ -2008,6 +2027,14 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
 
   _toggleAll(open) {
     Object.entries(this._sections || {}).forEach(([key, s]) => { s.details.open = open; this._rememberOpen(key, open); });
+    Object.entries(this._groups || {}).forEach(([key, g]) => { g.wrap.open = open; this._rememberOpen(`closed:${key}`, !open); });
+  }
+
+  /** Open a section and the group (Your house, Engine v1 or v2 settings) it sits in. */
+  _openWithGroup(details) {
+    details.open = true;
+    const g = details.closest("details.group");
+    if (g) g.open = true;
   }
 
   _badge(role) {
