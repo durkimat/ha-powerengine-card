@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.194";
+const CARD_VERSION = "0.9.195";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -165,10 +165,133 @@ function parseWhatsappTargets(text) {
 /** The draft with the WhatsApp settings present (off, no chats) when the app supports them, and absent when it doesn't. */
 function withWhatsapp(draft, supported) {
   const n = draft && draft.notifications;
-  if (!n || !n.alexa) return draft;
+  if (!n || !n.alexa || n.channels) return draft;
   if (supported) n.alexa = { ...n.alexa, whatsapp: n.alexa.whatsapp === true, whatsapp_targets: whatsappTargets(n.alexa.whatsapp_targets) };
   else { delete n.alexa.whatsapp; delete n.alexa.whatsapp_targets; }
   return draft;
+}
+// Notifications as channels and rules (app 0.9.195 and newer): where messages can go, and which kinds go where.
+const ROUTER_APP_VERSION = "0.9.195";
+const NOTIFY_SENSOR = "sensor.pe_ui_notify";
+const NOTIFY_TEST_EVENT = "pe_notify_test", NOTIFY_TEST_RESULT = "pe_notify_test_result";
+function routerSupported(appVersion) { return versionOlder(appVersion, ROUTER_APP_VERSION) === false; }
+const CHANNEL_TYPES = [["bell", "Home Assistant notifications"], ["notify", "Phone or other notify service"], ["alexa", "Alexa speakers"], ["whatsapp", "WhatsApp"]];
+// what PowerEngine sends: [kind, label, what it is]
+const NOTIFY_KINDS = [
+  ["health", "Health problems", "When the Health tab finds a problem (checked after start-up and each night)."],
+  ["inputs", "Inputs not working", "When a required input has been unavailable or stale for 15 minutes."],
+  ["axle", "Grid event scheduled", "When a grid event (<<event>>) is scheduled, with its time."],
+  ["free_power", "Free-power sessions", "When a free-electricity session is announced."],
+  ["daily", "Daily summary", "Each morning at 08:00: yesterday's cost and savings."],
+  ["simulator", "Tariff opportunities", "When the overnight Simulator finds a tariff that would have cost noticeably less, or new tariffs appear."],
+  ["grid_reminder", "Grid event reminders", "Hours before a grid event, saying whether the battery looks ready (times below)."],
+  ["grid_summary", "Grid event summary", "When a grid event ends: what the house used, what was exported and what it should pay."],
+];
+const ROUTER_LEGACY_KINDS = ["health", "inputs", "axle", "free_power", "daily", "simulator"];
+const REMINDER_DEFAULT = [8, 5, 2, 1, 0];
+function routerChannel(type, name, raw) {
+  const r = raw && typeof raw === "object" ? raw : {};
+  const out = { type, label: typeof r.label === "string" && r.label.trim() ? r.label.trim().slice(0, 40) : name, intro: typeof r.intro === "string" ? r.intro.trim().slice(0, 80) : "",
+    hours: null, outside_hours: r.outside_hours === "skip" ? "skip" : "hold" };
+  const h = r.hours;
+  if (h && typeof h === "object") {
+    const time = (v, d) => (typeof v === "string" && (TIME_OF_DAY.test(v.trim()) || v.trim() === "24:00") ? v.trim().padStart(5, "0") : d);
+    const weekday = time(h.weekday_from, "00:00");
+    out.hours = { weekday_from: weekday, weekend_from: time(h.weekend_from, weekday), until: time(h.until, "24:00") };
+  }
+  if (type === "notify") out.service = typeof r.service === "string" ? r.service : "";
+  if (type === "alexa") out.services = (Array.isArray(r.services) ? r.services : []).filter((x) => /^notify\.[a-z0-9_]+$/.test(x));
+  if (type === "whatsapp") out.targets = whatsappTargets(r.targets);
+  return out;
+}
+/** The notification settings as the page edits them: channels, rules and the reminder hours, from the app's own form. */
+function routerDraft(n) {
+  const channels = {};
+  Object.entries((n && n.channels) || {}).forEach(([name, spec]) => { if (spec && CHANNEL_TYPES.some(([t]) => t === spec.type)) channels[name] = routerChannel(spec.type, name, spec); });
+  const rules = ((n && n.rules) || []).filter((r) => r && Array.isArray(r.events) && Array.isArray(r.to))
+    .map((r) => ({ events: [...new Set(r.events.map(String))], to: [...new Set(r.to.map(String))].filter((c) => channels[c]) })).filter((r) => r.events.length && r.to.length);
+  const hours = Array.isArray(n && n.reminder_hours) ? n.reminder_hours.map(Number).filter((h) => Number.isFinite(h) && h >= 0 && h <= 48) : [];
+  return { channels, rules, reminder_hours: hours.length ? [...new Set(hours)].sort((x, y) => y - x) : REMINDER_DEFAULT.slice() };
+}
+/** The older settings (service, events, alexa) as channels and rules, the way the app turns them into the same. */
+function routerFromLegacy(n) {
+  const channels = {}, rules = [];
+  const service = n.service || "";
+  const main = service === "persistent_notification" ? "bell" : (service && service !== "off" ? "phone" : null);
+  if (main === "bell") channels.bell = routerChannel("bell", "bell", { label: "HA notifications" });
+  else if (main) channels.phone = routerChannel("notify", "phone", { label: "Phone", service });
+  const events = n.events || {};
+  const kinds = ROUTER_LEGACY_KINDS.filter((k) => events[k]);
+  if (main && kinds.length) rules.push({ events: kinds, to: [main] });
+  const a = alexaDraft(n.alexa);
+  const hours = { weekday_from: a.earliest_weekday, weekend_from: a.earliest_weekend, until: a.latest };
+  const spoken = [];
+  if (a.services.length) { channels.alexa = routerChannel("alexa", "alexa", { label: "Alexa", services: a.services, intro: a.intro, hours }); spoken.push("alexa"); }
+  if (a.whatsapp && a.whatsapp_targets && a.whatsapp_targets.length) { channels.whatsapp = routerChannel("whatsapp", "whatsapp", { label: "WhatsApp", targets: a.whatsapp_targets, intro: a.intro, hours }); spoken.push("whatsapp"); }
+  if (events.alexa && spoken.length) rules.push({ events: a.finish ? ["grid_reminder", "grid_summary"] : ["grid_reminder"], to: spoken });
+  return { channels, rules, reminder_hours: a.hours_before };
+}
+/** The draft with its notifications in the channels-and-rules form when the app supports it. */
+function withRouter(draft, supported) {
+  const n = draft && draft.notifications;
+  if (n && supported && !n.channels) draft.notifications = routerFromLegacy(n);
+  return draft;
+}
+/** One channel as the app takes it (also what the test button sends). */
+function routerChannelConfig(ch) {
+  const out = { type: ch.type };
+  if (ch.label) out.label = ch.label;
+  if (ch.intro) out.intro = ch.intro;
+  if (ch.hours) { out.hours = { weekday_from: ch.hours.weekday_from, weekend_from: ch.hours.weekend_from, until: ch.hours.until }; if (ch.outside_hours === "skip") out.outside_hours = "skip"; }
+  if (ch.type === "notify") out.service = ch.service;
+  if (ch.type === "alexa") out.services = ch.services.slice();
+  if (ch.type === "whatsapp") out.targets = ch.targets.slice();
+  return out;
+}
+function routerConfig(n) {
+  const channels = {};
+  Object.entries(n.channels).forEach(([name, ch]) => { channels[name] = routerChannelConfig(ch); });
+  return { channels, rules: n.rules.map((r) => ({ events: r.events.slice(), to: r.to.slice() })), reminder_hours: n.reminder_hours.slice() };
+}
+/** What stops a channel being saved (the app would refuse it), or "" when it is fine. */
+function routerProblem(n) {
+  for (const [name, ch] of Object.entries(n.channels || {})) {
+    const who = `“${ch.label || name}”`;
+    if (ch.type === "notify" && !/^notify\.[a-z0-9_]+$/.test(ch.service || "")) return `Choose the notify service for ${who}.`;
+    if (ch.type === "alexa" && !ch.services.length) return `Tick at least one speaker for ${who}.`;
+    if (ch.type === "whatsapp" && !ch.targets.length) return `Give ${who} a WhatsApp group id or a phone number.`;
+    if (ch.hours && ch.hours.until !== "24:00" && ch.hours.until <= ch.hours.weekday_from && ch.hours.until <= ch.hours.weekend_from) return `${who}: the end of its hours must be after they start.`;
+  }
+  return "";
+}
+/** The ticks of the "what goes where" table: "kind|channel" for each rule. */
+function routeCells(rules) {
+  const cells = new Set();
+  (rules || []).forEach((r) => r.events.forEach((k) => r.to.forEach((c) => cells.add(`${k}|${c}`))));
+  return cells;
+}
+/** Rules for a set of ticks: one rule for each channel, listing the kinds it takes (in the table's order). */
+function routesFromCells(cells, channelNames, kindOrder) {
+  const rules = [];
+  channelNames.forEach((c) => {
+    const events = kindOrder.filter((k) => cells.has(`${k}|${c}`));
+    if (events.length) rules.push({ events, to: [c] });
+  });
+  return rules;
+}
+/** The kinds the table lists: PowerEngine's own, then any the app has seen from elsewhere, then any a rule names. */
+function notifyKinds(seen, rules) {
+  const out = NOTIFY_KINDS.map(([kind, label, desc]) => ({ kind, label, desc, source: "powerengine" }));
+  const have = new Set(out.map((k) => k.kind));
+  (Array.isArray(seen) ? seen : []).forEach((k) => { if (k && k.kind && !have.has(k.kind)) { have.add(k.kind); out.push({ kind: k.kind, label: k.label || k.kind, desc: "", source: k.source || "external" }); } });
+  (rules || []).forEach((r) => r.events.forEach((k) => { if (!have.has(k)) { have.add(k); out.push({ kind: k, label: k, desc: "", source: "external" }); } }));
+  return out;
+}
+/** A name for a new channel of this type that no channel has yet: alexa, alexa_2, ... */
+function newChannelName(type, channels) {
+  let name = type, i = 2;
+  while (channels[name]) name = `${type}_${i++}`;
+  return name;
 }
 /** "8, 5, 2, 1, 0" -> [8, 5, 2, 1, 0]; null when it is not a list of hours between 0 and 48. */
 function parseHoursBefore(text) {
@@ -513,7 +636,8 @@ function initialDraft(saved, roles, entityIds, settings) {
   const events = {};
   NOTIFY_EVENTS.forEach(([k, , , d]) => { events[k] = (n.events || {})[k] !== undefined ? !!asBool(n.events[k]) : d; });
   // no choice saved yet: HA's notification area (the app's default); "off" = none
-  draft.notifications = { service: n.service === undefined ? "persistent_notification" : (n.service || "off"), events, alexa: alexaDraft(n.alexa) };
+  if (n.channels || n.rules || n.reminder_hours) draft.notifications = routerDraft(n);       // saved as channels and rules
+  else draft.notifications = { service: n.service === undefined ? "persistent_notification" : (n.service || "off"), events, alexa: alexaDraft(n.alexa) };
   const fresh = !saved || !saved.inputs || !Object.keys(saved.inputs).length;
   if (fresh) {
     roles.forEach((r) => {
@@ -584,7 +708,8 @@ function buildConfig(draft) {
   Object.entries(draft.safety || {}).forEach(([k, v]) => { const n = toNumber(v); if (n !== null) safety[k] = n; });
   if (Object.keys(safety).length) out.safety = safety;
   if (draft.system && Object.keys(draft.system).length) out.system = Object.assign({}, draft.system);
-  if (draft.notifications && draft.notifications.service) {
+  if (draft.notifications && draft.notifications.channels) out.notifications = routerConfig(draft.notifications);
+  else if (draft.notifications && draft.notifications.service) {
     out.notifications = { service: draft.notifications.service, events: Object.assign({}, draft.notifications.events), alexa: alexaDraft(draft.notifications.alexa) };
   }
   if (draft.site) out.site = draft.site;      // only set when the app publishes site_options
@@ -912,6 +1037,8 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     this._freeLoads = freeLoadsSupported(ver.state);
     this._whatsapp = whatsappSupported(ver.state);
     withWhatsapp(draft, this._whatsapp);
+    this._router = routerSupported(ver.state);
+    withRouter(draft, this._router);
     if (this._freeLoads) draft.free_power_loads = freeLoadDraft(draft.free_power_loads); else delete draft.free_power_loads;
     this._v2 = v2Supported(s) ? v2WithProfiles(s) : null;
     if (this._v2) {
@@ -950,6 +1077,14 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
         this._setTestStatus(d.ok ? "ok" : "error", d.message || (d.ok ? "Played." : "Could not play."));
       }, ALEXA_TEST_RESULT);
     } catch (e) { /* the test button is admin-only too */ }
+    try {
+      this._unsubNotify = await this._hass.connection.subscribeEvents((ev) => {
+        const d = ev.data || {};
+        clearTimeout(this._notifyTestTimer);
+        const status = (this._chanStatus || {})[this._testingChannel];
+        if (status) { status.textContent = d.message || (d.ok ? "Sent." : "Could not send."); status.className = d.ok ? "muted" : "warning"; }
+      }, NOTIFY_TEST_RESULT);
+    } catch (e) { /* admin only */ }
   }
 
   _setTestStatus(kind, text) {
@@ -974,10 +1109,174 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     }
   }
 
+  /** Send "Test message." to one channel as it is set on the page (saved or not), whatever its hours say. */
+  async _notifyTest(name) {
+    const ch = this._draft.notifications.channels[name];
+    const status = (this._chanStatus || {})[name];
+    const say = (kind, text) => { if (status) { status.textContent = text; status.className = kind === "error" ? "warning" : "muted"; } };
+    const problem = routerProblem({ channels: { [name]: ch } });
+    if (problem) { say("error", problem); return; }
+    say("ok", "Sending…");
+    this._testingChannel = name;
+    clearTimeout(this._notifyTestTimer);
+    this._notifyTestTimer = setTimeout(() => say("error", `No reply from PowerEngine. Check it is running version ${ROUTER_APP_VERSION} or later, then look at the AppDaemon log.`), ALEXA_TEST_WAIT_MS);
+    try {
+      await this._hass.callWS({ type: "fire_event", event_type: NOTIFY_TEST_EVENT, event_data: { channel: routerChannelConfig(ch) } });
+    } catch (e) {
+      clearTimeout(this._notifyTestTimer);
+      say("error", `Could not send the test: ${e && e.message ? e.message : e}`);
+    }
+  }
+
+  /** The Notifications section for channels and rules: the channels, then the table of what goes where, then the
+   *  reminder times and what has been sent lately. */
+  _notifyRouterUi(nb, track) {
+    const n = this._draft.notifications;
+    const attrs = ((this._hass.states || {})[NOTIFY_SENSOR] || {}).attributes || {};
+    const names = () => Object.keys(n.channels);
+    this._chanStatus = {};
+    const channelNodes = [];                                   // the channels go below the table of what goes where
+    const field = (label, desc, ...ctl) => el("div", { class: "row sub" }, el("div", { class: "head" }, el("span", { class: "label" }, label)), desc ? el("div", { class: "desc" }, desc) : null, el("div", { class: "ctl" }, ...ctl));
+    const timeInput = (ch, key) => {
+      const input = el("input", { type: "time", onchange: (ev) => { if (TIME_OF_DAY.test(ev.target.value)) { ch.hours[key] = ev.target.value; this._refresh(); } } });
+      input.value = ch.hours[key] === "24:00" ? "23:59" : ch.hours[key];
+      return input;
+    };
+    // --- the channels
+    names().forEach((name) => {
+      const ch = n.channels[name];
+      const typeName = (CHANNEL_TYPES.find(([t]) => t === ch.type) || [])[1] || ch.type;
+      const label = el("input", { type: "text", size: 22, maxlength: 40, onchange: (ev) => { ch.label = ev.target.value.trim() || name; this._build(); } });
+      label.value = ch.label;
+      const remove = el("button", { onclick: () => {
+        delete n.channels[name];
+        n.rules = n.rules.map((r) => ({ events: r.events, to: r.to.filter((c) => c !== name) })).filter((r) => r.to.length);
+        this._build();
+      } }, "Remove");
+      const box = el("div", { class: "row channel" }, el("div", { class: "head" }, el("span", { class: "label" }, label), el("span", { class: "badge sw" }, typeName), remove));
+      if (ch.type === "bell") box.append(el("div", { class: "desc" }, "Shown in Home Assistant's notification area (the bell). Nothing to set up; each one clears itself when the problem is over."));
+      if (ch.type === "notify") {
+        const services = Object.keys((this._hass.services || {}).notify || {}).filter((x) => !/^alexa_media_/.test(x)).sort();
+        const sel = el("select", { onchange: (ev) => { ch.service = ev.target.value; this._refresh(); } }, el("option", { value: "" }, "Choose…"),
+          services.map((x) => el("option", { value: `notify.${x}` }, `notify.${x}`)));
+        if (ch.service && !services.includes(ch.service.slice(7))) sel.append(el("option", { value: ch.service }, `${ch.service} (not found)`));
+        sel.value = ch.service;
+        box.append(field("Notify service", "Usually notify.mobile_app_<phone name> for the companion app.", sel));
+      }
+      if (ch.type === "alexa") {
+        const speakers = Object.keys((this._hass.services || {}).notify || {}).filter((x) => /^alexa_media_/.test(x) && x !== "alexa_media_last_called").sort();
+        ch.services.forEach((x) => { if (!speakers.includes(x.slice(7))) speakers.push(x.slice(7)); });
+        const kinds = alexaSpeakerKinds(speakers, this._hass.devices);
+        const pick = (x) => {
+          const cb = el("input", { type: "checkbox", onchange: (ev) => {
+            const set = new Set(ch.services); ev.target.checked ? set.add(`notify.${x}`) : set.delete(`notify.${x}`);
+            ch.services = [...set]; this._refresh(); } });
+          cb.checked = ch.services.includes(`notify.${x}`);
+          return el("label", { class: "head" }, cb, el("span", { class: "label" }, alexaSpeakerName(`notify.${x}`)));
+        };
+        const picks = el("div", { class: "ctl" });
+        if (!speakers.length) picks.append(el("span", { class: "muted" }, "No Alexa speakers found. Install Alexa Media Player in Home Assistant."));
+        if (kinds.speakers.length) picks.append(el("div", { class: "muted" }, "Single speakers"), ...kinds.speakers.map(pick));
+        if (kinds.groups.length) picks.append(el("div", { class: "muted" }, "Speaker groups (each plays on all of its speakers)"), ...kinds.groups.map(pick));
+        box.append(el("div", { class: "row sub" }, el("div", { class: "head" }, el("span", { class: "label" }, "Speakers")),
+          el("div", { class: "desc" }, "Played on every speaker ticked. Don't tick a group as well as a speaker that is in it, or that speaker says it twice. \"Everywhere\" is all of them."), picks));
+      }
+      if (ch.type === "whatsapp") {
+        const input = el("input", { type: "text", size: 34, placeholder: "120363012345678901@g.us", onchange: (ev) => {
+          const list = parseWhatsappTargets(ev.target.value);
+          if (list) { ch.targets = list; ev.target.classList.remove("bad"); } else ev.target.classList.add("bad");
+          this._refresh(); } });
+        input.value = ch.targets.join(", ");
+        box.append(field("Chats", "A group id (find it with the whatsapp.search_groups action) or a phone number with its country code; separate several with commas. Needs the WhatsApp integration in Home Assistant.", input));
+      }
+      const intro = el("input", { type: "text", size: 30, maxlength: 80, onchange: (ev) => { ch.intro = ev.target.value.trim(); this._refresh(); } });
+      intro.value = ch.intro;
+      box.append(field("Opening words", "Put at the start of every message to this channel, so the household knows who it is from. Leave empty for none.", intro));
+      const hoursOn = el("input", { type: "checkbox", onchange: (ev) => {
+        ch.hours = ev.target.checked ? { weekday_from: "07:30", weekend_from: "09:00", until: "21:00" } : null; this._build(); } });
+      hoursOn.checked = !!ch.hours;
+      box.append(el("div", { class: "row sub" }, el("label", { class: "head" }, hoursOn, el("span", { class: "label" }, "Only send between certain hours")),
+        el("div", { class: "desc" }, "Outside them a message is held and sent when they open (marked as held), or skipped.")));
+      if (ch.hours) {
+        const outside = el("select", { onchange: (ev) => { ch.outside_hours = ev.target.value; this._refresh(); } },
+          el("option", { value: "hold" }, "Hold it until the hours open"), el("option", { value: "skip" }, "Skip it"));
+        outside.value = ch.outside_hours;
+        box.append(el("div", { class: "row sub" }, el("div", { class: "ctl" }, "Weekdays from ", timeInput(ch, "weekday_from"), " weekends from ", timeInput(ch, "weekend_from"), " until ", timeInput(ch, "until"))),
+          field("Outside those hours", "", outside));
+      }
+      const status = el("span", { class: "muted" });
+      this._chanStatus[name] = status;
+      box.append(el("div", { class: "row sub" }, el("div", { class: "ctl" }, el("button", { onclick: () => this._notifyTest(name) }, "Send a test message"), " ", status)));
+      channelNodes.push(track(box, "setting", `notifications channel ${ch.label} ${typeName} opening words hours hold skip test`));
+    });
+    // add a channel
+    const typeSel = el("select", {}, CHANNEL_TYPES.map(([t, text]) => el("option", { value: t }, text)));
+    channelNodes.push(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Add a channel")),
+      el("div", { class: "ctl" }, typeSel, el("button", { onclick: () => {
+        const type = typeSel.value, name = newChannelName(type, n.channels);
+        n.channels[name] = routerChannel(type, name, { label: (CHANNEL_TYPES.find(([t]) => t === type) || [])[1] });
+        this._build();
+      } }, "Add"))), "setting", "notifications add a channel"));
+    // --- what goes where
+    const kinds = notifyKinds(attrs.kinds, n.rules);
+    const cells = routeCells(n.rules);
+    const table = el("table", { class: "matrix" });
+    if (!names().length) nb.append(el("div", { class: "desc" }, "Add a channel to choose what goes where."));
+    else {
+      table.append(el("thead", {}, el("tr", {}, el("th", {}, "Send"), names().map((name) => el("th", {}, n.channels[name].label)))));
+      const body = el("tbody", {});
+      let group = null;
+      kinds.forEach((k) => {
+        if (k.source !== group) { group = k.source; body.append(el("tr", { class: "group" }, el("th", { colspan: String(names().length + 1) }, k.source === "powerengine" ? "PowerEngine" : `From ${k.source}`))); }
+        const row = el("tr", {}, el("td", { title: k.desc || "" }, k.label));
+        names().forEach((name) => {
+          const cb = el("input", { type: "checkbox", onchange: (ev) => {
+            const next = routeCells(n.rules);
+            ev.target.checked ? next.add(`${k.kind}|${name}`) : next.delete(`${k.kind}|${name}`);
+            n.rules = routesFromCells(next, names(), kinds.map((x) => x.kind));
+            this._refresh(); } });
+          cb.checked = cells.has(`${k.kind}|${name}`);
+          row.append(el("td", {}, cb));
+        });
+        body.append(row);
+      });
+      table.append(body);
+      nb.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "What goes where")),
+        el("div", { class: "desc" }, "Tick the channels each kind of message goes to. A message from elsewhere (the family dashboard, an automation) appears here once it has been sent for the first time."),
+        el("div", { class: "scroll" }, table)), "setting", `notifications what goes where rules ${kinds.map((k) => k.label).join(" ")}`));
+    }
+    const hoursInput = el("input", { type: "text", size: 14, onchange: (ev) => { const h = parseHoursBefore(ev.target.value); if (h) n.reminder_hours = h; this._refresh(); } });
+    hoursInput.value = n.reminder_hours.join(", ");
+    nb.append(track(field("Grid event reminders: hours before", "When each reminder is sent, in hours before the event starts; 0 is as it starts.", hoursInput),
+      "setting", "notifications grid event reminders hours before times"));
+    nb.append(el("h4", { class: "sub" }, "Channels"), ...channelNodes);
+    // --- what has been sent lately
+    this._notifyLog = el("div", { class: "desc" });
+    nb.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Recent messages")), this._notifyLog), "setting", "notifications recent messages held log"));
+    this._updateNotifyLog();
+  }
+
+  /** The held count and the last few deliveries, from the app's published state. */
+  _updateNotifyLog() {
+    if (!this._notifyLog || !this._draft || !this._draft.notifications || !this._draft.notifications.channels) return;
+    const attrs = ((this._hass.states || {})[NOTIFY_SENSOR] || {}).attributes || {};
+    const labels = {}; Object.entries(this._draft.notifications.channels).forEach(([k, c]) => { labels[k] = c.label; });
+    const held = Array.isArray(attrs.held) ? attrs.held : [];
+    const log = Array.isArray(attrs.log) ? attrs.log.slice(-8).reverse() : [];
+    const when = (iso) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? "" : d.toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); };
+    const lines = [];
+    if (held.length) lines.push(el("div", {}, `${held.length} held until a channel's hours open: ${held.map((h) => `${h.title} (${labels[h.channel] || h.channel})`).join(", ")}.`));
+    if (!log.length && !held.length) lines.push(el("div", { class: "muted" }, "Nothing sent yet."));
+    log.forEach((e) => lines.push(el("div", { class: "muted" }, `${when(e.at)}: ${e.title} → ${labels[e.channel] || e.channel}, ${e.outcome}${e.note ? ` (${e.note})` : ""}`)));
+    this._notifyLog.replaceChildren(...lines);
+  }
+
   disconnectedCallback() {
     if (this._unsub) { this._unsub(); this._unsub = null; }
     if (this._unsubTest) { this._unsubTest(); this._unsubTest = null; }
+    if (this._unsubNotify) { this._unsubNotify(); this._unsubNotify = null; }
     clearTimeout(this._testTimer);
+    clearTimeout(this._notifyTestTimer);
   }
 
   _renderMessage(text) {
@@ -995,6 +1294,16 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       .banner.error { background: rgba(219,68,55,.15); }
       h3 { margin: 20px 0 4px; font-size: 1.05em; }
       .row { border-top: 1px solid var(--divider-color); padding: 10px 0; }
+      .row.channel { border-left-color: var(--primary-color); background: var(--secondary-background-color, transparent); border-radius: 4px; margin: 8px 0; }
+      .row.sub { border-top: 0; padding: 4px 0; }
+      .row.channel .head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .scroll { overflow-x: auto; }
+      table.matrix { border-collapse: collapse; margin-top: 6px; font-size: .92em; }
+      table.matrix th, table.matrix td { padding: 4px 6px; text-align: center; border-bottom: 1px solid var(--divider-color); }
+      table.matrix td:first-child, table.matrix thead th:first-child { text-align: left; }
+      table.matrix thead th { max-width: 84px; overflow-wrap: break-word; font-size: .9em; }
+      table.matrix td:first-child { max-width: 150px; }
+      table.matrix tr.group th { text-align: left; font-size: .8em; text-transform: uppercase; letter-spacing: .04em; color: var(--secondary-text-color); padding-top: 10px; }
       .head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
       .label { font-weight: 500; }
       .badge { font-size: .75em; padding: 1px 6px; border-radius: 8px; background: var(--secondary-background-color); color: var(--secondary-text-color); }
@@ -1309,98 +1618,104 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       host = content;
     }
 
-    // notifications: HA's notification area (default), a phone, or off
-    const nb = section("notifications", "Notifications",
-      "Shown in Home Assistant's notification area (the bell) by default, or sent to your phone through the companion app.");
-    const services = Object.keys((this._hass.services || {}).notify || {}).sort();
-    const svcSel = el("select", { onchange: (ev) => { this._draft.notifications.service = ev.target.value; this._refresh(); } },
-      el("option", { value: "persistent_notification" }, "Home Assistant notification area"),
-      services.map((s) => el("option", { value: `notify.${s}` }, `Phone: notify.${s}`)),
-      el("option", { value: "off" }, "Off (no notifications)"));
-    const curSvc = this._draft.notifications.service || "off";
-    if (curSvc.startsWith("notify.") && !services.includes(curSvc.slice(7))) svcSel.append(el("option", { value: curSvc }, `${curSvc} (not found)`));
-    svcSel.value = curSvc;
-    nb.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Send to")),
-      el("div", { class: "desc" }, "Notification area: nothing to set up; each one clears itself when the problem is over. Phone: your notify service, usually notify.mobile_app_<phone name>."), el("div", { class: "ctl" }, svcSel)),
-      "setting", "notifications send to notify service phone notification area bell"));
-    NOTIFY_EVENTS.filter(([key]) => key !== "alexa").forEach(([key, rawLabel, rawDesc]) => {   // Alexa has its own section below
-      const [label, desc] = [T(rawLabel), T(rawDesc)];
-      const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.notifications.events[key] = ev.target.checked; this._refresh(); } });
-      cb.checked = !!this._draft.notifications.events[key];
-      nb.append(track(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc)),
-        "setting", `notification ${label} ${desc}`));
-    });
-    // Announcements: spoken reminders on Alexa speakers. Their own heading and section, apart from the engine settings
-    // above (they work with either engine) and from Home Assistant's notification area.
-    host = content;
-    content.append(el("div", { class: "grouphead" }, el("h3", {}, "Announcements")));
-    const ab = section("announcements", "Alexa announcements",
-      "Spoken reminders on your Alexa speakers. They work with either engine, and are separate from the notifications above.");
-    const alexa = this._draft.notifications.alexa;
-    const [, alexaLabel, alexaDesc] = NOTIFY_EVENTS.find(([k]) => k === "alexa");
-    const onBox = el("input", { type: "checkbox", onchange: (ev) => { this._draft.notifications.events.alexa = ev.target.checked; this._refresh(); } });
-    onBox.checked = !!this._draft.notifications.events.alexa;
-    ab.append(track(el("div", { class: "row" }, el("label", { class: "head" }, onBox, el("span", { class: "label" }, T(alexaLabel))), el("div", { class: "desc" }, T(alexaDesc))),
-      "setting", `alexa announcements switch on off ${alexaLabel} ${alexaDesc}`));
-    const speakers = Object.keys((this._hass.services || {}).notify || {}).filter((s) => /^alexa_media_/.test(s) && s !== "alexa_media_last_called").sort();
-    alexa.services.forEach((s) => { if (!speakers.includes(s.slice(7))) speakers.push(s.slice(7)); });
-    const kinds = alexaSpeakerKinds(speakers, this._hass.devices);
-    const pick = (s) => {
-      const cb = el("input", { type: "checkbox", onchange: (ev) => {
-        const set = new Set(alexa.services); ev.target.checked ? set.add(`notify.${s}`) : set.delete(`notify.${s}`);
-        alexa.services = [...set]; this._refresh(); } });
-      cb.checked = alexa.services.includes(`notify.${s}`);
-      return el("label", { class: "head" }, cb, el("span", { class: "label" }, alexaSpeakerName(`notify.${s}`)));
-    };
-    const picks = el("div", { class: "ctl" });
-    if (!speakers.length) picks.append(el("span", { class: "muted" }, "No Alexa speakers found. Install Alexa Media Player in Home Assistant."));
-    if (kinds.speakers.length) picks.append(el("div", { class: "muted" }, "Single speakers"), ...kinds.speakers.map(pick));
-    if (kinds.groups.length) picks.append(el("div", { class: "muted" }, "Speaker groups (each plays on all of its speakers)"), ...kinds.groups.map(pick));
-    ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Speakers")),
-      el("div", { class: "desc" }, "Announcements play on every speaker ticked. Don't tick a group as well as a speaker that is in it, or that speaker says it twice. \"Everywhere\" is all of them. A speaker added to Alexa Media Player later appears here after the page is reloaded."), picks),
-      "setting", "alexa announcements speakers groups devices echo"));
-    if (this._whatsapp) {
-      const waBox = el("input", { type: "checkbox", onchange: (ev) => { alexa.whatsapp = ev.target.checked; this._refresh(); } });
-      waBox.checked = alexa.whatsapp === true;
-      const waInput = el("input", { type: "text", size: 34, placeholder: "120363012345678901@g.us", onchange: (ev) => {
-        const list = parseWhatsappTargets(ev.target.value);
-        if (list) { alexa.whatsapp_targets = list; ev.target.classList.remove("bad"); } else ev.target.classList.add("bad");
-        this._refresh(); } });
-      waInput.value = (alexa.whatsapp_targets || []).join(", ");
-      ab.append(track(el("div", { class: "row" }, el("label", { class: "head" }, waBox, el("span", { class: "label" }, "Also send them to WhatsApp")),
-        el("div", { class: "desc" }, "Sends the same words to WhatsApp at the same times, inside the same allowed hours. Needs the WhatsApp integration in Home Assistant. Give a group id (find it with the whatsapp.search_groups action) or a phone number with its country code; separate several with commas. Leave the speakers all unticked to use WhatsApp alone."),
-        el("div", { class: "ctl" }, waInput)),
-        "setting", "alexa announcements whatsapp group chat message send"));
+    // notifications: channels and rules (app 0.9.195+), or HA's notification area / a phone / off (older apps)
+    if (this._draft.notifications.channels) {
+      const nb = section("notifications", "Notifications and announcements",
+        "Where messages go, and which ones go where. A channel is a place a message can be sent: Home Assistant's notification area, a phone, the Alexa speakers or WhatsApp.");
+      this._notifyRouterUi(nb, track);
+    } else {
+      const nb = section("notifications", "Notifications",
+        "Shown in Home Assistant's notification area (the bell) by default, or sent to your phone through the companion app.");
+      const services = Object.keys((this._hass.services || {}).notify || {}).sort();
+      const svcSel = el("select", { onchange: (ev) => { this._draft.notifications.service = ev.target.value; this._refresh(); } },
+        el("option", { value: "persistent_notification" }, "Home Assistant notification area"),
+        services.map((s) => el("option", { value: `notify.${s}` }, `Phone: notify.${s}`)),
+        el("option", { value: "off" }, "Off (no notifications)"));
+      const curSvc = this._draft.notifications.service || "off";
+      if (curSvc.startsWith("notify.") && !services.includes(curSvc.slice(7))) svcSel.append(el("option", { value: curSvc }, `${curSvc} (not found)`));
+      svcSel.value = curSvc;
+      nb.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Send to")),
+        el("div", { class: "desc" }, "Notification area: nothing to set up; each one clears itself when the problem is over. Phone: your notify service, usually notify.mobile_app_<phone name>."), el("div", { class: "ctl" }, svcSel)),
+        "setting", "notifications send to notify service phone notification area bell"));
+      NOTIFY_EVENTS.filter(([key]) => key !== "alexa").forEach(([key, rawLabel, rawDesc]) => {   // Alexa has its own section below
+        const [label, desc] = [T(rawLabel), T(rawDesc)];
+        const cb = el("input", { type: "checkbox", onchange: (ev) => { this._draft.notifications.events[key] = ev.target.checked; this._refresh(); } });
+        cb.checked = !!this._draft.notifications.events[key];
+        nb.append(track(el("div", { class: "row" }, el("label", { class: "head" }, cb, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc)),
+          "setting", `notification ${label} ${desc}`));
+      });
+      // Announcements: spoken reminders on Alexa speakers. Their own heading and section, apart from the engine settings
+      // above (they work with either engine) and from Home Assistant's notification area.
+      host = content;
+      content.append(el("div", { class: "grouphead" }, el("h3", {}, "Announcements")));
+      const ab = section("announcements", "Alexa announcements",
+        "Spoken reminders on your Alexa speakers. They work with either engine, and are separate from the notifications above.");
+      const alexa = this._draft.notifications.alexa;
+      const [, alexaLabel, alexaDesc] = NOTIFY_EVENTS.find(([k]) => k === "alexa");
+      const onBox = el("input", { type: "checkbox", onchange: (ev) => { this._draft.notifications.events.alexa = ev.target.checked; this._refresh(); } });
+      onBox.checked = !!this._draft.notifications.events.alexa;
+      ab.append(track(el("div", { class: "row" }, el("label", { class: "head" }, onBox, el("span", { class: "label" }, T(alexaLabel))), el("div", { class: "desc" }, T(alexaDesc))),
+        "setting", `alexa announcements switch on off ${alexaLabel} ${alexaDesc}`));
+      const speakers = Object.keys((this._hass.services || {}).notify || {}).filter((s) => /^alexa_media_/.test(s) && s !== "alexa_media_last_called").sort();
+      alexa.services.forEach((s) => { if (!speakers.includes(s.slice(7))) speakers.push(s.slice(7)); });
+      const kinds = alexaSpeakerKinds(speakers, this._hass.devices);
+      const pick = (s) => {
+        const cb = el("input", { type: "checkbox", onchange: (ev) => {
+          const set = new Set(alexa.services); ev.target.checked ? set.add(`notify.${s}`) : set.delete(`notify.${s}`);
+          alexa.services = [...set]; this._refresh(); } });
+        cb.checked = alexa.services.includes(`notify.${s}`);
+        return el("label", { class: "head" }, cb, el("span", { class: "label" }, alexaSpeakerName(`notify.${s}`)));
+      };
+      const picks = el("div", { class: "ctl" });
+      if (!speakers.length) picks.append(el("span", { class: "muted" }, "No Alexa speakers found. Install Alexa Media Player in Home Assistant."));
+      if (kinds.speakers.length) picks.append(el("div", { class: "muted" }, "Single speakers"), ...kinds.speakers.map(pick));
+      if (kinds.groups.length) picks.append(el("div", { class: "muted" }, "Speaker groups (each plays on all of its speakers)"), ...kinds.groups.map(pick));
+      ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Speakers")),
+        el("div", { class: "desc" }, "Announcements play on every speaker ticked. Don't tick a group as well as a speaker that is in it, or that speaker says it twice. \"Everywhere\" is all of them. A speaker added to Alexa Media Player later appears here after the page is reloaded."), picks),
+        "setting", "alexa announcements speakers groups devices echo"));
+      if (this._whatsapp) {
+        const waBox = el("input", { type: "checkbox", onchange: (ev) => { alexa.whatsapp = ev.target.checked; this._refresh(); } });
+        waBox.checked = alexa.whatsapp === true;
+        const waInput = el("input", { type: "text", size: 34, placeholder: "120363012345678901@g.us", onchange: (ev) => {
+          const list = parseWhatsappTargets(ev.target.value);
+          if (list) { alexa.whatsapp_targets = list; ev.target.classList.remove("bad"); } else ev.target.classList.add("bad");
+          this._refresh(); } });
+        waInput.value = (alexa.whatsapp_targets || []).join(", ");
+        ab.append(track(el("div", { class: "row" }, el("label", { class: "head" }, waBox, el("span", { class: "label" }, "Also send them to WhatsApp")),
+          el("div", { class: "desc" }, "Sends the same words to WhatsApp at the same times, inside the same allowed hours. Needs the WhatsApp integration in Home Assistant. Give a group id (find it with the whatsapp.search_groups action) or a phone number with its country code; separate several with commas. Leave the speakers all unticked to use WhatsApp alone."),
+          el("div", { class: "ctl" }, waInput)),
+          "setting", "alexa announcements whatsapp group chat message send"));
+      }
+      this._testStatus = el("span", { class: "muted" });
+      ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Test announcement")),
+        el("div", { class: "desc" }, "Plays the opening words and \"Test message\" on the speakers ticked above, and sends it to WhatsApp if that is switched on, now, without saving first. It ignores the allowed hours."),
+        el("div", { class: "ctl" }, el("button", { onclick: () => this._alexaTest() }, "Play a test announcement"), " ", this._testStatus)),
+        "setting", "alexa announcements test announcement play button"));
+      const timeRow = (label, desc, key) => {
+        const input = el("input", { type: "time", onchange: (ev) => { if (TIME_OF_DAY.test(ev.target.value)) alexa[key] = ev.target.value; this._refresh(); } });
+        input.value = alexa[key];
+        return track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc), el("div", { class: "ctl" }, input)),
+          "setting", `alexa announcements quiet hours ${label} ${desc}`);
+      };
+      ab.append(timeRow("Earliest on a weekday", "Nothing is announced before this on Monday to Friday.", "earliest_weekday"),
+        timeRow("Earliest at the weekend", "Nothing is announced before this on Saturday or Sunday.", "earliest_weekend"),
+        timeRow("Latest", "Nothing is announced from this time until the earliest time next morning.", "latest"));
+      const introInput = el("input", { type: "text", size: 30, maxlength: 80, onchange: (ev) => { alexa.intro = ev.target.value.trim(); this._refresh(); } });
+      introInput.value = alexa.intro;
+      ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Opening words")),
+        el("div", { class: "desc" }, "Said at the start of every announcement, so the household knows who it is from. Leave empty for none."), el("div", { class: "ctl" }, introInput)),
+        "setting", "alexa announcements opening words intro name"));
+      const hoursInput = el("input", { type: "text", size: 14, onchange: (ev) => { const h = parseHoursBefore(ev.target.value); if (h) alexa.hours_before = h; this._refresh(); } });
+      hoursInput.value = alexa.hours_before.join(", ");
+      ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Hours before a grid event")),
+        el("div", { class: "desc" }, "When each reminder is said, in hours before the event starts; 0 is as it starts. A reminder that falls outside the allowed hours is skipped."), el("div", { class: "ctl" }, hoursInput)),
+        "setting", "alexa announcements hours before reminders times"));
+      const finishBox = el("input", { type: "checkbox", onchange: (ev) => { alexa.finish = ev.target.checked; this._refresh(); } });
+      finishBox.checked = alexa.finish;
+      ab.append(track(el("div", { class: "row" }, el("label", { class: "head" }, finishBox, el("span", { class: "label" }, "Announce a summary when a grid event ends")),
+        el("div", { class: "desc" }, "Says what the house used, what was exported, what the event should pay, and what was turned back (the heating set-back, the car charger) and to what. Only inside the allowed hours: after the latest time it is kept for the morning.")),
+        "setting", "alexa announcements summary finish end of grid event"));
     }
-    this._testStatus = el("span", { class: "muted" });
-    ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Test announcement")),
-      el("div", { class: "desc" }, "Plays the opening words and \"Test message\" on the speakers ticked above, and sends it to WhatsApp if that is switched on, now, without saving first. It ignores the allowed hours."),
-      el("div", { class: "ctl" }, el("button", { onclick: () => this._alexaTest() }, "Play a test announcement"), " ", this._testStatus)),
-      "setting", "alexa announcements test announcement play button"));
-    const timeRow = (label, desc, key) => {
-      const input = el("input", { type: "time", onchange: (ev) => { if (TIME_OF_DAY.test(ev.target.value)) alexa[key] = ev.target.value; this._refresh(); } });
-      input.value = alexa[key];
-      return track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, label)), el("div", { class: "desc" }, desc), el("div", { class: "ctl" }, input)),
-        "setting", `alexa announcements quiet hours ${label} ${desc}`);
-    };
-    ab.append(timeRow("Earliest on a weekday", "Nothing is announced before this on Monday to Friday.", "earliest_weekday"),
-      timeRow("Earliest at the weekend", "Nothing is announced before this on Saturday or Sunday.", "earliest_weekend"),
-      timeRow("Latest", "Nothing is announced from this time until the earliest time next morning.", "latest"));
-    const introInput = el("input", { type: "text", size: 30, maxlength: 80, onchange: (ev) => { alexa.intro = ev.target.value.trim(); this._refresh(); } });
-    introInput.value = alexa.intro;
-    ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Opening words")),
-      el("div", { class: "desc" }, "Said at the start of every announcement, so the household knows who it is from. Leave empty for none."), el("div", { class: "ctl" }, introInput)),
-      "setting", "alexa announcements opening words intro name"));
-    const hoursInput = el("input", { type: "text", size: 14, onchange: (ev) => { const h = parseHoursBefore(ev.target.value); if (h) alexa.hours_before = h; this._refresh(); } });
-    hoursInput.value = alexa.hours_before.join(", ");
-    ab.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Hours before a grid event")),
-      el("div", { class: "desc" }, "When each reminder is said, in hours before the event starts; 0 is as it starts. A reminder that falls outside the allowed hours is skipped."), el("div", { class: "ctl" }, hoursInput)),
-      "setting", "alexa announcements hours before reminders times"));
-    const finishBox = el("input", { type: "checkbox", onchange: (ev) => { alexa.finish = ev.target.checked; this._refresh(); } });
-    finishBox.checked = alexa.finish;
-    ab.append(track(el("div", { class: "row" }, el("label", { class: "head" }, finishBox, el("span", { class: "label" }, "Announce a summary when a grid event ends")),
-      el("div", { class: "desc" }, "Says what the house used, what was exported, what the event should pay, and what was turned back (the heating set-back, the car charger) and to what. Only inside the allowed hours: after the latest time it is kept for the morning.")),
-      "setting", "alexa announcements summary finish end of grid event"));
     this._currentSection = null;
 
     // actions
@@ -1549,6 +1864,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     if (this._devices) base.devices = deviceDraft(base.devices); else delete base.devices;
     if (this._freeLoads) base.free_power_loads = freeLoadDraft(base.free_power_loads); else delete base.free_power_loads;
     withWhatsapp(base, this._whatsapp);
+    withRouter(base, this._router);
     if (this._v2) { base.engine_v2 = Object.assign({}, saved.engine_v2 || {}); base.system.engine = uiEngine(this._v2, engineInUse(this._hass.states, saved)); Object.assign(base, profileDraft(this._v2, saved)); }
     else { delete base.engine_v2; delete base.v2_profile; delete base.v2_profiles; }
     return base;
@@ -1799,6 +2115,7 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     if (!this._built && !this._rows.length) return;
     const states = this._hass.states;
     if (this._pkgBox) this._pkgBox.update(this._hass, this._pkgForced);
+    this._updateNotifyLog();
     const mapping = states[MAPPING_SENSOR];
     const checks = ((mapping && mapping.attributes) || {}).checks || {};
     const saved = ((mapping && mapping.attributes) || {}).config || {};
@@ -1935,6 +2252,8 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
   }
 
   async _save() {
+    const problem = this._draft.notifications && this._draft.notifications.channels ? routerProblem(this._draft.notifications) : "";
+    if (problem) { this._setBanner("error", `Not saved: ${problem}`); return; }
     this._saving = true;
     this._pkgPending = packagePromptAfterSave(packageInfo(this._hass.states), (this._draft.system || {}).other_controller,
       otherControllerValue(this._hass.states) || ((this._saved.system || {}).other_controller));
@@ -9212,7 +9531,7 @@ class PowerEngineEventsCard extends PowerEngineV2Card {
 });
 
 if (typeof module !== "undefined") {
-  module.exports = { whatsappSupported, whatsappTargets, parseWhatsappTargets, withWhatsapp, catalogueAttrs, alexaSpeakerKinds, alexaTestPayload, ALEXA_TEST_EVENT, alexaDraft, parseHoursBefore, alexaSpeakerName, ALEXA_DEFAULT, v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallCustom, waterfallSteps, costsRange, costsSummary, costsTodayInfo, costsBars, peParts, costsDayLabel, shownValue, sectionOpen, sectionsLoad, SECTIONS_KEY, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, FREE_LOADS_APP_VERSION, freeLoadsSupported, freeLoadDraft, buildFreeLoads, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
+  module.exports = { routerSupported, routerDraft, routerFromLegacy, withRouter, routerConfig, routerChannelConfig, routerProblem, routeCells, routesFromCells, notifyKinds, newChannelName, NOTIFY_KINDS, ROUTER_APP_VERSION, whatsappSupported, whatsappTargets, parseWhatsappTargets, withWhatsapp, catalogueAttrs, alexaSpeakerKinds, alexaTestPayload, ALEXA_TEST_EVENT, alexaDraft, parseHoursBefore, alexaSpeakerName, ALEXA_DEFAULT, v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallCustom, waterfallSteps, costsRange, costsSummary, costsTodayInfo, costsBars, peParts, costsDayLabel, shownValue, sectionOpen, sectionsLoad, SECTIONS_KEY, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, FREE_LOADS_APP_VERSION, freeLoadsSupported, freeLoadDraft, buildFreeLoads, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,

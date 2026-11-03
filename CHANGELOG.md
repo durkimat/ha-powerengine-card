@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.195
+
+### Behaviour changes
+
+- **Config page: Notifications and announcements.** One section replaces Notifications and Alexa announcements: a table of what goes where (tick the channels each kind of message goes to), then each channel (Home Assistant notifications, a phone, Alexa speakers, WhatsApp) with its opening words, the hours it may be used, whether a message outside them is held or skipped, and a button to send it a test message. You can add and remove channels. Below are the grid event reminder times and the last messages sent, and any held. Messages sent from elsewhere with the `pe_notify` event appear in the table once they have been seen. Your current settings show as the same channels; nothing changes until you save. Needs app 0.9.195 or newer (an older app keeps the old sections).
+
 ## 0.9.194
 
 ### Behaviour changes
