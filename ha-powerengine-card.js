@@ -4430,7 +4430,7 @@ class PowerEngineCostsPeriodCard extends (typeof HTMLElement !== "undefined" ? H
   }
 }
 
-const COSTS_BAR_COLOURS = { none: "#8d6e63", solar: "#fdd835", tariff: "#26a69a", pe: "#424242", net: "#7e57c2" };
+const COSTS_BAR_COLOURS = { none: "#8d6e63", solar: "#fdd835", tariff: "#26a69a", pe: "#ec407a", net: "#7e57c2" };
 
 class PowerEngineCostsDaysCard extends (typeof HTMLElement !== "undefined" ? HTMLElement : class {}) {
   setConfig(config) {
