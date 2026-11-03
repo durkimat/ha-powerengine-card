@@ -1121,3 +1121,14 @@ test("every topic is in a Config page group", () => {
   const groups = h.HOUSE_GROUPS.map((g) => g[0]);
   h.TOPICS.forEach((t) => assert.ok(groups.includes(h.TOPIC_GROUP[t.key]), t.key));
 });
+
+test("the event's own pay and the export rate on top are said apart; an older app keeps its one figure", () => {
+  const d = [{ date: "2026-11-02", done: false }];
+  const names = { event: "Axle", tariff: "EDF tariff" };
+  const rows = [{ date: "2026-11-02", none: 3, solar: -1, tariff: -0.5, pe: -0.2, actual_adj: 1, carry: 0 }];
+  const range = h.costsRange({ key: "today" }, rows);
+  const withPay = h.costsSummary(range, names, { halfHours: 20, axle: { kwh: 3.26, pay: 3.26, gross: 3.75, net: 3.5 }, free: null, lastEvent: null }).join(" ");
+  assert.match(withPay, /Axle exported 3.26 kWh today and paid £3.26, and the export rate adds £0.49/);
+  const older = h.costsSummary(range, names, { halfHours: 20, axle: { kwh: 3.26, gross: 3.75, net: 3.5 }, free: null, lastEvent: null }).join(" ");
+  assert.match(older, /and paid you £3.75/);
+});
