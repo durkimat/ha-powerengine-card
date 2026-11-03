@@ -1105,3 +1105,19 @@ test("the BMS charge and discharge limits are with the battery, not Other", () =
   assert.deepEqual(plan.find((t) => t.key === "battery").roles, ["battery_bms_charge_limit", "battery_bms_discharge_limit"]);
   assert.equal(plan.find((t) => t.key === "other"), undefined);
 });
+
+test("dampening is part of Inverter control, the simulator and engine comparison share one topic, publisher is not in Other", () => {
+  const plan = h.topicPlan([], ["damp_restart_min", "damp_burst_window_min", "damp_burst_settle_min"],
+    ["damp_restart", "damp_bursts", "tariff_simulator", "engine_compare"], ["publisher"]);
+  const control = plan.find((t) => t.key === "control");
+  assert.deepEqual(control.damp.features, ["damp_restart", "damp_bursts"]);
+  assert.deepEqual(control.damp.settings, ["damp_restart_min", "damp_burst_window_min", "damp_burst_settle_min"]);
+  assert.equal(plan.find((t) => t.key === "damping"), undefined);
+  assert.deepEqual(plan.find((t) => t.key === "extras").features, ["tariff_simulator", "engine_compare"]);
+  assert.equal(plan.find((t) => t.key === "other"), undefined);
+});
+
+test("every topic is in a Config page group", () => {
+  const groups = h.HOUSE_GROUPS.map((g) => g[0]);
+  h.TOPICS.forEach((t) => assert.ok(groups.includes(h.TOPIC_GROUP[t.key]), t.key));
+});

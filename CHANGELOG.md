@@ -3,6 +3,16 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.197
+
+### Behaviour changes
+
+- **Config page: only the settings of the engine in use are shown.** "Engine v1 settings" shows when engine v1 is running and "Engine v2 settings" when engine v2 is (the other one is hidden, unless one of its settings has a problem to fix).
+- **"Your house" is now three groups:** Your equipment (Battery, Grid and house, Solar, Car, Cold battery, Inverter control), Tariff and events (Tariff and planning, Selling, Grid events, Free-power sessions) and Tools and messages (Costs page extras, Notifications and announcements). Each folds away.
+- **Dampening tuning is now part of Inverter control**, under its own heading.
+- **Tariff simulator and Engine comparison are one section, "Costs page extras".**
+- **Entity publishing moved from "Other" to the Operation section.** The "Other" section is gone unless a new input appears that the card doesn't know yet.
+
 ## 0.9.196
 
 ### Behaviour changes

@@ -184,11 +184,11 @@ test("money format", () => {
 });
 
 // ---- the config feature ---------------------------------------------------------------------------------------
-test("engine_compare is a feature, on by default, listed in its own Costs-related topic", () => {
+test("engine_compare is a feature, on by default, listed in the Costs page extras topic", () => {
   assert.ok(card.FEATURES.some((f) => f[0] === "engine_compare"));
   assert.strictEqual(card.FEATURE_DEFAULTS.engine_compare, true);
   const plan = card.topicPlan([], [], ["engine_compare"], []);
-  const t = plan.find((x) => x.key === "engine_compare");
+  const t = plan.find((x) => x.key === "extras");
   assert.deepStrictEqual(t.features, ["engine_compare"]);
   assert.ok(!plan.find((x) => x.key === "other"));
 });

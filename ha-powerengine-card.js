@@ -7,7 +7,7 @@
  * an HA event; the app validates, writes config.yaml (with a backup) and
  * reports the result.
  */
-const CARD_VERSION = "0.9.196";
+const CARD_VERSION = "0.9.197";
 const VERSION_SENSOR = "sensor.pe_diag_version";
 // The oldest app this card works with (0.9.69 added the demo_days attribute the welcome card reads). Raise it only when
 // the card starts to need something a newer app publishes. The app publishes its own minimum as min_card_version.
@@ -493,14 +493,16 @@ const TOPICS = [
       "timed_charge_current", "timed_discharge_start_hour", "timed_discharge_start_minute", "timed_discharge_end_hour",
       "timed_discharge_end_minute", "timed_discharge_current", "timed_update_button", "storage_mode",
       "inverter_clock", "inverter_clock_sync", "guard_read_only", "guard_off_1", "guard_off_2"],
-    system: ["other_controller", "control_method"], settings: ["max_writes_per_day", "ram_refresh_min", "ram_switch_cost_p", "ram_max_power_w", "inverter_max_output_w"] },
-  { key: "damping", title: "Dampening tuning",
-    note: "Holding inverter writes back briefly when the settings are likely to change again, to save writes. Health tab, Inverter writes today, shows how many changes were held back.",
-    features: ["damp_restart", "damp_bursts"],
-    settings: ["damp_restart_min", "damp_burst_window_min", "damp_burst_settle_min"] },
-  { key: "simulator", title: "Tariff simulator", main: "tariff_simulator", features: ["tariff_simulator"] },
-  { key: "engine_compare", title: "Engine comparison (Costs page)", main: "engine_compare", features: ["engine_compare"] },
+    system: ["other_controller", "control_method"], settings: ["max_writes_per_day", "ram_refresh_min", "ram_switch_cost_p", "ram_max_power_w", "inverter_max_output_w"],
+    damp: { note: "Holding inverter writes back briefly when the settings are likely to change again, to save writes. Health tab, Inverter writes today, shows how many changes were held back.",
+      features: ["damp_restart", "damp_bursts"], settings: ["damp_restart_min", "damp_burst_window_min", "damp_burst_settle_min"] } },
+  { key: "extras", title: "Costs page extras",
+    features: ["tariff_simulator", "engine_compare"] },
 ];
+// which group of the Config page each topic sits in (anything unlisted, such as "Other", is with the equipment)
+const TOPIC_GROUP = { battery: "equipment", grid: "equipment", solar: "equipment", car: "equipment", cold: "equipment",
+  control: "equipment", tariff: "tariff", selling: "tariff", axle: "tariff", free: "tariff", extras: "tools" };
+const HOUSE_GROUPS = [["equipment", "Your equipment"], ["tariff", "Tariff and events"], ["tools", "Tools and messages"]];
 // needed before PowerEngine can go live (the rest of the control group is optional)
 const GO_LIVE = ["timed_charge_start_hour", "timed_charge_start_minute", "timed_charge_end_hour", "timed_charge_end_minute",
   "timed_charge_current", "timed_discharge_start_hour", "timed_discharge_start_minute", "timed_discharge_end_hour",
@@ -532,12 +534,13 @@ function topicPlan(roleKeys, settingKeys, featureKeys, systemKeys) {
     return Object.assign({}, t, {
       roles: pick(t.roles, roleKeys, "roles"), settings: pick(t.settings, settingKeys, "settings"),
       features: pick(t.features, featureKeys, "features"), learning: pick(t.learning, featureKeys, "features"),
-      system: pick(t.system, systemKeys, "system") });
+      system: pick(t.system, systemKeys, "system"),
+      damp: t.damp && { note: t.damp.note, features: pick(t.damp.features, featureKeys, "features"), settings: pick(t.damp.settings, settingKeys, "settings") } });
   });
   const other = { key: "other", title: "Other",
     roles: roleKeys.filter((k) => !used.roles.has(k)), settings: settingKeys.filter((k) => !used.settings.has(k)),
     features: featureKeys.filter((k) => !used.features.has(k)), learning: [],
-    system: systemKeys.filter((k) => !used.system.has(k)) };
+    system: systemKeys.filter((k) => !used.system.has(k) && k !== "publisher") };     // "publisher" is in Operation
   if (other.roles.length || other.settings.length || other.features.length || other.system.length) topics.push(other);
   return topics;
 }
@@ -1384,7 +1387,8 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       .profilebox { margin-top: 12px; border-top: 1px solid var(--divider-color); padding-top: 8px; }
       .profilebox .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
       .groups { display: flex; flex-direction: column; }
-      .group.dim { opacity: .6; }
+      details.group[hidden] { display: none; }
+      .groupchip:empty { display: none; }
       .grouphead { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin: 14px 0 2px; }
       details.group > summary.grouphead { cursor: pointer; list-style: none; justify-content: flex-start; }
       details.group > summary.grouphead::-webkit-details-marker { display: none; }
@@ -1541,6 +1545,8 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     activeWarn.style.display = modeSel.value === "active" ? "" : "none";
     body.append(track(el("div", { class: "row" }, el("div", { class: "head" }, el("span", { class: "label" }, "Operation mode")),
       el("div", { class: "ctl" }, modeSel), activeWarn), "setting", "operation mode passive active live"));
+    const publisher = systemRow("publisher");
+    if (publisher) body.append(publisher);
 
     // one section per topic
     const roles = this._catalogue.roles;
@@ -1555,7 +1561,6 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       const body = section(`topic_${t.key}`, T(t.title), t.note && T(t.note));
       this._sections[`topic_${t.key}`].main = t.main;
       t.features.forEach((k) => { const r = featureRow(k); if (r) body.append(r); });
-      if (t.key === "damping") body.append(el("div", { class: "note" }, dampingNote(this._hass && this._hass.states)));
       if (t.main) body.append(this._sections[`topic_${t.key}`].offNote = el("div", { class: "offnote" },
         "Switched off: the inputs and settings below aren't used."));
       const guardsOk = guardRolesShown(this._otherEffective());
@@ -1594,6 +1599,13 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       if (t.learning.length) {
         sub(body, "Learning");
         t.learning.forEach((k) => { const r = featureRow(k); if (r) body.append(r); });
+      }
+      if (t.damp && (t.damp.features.length || t.damp.settings.length)) {
+        sub(body, "Dampening tuning");
+        body.append(el("div", { class: "desc" }, T(t.damp.note)), el("div", { class: "note" }, dampingNote(this._hass && this._hass.states)));
+        t.damp.features.forEach((k) => { const r = featureRow(k); if (r) body.append(r); });
+        t.damp.settings.map((k) => settingByKey[k]).filter(Boolean)
+          .forEach((st) => body.append(track(this._settingRow(st), "setting", `${st.label} ${st.help} ${st.key}`)));
       }
       if (t.key === "free" && this._freeLoads) {
         sub(body, "Switches to run during free power");
@@ -1705,7 +1717,8 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
     };
     if (!grouping.grouped) { grouping.house.forEach(renderTopic); renderNotifications(); }
     else {
-      // Your house (both engines), Engine v1 settings, Engine v2 settings: the one not in use is dimmed but stays editable
+      // Your equipment, Tariff and events, Tools and messages (both engines use them), then the settings of the engine in
+      // use: Engine v1 or Engine v2 (the other one is hidden)
       const groupsBox = el("div", { class: "groups" });
       content.append(groupsBox);
       const startGroup = (key, title) => {
@@ -1719,9 +1732,11 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
         host = body;
         this._groups[key] = { wrap, chip, body };
       };
-      startGroup("house", "Your house");
-      grouping.house.forEach(renderTopic);
-      renderNotifications();
+      HOUSE_GROUPS.forEach(([key, title]) => {
+        startGroup(key, title);
+        grouping.house.filter((t) => (TOPIC_GROUP[t.key] || "equipment") === key).forEach(renderTopic);
+        if (key === "tools") renderNotifications();
+      });
       startGroup("v1", "Engine v1 settings");
       grouping.v1.forEach((sec) => renderTopic(Object.assign({ roles: [], learning: [], system: [] }, sec)));
       startGroup("v2", "Engine v2 settings");
@@ -2230,15 +2245,14 @@ class PowerEngineConfigCard extends (typeof HTMLElement !== "undefined" ? HTMLEl
       const eng = uiEngine(this._v2, engineInUse(states, saved));
       if (eng !== this._engine) { this._engine = eng; this._draft.system.engine = eng; }
       const g = this._groups || {};
-      if (g.house) {
-        g.house.chip.textContent = "used by both engines";
-        g.house.wrap.style.order = 0;
+      if (g.v1 && g.v2) {
+        // only the engine in use shows its settings; the other stays hidden unless one of its settings has a problem
         ["v1", "v2"].forEach((k) => {
           const on = this._engine === k;
-          g[k].wrap.classList.toggle("dim", !on);
-          g[k].chip.textContent = on ? "in use" : "not in use: can be set now";
+          const bad = Object.values(secs).some((x) => x.problems && g[k].body.contains(x.details));
+          g[k].wrap.hidden = !on && !bad;
+          g[k].chip.textContent = on ? "in use" : "not in use";
           g[k].chip.className = `groupchip${on ? " on" : ""}`;
-          g[k].wrap.style.order = on ? 1 : 2;
         });
       }
       const sig = [this._engine, this._enginePending, this._saving, this._readOnly, this._profileSig()].join("|");
@@ -9558,7 +9572,7 @@ class PowerEngineEventsCard extends PowerEngineV2Card {
 });
 
 if (typeof module !== "undefined") {
-  module.exports = { routerSupported, routerDraft, routerFromLegacy, withRouter, routerConfig, routerChannelConfig, routerProblem, routeCells, routesFromCells, notifyKinds, newChannelName, NOTIFY_KINDS, ROUTER_APP_VERSION, whatsappSupported, whatsappTargets, parseWhatsappTargets, withWhatsapp, catalogueAttrs, alexaSpeakerKinds, alexaTestPayload, ALEXA_TEST_EVENT, alexaDraft, parseHoursBefore, alexaSpeakerName, ALEXA_DEFAULT, v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallCustom, waterfallSteps, costsRange, costsSummary, costsTodayInfo, costsBars, peParts, costsDayLabel, shownValue, sectionOpen, sectionsLoad, SECTIONS_KEY, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, FREE_LOADS_APP_VERSION, freeLoadsSupported, freeLoadDraft, buildFreeLoads, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
+  module.exports = { HOUSE_GROUPS, TOPIC_GROUP, routerSupported, routerDraft, routerFromLegacy, withRouter, routerConfig, routerChannelConfig, routerProblem, routeCells, routesFromCells, notifyKinds, newChannelName, NOTIFY_KINDS, ROUTER_APP_VERSION, whatsappSupported, whatsappTargets, parseWhatsappTargets, withWhatsapp, catalogueAttrs, alexaSpeakerKinds, alexaTestPayload, ALEXA_TEST_EVENT, alexaDraft, parseHoursBefore, alexaSpeakerName, ALEXA_DEFAULT, v2HistoryProbe, v2Forecast, v2ForecastLastDay, v2HistoryReadout, V2_FLOWS, V2_HISTORY_HINT, runRows, REPLAN_EVENT, replanStatus, plannedImportP, PACKAGE_SENSOR, PACKAGE_BANNER_TEXT, PACKAGE_BUTTON, PACKAGE_ASK_ADMIN, INSTALL_GUIDE_URL, packageInfo, packageReloadPayload, packagePromptAfterSave, packageBannerView, packageProblemLine, roleNeed, setupRows, setupSummary, otherControllerValue, handoverVisible, effectiveOtherController, guardRolesShown, otherControllerPrompt, predbatInUse, testsPauseHint, OTHER_UNSET_PROMPT, GUARD_ROLES, HANDOVER_DEFAULTS, v2Preview, previewLabel, previewBanner, V2_PREVIEW_LINE, historyDayPayload, shiftHistoryDay, demoNeedsReload, DEMO_WAIT, asBool, FEATURES, FEATURE_DEFAULTS, parseSignNote, readout, inUseFor, nowText, instantProblem, effectiveRole, suggestEntity, initialDraft, buildConfig, slugify, summariseAttribute, settingProblem, testSummary, dampingNote, configEntities, diagStates, diagFileName, scrubReport, reportFileName, reportIssueUrl, REPORT_TEMPLATE, diagHistoryIds, peRepos, versionLine, MIN_APP_VERSION, parseVersion, versionOlder, versionWarnings, logRows, logWhen, escHtml, findRcEntities, liveLine, TESTS, measuredText, simHistoryPlan, monthRange, handoverRows, topicPlan, roleNeed, matchesSearch, TOPICS, CARD_VERSION, waterfallRows, waterfallCustom, waterfallSteps, costsRange, costsSummary, costsTodayInfo, costsBars, peParts, costsDayLabel, shownValue, sectionOpen, sectionsLoad, SECTIONS_KEY, overnightReadout, waterfallScale, pct, waterfallShortLabel, compactGbp, fillNames, SETUP_REPOS, findHacsRepo, hacsInfoPayload, hacsListPayload, hacsAddPayload, hacsDownloadPayload, addonsPayload, installStep, addonFrom, peRunning, setupRows, setupSummary, demoView, demoEventPayload, configPath, showDemoLink, DEMO_DAYS, NOTIFY_EVENTS, SCREEN, NAME_FALLBACK, SITE_KINDS, SITE_WARNING, SITE_RETEST, siteInfo, siteFirmwareOptions, siteVariant, siteFromSelection, siteChooseInverter, siteNeedsWarning, siteDetectedLine, siteOptionLabel, FREE_LOADS_APP_VERSION, freeLoadsSupported, freeLoadDraft, buildFreeLoads, DEVICES_APP_VERSION, DEVICE_INPUTS, devicesSupported, deviceDraft, deviceNewId, buildDevices, deviceReadout,
   wizardDeviceName, wizardInUse, wizardOthers, wizardUsedEntities, wizardPlantFromDevice, wizardPlantId, EXPORT_FORMAT, EXPORT_VERSION, EXPORT_STATE_MAX, wizardInfo, wizardFacts, wizardMatch, wizardCandidates, wizardRoles, wizardSuggest, wizardPlantGuess, wizardMissing, wizardWatts, wizardSignCheck, wizardBalance, scrubText, buildCandidateExport, candidateFileName, wizardEnergyDevices,
   SYSTEM_DRAFT_KEY, systemKinds, systemItems, systemMissingParts, opsSet, opsRemove, opsUndoRemove, opsTag, opsSummary, applyOps, featuresLeftOut, buildApplyConfig, equipmentOf, systemFingerprint, overlayEquipment, systemImpact, systemDraftLoad, systemDraftSave,
   OVERRIDE_MODES, OVERRIDE_PERIODS, OVERRIDE_MAX_SLOTS, inverterWords, overrideEndOptions, overridePayload, overrideView, overrideSummary,
