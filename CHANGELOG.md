@@ -3,6 +3,12 @@
 Released only when the card changes, on the version of the [PowerEngine app](https://github.com/durkimat/ha-powerengine-controller)
 it ships with (one sequence, so card versions can skip numbers). Older entries below were kept in step with the app.
 
+## 0.9.198
+
+### Behaviour changes
+
+- **Config page: the Cheap import threshold, Automatic cheap threshold and Grid-charge target now show whichever engine is in use.** The car's smart-charge requests read them on both engines, but they had been placed under Engine v1 settings and so were hidden on engine v2. "Planning and cheap rate" under Engine v1 settings is now just "Planning".
+
 ## 0.9.197
 
 ### Behaviour changes
